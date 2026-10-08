@@ -200,20 +200,21 @@ h1, h2, p { margin-top: 0; }
 .composer-footer > span { display: flex; align-items: center; gap: 5px; color: #929daa; font-size: 8px; }
 .composer-footer > span svg { color: #7794d3; }
 .send-button { height: 29px; padding: 0 9px; font-size: 9px; }
-.customer-rating { flex: none; padding: 12px 21px; border-top: 1px solid #edf0f2; background: #fbfcff; }
-.customer-rating-heading { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
-.customer-rating-heading strong { color: #4b5a70; font-size: 9px; }
-.customer-rating-heading > span, .rating-result > span:last-of-type { color: #929daa; font-size: 8px; }
 .rating-star-picker { display: flex; gap: 4px; margin-bottom: 7px; }
-.rating-star-picker button { padding: 2px; border: 0; color: #d7dce3; background: transparent; font-size: 24px; line-height: 1; }
+.rating-star-picker button { padding: 2px; border: 0; color: #d7dce3; background: transparent; font-size: 30px; line-height: 1; cursor: pointer; }
 .rating-star-picker button.selected { color: #e6ad4c; }
+.rating-star-picker button:focus-visible { outline: 2px solid #8eb0f1; outline-offset: 2px; }
 .rating-comment-label { display: flex; flex-direction: column; gap: 5px; margin-bottom: 8px; color: #77859a; font-size: 8px; }
 .rating-comment-label textarea { width: 100%; padding: 7px; border: 1px solid #e3e8ee; border-radius: 5px; color: #536278; font: inherit; resize: vertical; }
-.customer-rating .button:disabled { opacity: .55; }
-.rating-result { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
-.rating-stars { display: inline-flex; gap: 2px; color: #d7dce3; font-size: 18px; }
-.rating-stars .filled { color: #e6ad4c; }
-.rating-result p { flex-basis: 100%; margin: 0; color: #77859a; font-size: 9px; white-space: pre-wrap; }
+.feedback-scrim { z-index: 6; }
+.feedback-modal { width: min(430px, 100%); }
+.feedback-modal .modal-heading { margin-bottom: 12px; }
+.feedback-modal .modal-heading h2 { max-width: 320px; font-size: 17px; line-height: 1.35; }
+.feedback-modal .modal-heading .icon-button:disabled { opacity: .5; cursor: not-allowed; }
+.feedback-ticket-subject { margin: 0 0 18px; color: #7e8998; font-size: 10px; line-height: 1.6; }
+.feedback-modal .rating-star-picker { justify-content: center; gap: 10px; margin: 0 0 19px; }
+.feedback-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.feedback-thanks { display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #4b5a70; font-size: 11px; }
 .inline-error { display: flex; justify-content: space-between; gap: 10px; margin: 0 0 9px; padding: 8px 10px; border: 1px solid #f2d8d6; border-radius: 5px; color: #ad514c; background: #fff7f6; font-size: 9px; }
 .inline-error button { display: grid; place-items: center; padding: 0; border: 0; color: inherit; background: transparent; }
 .detail-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border-left: 1px solid #e9edf1; color: #9da7b3; background: white; }
@@ -358,7 +359,7 @@ h1, h2, p { margin-top: 0; }
 .auth-notice { padding: 10px; border: 1px solid #dce8fb; border-radius: 5px; color: #516e9f; background: #f5f8ff; font-size: 10px; line-height: 1.5; }
 .auth-back-link { display: block; margin-top: 14px; border: 0; background: transparent; text-align: center; font-size: 10px; text-decoration: none; }
 .auth-back-button { width: 100%; }
-.forgot-password-link { display: block; margin: -5px 0 12px auto; padding: 0; border: 0; color: #5276b7; background: transparent; font-size: 9px; }
+.forgot-password-link { display: block; margin: 9px 0 0 auto; padding: 0; border: 0; color: #5276b7; background: transparent; font-size: 9px; line-height: 1.5; }
 .form-hint { color: #929daa; font-size: 8px; font-weight: 400; line-height: 1.5; }
 .create-modal { max-height: 92vh; overflow-y: auto; }
 .create-modal input[type="file"] { padding: 7px; }
@@ -553,7 +554,6 @@ h1, h2, p { margin-top: 0; }
   .conversation { min-height: 150px; }
   .composer-footer { align-items: flex-start; flex-direction: column; }
   .send-button { min-height: 36px; align-self: flex-end; }
-  .customer-rating { padding-right: 13px; padding-left: 13px; }
   .ticket-metadata { padding-right: 13px; padding-left: 13px; }
   .ticket-metadata-form { grid-template-columns: 1fr; }
   .ticket-metadata-form .custom-fields-editor { grid-column: auto; }

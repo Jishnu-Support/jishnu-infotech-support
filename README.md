@@ -6,7 +6,7 @@ The portal branding uses the logo and favicon published on [Jishnu Infotech's of
 
 ## Run locally
 
-Requirements: Node.js 20.19+ or 22.12+, and PostgreSQL 17 or compatible.
+Requirements: Node.js 20.19.x, 22.12.x or newer within Node 22, or Node 24.x; and PostgreSQL 17 or compatible.
 
 ```powershell
 npm install
@@ -27,7 +27,7 @@ Demo credentials are for local development only. The initial sample records are 
 
 ## Production configuration
 
-Set `NODE_ENV=production`, `DATABASE_URL` to your PostgreSQL connection string, a unique long random `JWT_SECRET`, and the four seed email/password values from `.env.example` before first startup. Optionally set the initial agent/client names and client company name. Production startup creates those two administrator accounts but does not add demo tickets; local development still seeds sample tickets. Build the frontend with `npm run build`, then run `npm start`; the Node server serves the built UI and API together.
+Set `NODE_ENV=production`, `DATABASE_URL` to your PostgreSQL connection string, a unique random `JWT_SECRET` of at least 32 bytes, and the four seed email/password values from `.env.example` before first startup. Set `APP_BASE_URL` to the public HTTPS URL for deployments outside Render; Render supplies its public URL automatically. Optionally set the initial agent/client names and client company name. Production startup creates those two administrator accounts but does not add demo tickets; local development still seeds sample tickets. Build the frontend with `npm run build`, then run `npm start`; the Node server serves the built UI and API together.
 
 The seed values are only used when the PostgreSQL database is empty. Production seed passwords must each be at least 12 characters. The first seeded agent becomes the workspace administrator, and the seeded client becomes the initial company administrator. Do not use demo credentials or expose an unconfigured instance to the public internet.
 
@@ -86,7 +86,7 @@ Tickets include a category, optional comma-separated tags, and up to 10 custom n
 
 The root `render.yaml` Blueprint configures a single Render web service and persistent disk for private ticket attachments. Configure `DATABASE_URL` in Render with a PostgreSQL connection string from your database provider, along with the initial agent and company-administrator email/passwords and names. Keep the generated `JWT_SECRET` private. The attachment disk is local to one service instance; configure shared object storage before scaling to multiple instances.
 
-The app automatically uses Render's external HTTPS URL for invitation and password-reset links unless `APP_BASE_URL` is explicitly set. Configure SMTP in the Render service environment before inviting users or relying on email replies and password recovery. Configure IMAP credentials only if the support inbox should create and update tickets automatically. Verify the deployed `/api/health` endpoint and complete an agent login, client login, ticket/reply, attachment, and email-delivery check before sharing the portal with customers.
+The app automatically uses Render's external HTTPS URL for invitation and password-reset links unless `APP_BASE_URL` is explicitly set. Configure SMTP in the Render service environment before inviting users or relying on email replies and password recovery. Configure IMAP credentials only if the support inbox should create and update tickets automatically. The health check verifies PostgreSQL connectivity. Verify the deployed `/api/health` endpoint and complete an agent login, client login, ticket/reply, attachment, and email-delivery check before sharing the portal with customers.
 
 ## API overview
 

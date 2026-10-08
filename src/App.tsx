@@ -126,6 +126,9 @@ function App() {
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [feedbackTicketId, setFeedbackTicketId] = useState<number | null>(null);
+  const [feedbackSubmittedId, setFeedbackSubmittedId] = useState<number | null>(null);
+  const [dismissedFeedbackIds, setDismissedFeedbackIds] = useState<Set<number>>(() => new Set());
   const [prefillCustomerId, setPrefillCustomerId] = useState<number | null>(null);
   const [loginError, setLoginError] = useState("");
   const [loginNotice, setLoginNotice] = useState("");
@@ -137,7 +140,6 @@ function App() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [actionMessage, setActionMessage] = useState("");
   const [replyInternal, setReplyInternal] = useState(false);
-  const [createCustomFields, setCreateCustomFields] = useState<Record<string, string>>({});
   const searchInput = useRef<HTMLInputElement>(null);
 
   const refreshTickets = useCallback(async () => {
@@ -173,6 +175,22 @@ function App() {
   }, [activeView, selectedId, user]);
 
   useEffect(() => { setReplyInternal(false); }, [selectedId]);
+
+  useEffect(() => {
+    if (user?.role !== "customer") {
+      setFeedbackTicketId(null);
+      setFeedbackSubmittedId(null);
+      return;
+    }
+    setFeedbackTicketId((current) => {
+      if (current !== null && (current === feedbackSubmittedId || tickets.some((ticket) =>
+        ticket.id === current && ticket.customer.id === user.id && ticket.status === "resolved" && !ticket.rating))) {
+        return current;
+      }
+      return tickets.find((ticket) => ticket.customer.id === user.id && ticket.status === "resolved"
+        && !ticket.rating && !dismissedFeedbackIds.has(ticket.id))?.id ?? null;
+    });
+  }, [dismissedFeedbackIds, feedbackSubmittedId, tickets, user]);
 
   useEffect(() => {
     if (user?.role !== "agent") { setCustomers([]); return; }
@@ -317,7 +335,6 @@ function App() {
     if (!selectedId) return;
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
-    form.set("customFields", JSON.stringify(createCustomFields));
     const body = String(form.get("reply") || "").trim();
     if (!body) return;
     setActionError("");
@@ -343,7 +360,6 @@ function App() {
       setActiveView("inbox");
       setFilter("all");
       setPrefillCustomerId(null);
-      setCreateCustomFields({});
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Could not create ticket.");
     }
@@ -571,16 +587,6 @@ function App() {
                     </article>;
                   })}
                 </div>
-                {!isAgent && detail?.canRate && <CustomerRatingForm
-                  key={selectedTicket.id}
-                  rating={selectedTicket.rating}
-                  onSubmit={async (rating, comment) => {
-                    const result = await api<{ rating: NonNullable<Ticket["rating"]> }>(`/tickets/${selectedTicket.id}/rating`, {
-                      method: "POST", body: JSON.stringify({ rating, comment }),
-                    });
-                    setDetail((current) => current ? { ...current, ticket: { ...current.ticket, rating: result.rating } } : current);
-                  }}
-                />}
                 <div className="reply-wrap">
                   {actionError && <div className="inline-error">{actionError}<button onClick={() => setActionError("")}><X size={13} /></button></div>}
                   {actionMessage && <div className="inline-success">{actionMessage}<button onClick={() => setActionMessage("")}><X size={13} /></button></div>}
@@ -654,14 +660,36 @@ function App() {
           <label>Subject<input name="subject" required minLength={4} maxLength={160} placeholder="What do you need help with?" autoFocus /></label>
           <label>Description<textarea name="description" required minLength={10} maxLength={5000} placeholder="Share a few details so we can help…" rows={5} /></label>
           <label>Category<select name="category" defaultValue="Other"><option>Account access</option><option>Billing</option><option>Technical support</option><option>Feature request</option><option>Other</option></select></label>
-          <label>Tags (optional)<input name="tags" maxLength={320} placeholder="e.g. login, urgent follow-up" /><span className="form-hint">Separate up to 10 tags with commas.</span></label>
-          <CustomFieldsEditor fields={createCustomFields} onChange={setCreateCustomFields} />
           <label>Priority<select name="priority" defaultValue="normal"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
           <label>Attachments<input name="attachments" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" /><span className="form-hint">Up to 5 PDF or image files, 10 MB each.</span></label>
           {actionError && <div className="inline-error">{actionError}</div>}
           <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); }}>Cancel</button><button className="button button-primary" type="submit"><Plus size={15} /> Create ticket</button></div>
         </form>
       </div>}
+      {feedbackTicketId !== null && (() => {
+        const feedbackTicket = tickets.find((ticket) => ticket.id === feedbackTicketId);
+        if (!feedbackTicket) return null;
+        return <CustomerRatingForm
+          key={feedbackTicket.id}
+          ticket={feedbackTicket}
+          submitted={feedbackSubmittedId === feedbackTicket.id}
+          onClose={() => {
+            setDismissedFeedbackIds((current) => new Set(current).add(feedbackTicket.id));
+            setFeedbackTicketId(null);
+            setFeedbackSubmittedId(null);
+          }}
+          onSubmit={async (rating, comment) => {
+            const result = await api<{ rating: NonNullable<Ticket["rating"]> }>(`/tickets/${feedbackTicket.id}/rating`, {
+              method: "POST", body: JSON.stringify({ rating, comment }),
+            });
+            setTickets((current) => current.map((ticket) => ticket.id === feedbackTicket.id
+              ? { ...ticket, rating: result.rating } : ticket));
+            setDetail((current) => current?.ticket.id === feedbackTicket.id
+              ? { ...current, ticket: { ...current.ticket, rating: result.rating } } : current);
+            setFeedbackSubmittedId(feedbackTicket.id);
+          }}
+        />;
+      })()}
     </div>
   );
 }
@@ -916,23 +944,22 @@ function TicketMetadataEditor({ ticket, categories, canEdit, onSave }: {
   </section>;
 }
 
-function CustomerRatingForm({ rating, onSubmit }: {
-  rating: Ticket["rating"];
+function CustomerRatingForm({ ticket, submitted, onClose, onSubmit }: {
+  ticket: Ticket;
+  submitted: boolean;
+  onClose: () => void;
   onSubmit: (rating: number, comment: string) => Promise<void>;
 }) {
   const [selected, setSelected] = useState(0);
   const [comment, setComment] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [submitted, setSubmitted] = useState(Boolean(rating));
-
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
     setSaving(true);
     try {
       await onSubmit(selected, comment);
-      setSubmitted(true);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not submit your feedback.");
     } finally {
@@ -940,21 +967,25 @@ function CustomerRatingForm({ rating, onSubmit }: {
     }
   }
 
-  return <section className="customer-rating">
-    <div className="customer-rating-heading"><strong>How was your support experience?</strong><span>Your feedback helps us improve.</span></div>
-    {submitted && rating ? <div className="rating-result" aria-label={`Submitted rating: ${rating.rating} out of 5`}>
-      <span className="rating-stars">{Array.from({ length: 5 }, (_, index) => <span key={index} className={index < rating.rating ? "filled" : ""}>★</span>)}</span>
-      <span>Thank you for your feedback.</span>{rating.comment && <p>{rating.comment}</p>}
-    </div> : <form onSubmit={submit}>
-      <div className="rating-star-picker" role="radiogroup" aria-label="Rate your support experience">
-        {[1, 2, 3, 4, 5].map((value) => <button type="button" role="radio" aria-checked={selected === value} aria-label={`${value} out of 5 stars`}
-          className={selected >= value ? "selected" : ""} key={value} onClick={() => setSelected(value)}>★</button>)}
+  return <div className="modal-scrim feedback-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
+    <section className="create-modal feedback-modal" role="dialog" aria-modal="true" aria-labelledby="feedback-title">
+      <div className="modal-heading">
+        <div><div className="eyebrow">TICKET #{String(ticket.id).padStart(4, "0")}</div><h2 id="feedback-title">How was your support experience?</h2></div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Close feedback" disabled={saving}><X size={18} /></button>
       </div>
-      <label className="rating-comment-label">Comment (optional)<textarea value={comment} onChange={(event) => setComment(event.target.value)} maxLength={1000} rows={2} placeholder="Tell us a little more…" /></label>
-      {error && <div className="inline-error" role="alert">{error}</div>}
-      <button className="button button-primary" type="submit" disabled={!selected || saving}>{saving ? "Submitting…" : "Submit feedback"}</button>
-    </form>}
-  </section>;
+      <p className="feedback-ticket-subject">Your ticket “{ticket.subject}” has been closed. Your feedback helps us improve.</p>
+      {submitted ? <div className="feedback-thanks" role="status"><strong>Thank you for your feedback.</strong><button type="button" className="button button-primary" onClick={onClose}>Done</button></div>
+        : <form onSubmit={submit}>
+          <div className="rating-star-picker" role="radiogroup" aria-label="Rate your support experience">
+            {[1, 2, 3, 4, 5].map((value) => <button type="button" role="radio" aria-checked={selected === value} aria-label={`${value} out of 5 stars`}
+              className={selected >= value ? "selected" : ""} key={value} onClick={() => setSelected(value)}>★</button>)}
+          </div>
+          <label className="rating-comment-label">Comment (optional)<textarea value={comment} onChange={(event) => setComment(event.target.value)} maxLength={1000} rows={3} placeholder="Tell us a little more…" /></label>
+          {error && <div className="inline-error" role="alert">{error}</div>}
+          <div className="feedback-actions"><button type="button" className="button button-quiet" onClick={onClose} disabled={saving}>Maybe later</button><button className="button button-primary" type="submit" disabled={!selected || saving}>{saving ? "Submitting…" : "Submit feedback"}</button></div>
+        </form>}
+    </section>
+  </div>;
 }
 
 function Metric({ icon, label, value, tone }: { icon: ReactNode; label: string; value: number; tone: string }) {
@@ -1413,7 +1444,7 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
       </form>}
       {!showRecovery && mode === "login" && portal === "customer" && <button type="button" className="forgot-password-link" onClick={() => { setShowRecovery(true); setRecoveryError(""); setRecoveryNotice(""); }}>Forgot password?</button>}
       <div className="login-help"><ShieldCheck size={15} /> Your support workspace, securely connected</div>
-      {mode === "login" && !showRecovery && <div className="login-demo"><span>DEMO ACCESS</span><div><button type="button" onClick={() => { const email = document.querySelector<HTMLInputElement>('input[name="email"]'); const password = document.querySelector<HTMLInputElement>('input[name="password"]'); if (email && password) { email.value = portal === "agent" ? "alex@relaysupport.test" : "sam@northstar.test"; password.value = portal === "agent" ? "Support123!" : "Customer123!"; } }}>Fill {portal === "agent" ? "agent" : "client"} demo</button></div></div>}
+      {import.meta.env.MODE === "development" && mode === "login" && !showRecovery && <div className="login-demo"><span>DEMO ACCESS</span><div><button type="button" onClick={() => { const email = document.querySelector<HTMLInputElement>('input[name="email"]'); const password = document.querySelector<HTMLInputElement>('input[name="password"]'); if (email && password) { email.value = portal === "agent" ? "alex@relaysupport.test" : "sam@northstar.test"; password.value = portal === "agent" ? "Support123!" : "Customer123!"; } }}>Fill {portal === "agent" ? "agent" : "client"} demo</button></div></div>}
     </div>
     <footer className="login-footer"><span>© 2026 Jishnu Infotech</span><span><CircleHelp size={13} /> Need help signing in?</span></footer>
   </main>;

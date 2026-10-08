@@ -21,8 +21,19 @@ const isProduction = process.env.NODE_ENV === "production";
 app.set("trust proxy", isProduction ? 1 : false);
 const jwtSecret = process.env.JWT_SECRET;
 
-if (isProduction && !jwtSecret) {
-  throw new Error("JWT_SECRET must be set in production.");
+if (isProduction && (!jwtSecret || Buffer.byteLength(jwtSecret, "utf8") < 32)) {
+  throw new Error("JWT_SECRET must be set to at least 32 bytes in production.");
+}
+if (isProduction) {
+  const publicUrl = process.env.APP_BASE_URL || process.env.RENDER_EXTERNAL_URL;
+  if (!publicUrl) throw new Error("Set APP_BASE_URL to the public HTTPS URL in production.");
+  let parsedPublicUrl;
+  try { parsedPublicUrl = new URL(publicUrl); } catch {
+    throw new Error("APP_BASE_URL must be a valid public HTTPS URL in production.");
+  }
+  if (parsedPublicUrl.protocol !== "https:") {
+    throw new Error("APP_BASE_URL must use HTTPS in production.");
+  }
 }
 const tokenSecret = jwtSecret || "development-only-secret-change-before-deploy";
 const attachmentsRoot = resolve(process.env.ATTACHMENTS_PATH || "data/attachments");
@@ -281,7 +292,14 @@ function normalizedTicketMetadata(body, defaults = {}) {
   return { category, tags, customFields: normalizedFields };
 }
 
-app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
+app.get("/api/health", async (_req, res) => {
+  try {
+    await db.prepare("SELECT 1").get();
+    res.json({ status: "ok" });
+  } catch {
+    res.status(503).json({ status: "unavailable" });
+  }
+});
 
 app.post("/api/auth/login", authLimiter, async (req, res) => {
   const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
@@ -1517,12 +1535,13 @@ async function pollSupportMailbox() {
               ].filter(Boolean);
               const referencedTicket = references.length
                 ? await db.prepare(`
-                    SELECT t.id FROM tickets t
+                  SELECT t.id FROM tickets t
                     LEFT JOIN messages m ON m.ticket_id = t.id
-                    WHERE t.email_thread_id IN (${references.map(() => "?").join(",")})
-                       OR m.email_message_id IN (${references.map(() => "?").join(",")})
+                    WHERE (t.email_thread_id IN (${references.map(() => "?").join(",")})
+                       OR m.email_message_id IN (${references.map(() => "?").join(",")}))
+                      AND t.company_id = ?
                     ORDER BY t.id DESC LIMIT 1
-                  `).get(...references, ...references)
+                  `).get(...references, ...references, senderCompany.id)
                 : null;
 
               const inboundId = senderUser?.id || Number((await db.prepare(
