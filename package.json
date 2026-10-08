@@ -1,0 +1,50 @@
+{
+  "name": "jishnu-infotech-support",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,green \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "node --watch server/index.js",
+    "dev:web": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "better-sqlite3": "^12.2.0",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.0.1",
+    "file-type": "^22.1.1",
+    "helmet": "^8.1.0",
+    "imapflow": "^2.2.10",
+    "jsonwebtoken": "^9.0.2",
+    "lucide-react": "^0.468.0",
+    "mailparser": "^3.9.36",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.0.16",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cookie-parser": "^1.4.9",
+    "@types/express": "^5.0.3",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/mailparser": "^3.9.0",
+    "@types/multer": "^2.3.0",
+    "@types/node": "^24.3.0",
+    "@types/nodemailer": "^8.0.2",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^5.0.2",
+    "concurrently": "^9.2.0",
+    "typescript": "~5.9.2",
+    "vite": "^7.1.4"
+  },
+  "overrides": {
+    "shell-quote": "^1.11.0"
+  }
+}
