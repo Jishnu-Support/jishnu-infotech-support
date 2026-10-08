@@ -29,8 +29,15 @@ type Ticket = {
 };
 type Message = { id: number; body: string; isInternal: boolean; createdAt: string; authorId: number; authorName: string; authorRole: Role };
 type TicketAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string; uploadedBy: number };
-type TicketDetail = { ticket: Ticket; messages: Message[]; attachments: TicketAttachment[]; categories: TicketCategory[]; canRate: boolean };
-type Customer = { id: number; name: string; email: string; companyId?: number; companyName?: string };
+type TicketDetail = { ticket: Ticket; messages: Message[]; attachments: TicketAttachment[]; assignmentHistory: AssignmentEvent[]; categories: TicketCategory[]; canRate: boolean };
+type Customer = {
+  id: number; name: string; email: string; companyId?: number; companyName?: string;
+  routingPriority?: number; priorityLabel?: string;
+};
+type AssignmentEvent = {
+  id: number; source: string; createdAt: string; agentId: number | null;
+  agentName: string; assignedByName: string | null;
+};
 type Notification = { id: number; ticketId: number; kind: string; message: string; readAt: string | null; createdAt: string };
 type AnalyticsReport = {
   days: number; startDate: string; endDate: string;
@@ -43,8 +50,9 @@ type AnalyticsReport = {
     firstResponse: { onTime: number; evaluated: number; targetHours: number };
     resolution: { onTime: number; evaluated: number; targetHours: number };
   };
-  agentWorkload: Array<{ id: number; name: string; active: number }>;
+  agentWorkload: Array<{ id: number; name: string; routingPriority: number; active: number; assignedInPeriod: number; resolvedInPeriod: number }>;
   companyVolume: Array<{ name: string; count: number }>;
+  customerActivity: Array<{ id: number; name: string; email: string; companyName: string | null; raisedInPeriod: number; active: number; inProgress: number; resolvedInPeriod: number }>;
 };
 type PortalMode = "login" | "register";
 type ApiError = { error?: string };
@@ -90,7 +98,7 @@ function CompanyLogo({ className }: { className: string }) {
 
 function StatusPill({ status }: { status: Status }) {
   const labels: Record<Status, string> = {
-    open: "Open", in_progress: "In progress", waiting: "Waiting", resolved: "Resolved",
+    open: "Open", in_progress: "In progress", waiting: "Waiting", resolved: "Closed",
   };
   return <span className={`status-pill status-${status}`}><span className="status-dot" />{labels[status]}</span>;
 }
@@ -456,14 +464,14 @@ function App() {
                 <Metric icon={<Inbox size={15} />} label="Open tickets" value={counts.open} tone="blue" />
                 <Metric icon={<Activity size={15} />} label="In progress" value={counts.in_progress} tone="violet" />
                 <Metric icon={<Clock3 size={15} />} label="Waiting" value={counts.waiting} tone="amber" />
-                <Metric icon={<CheckCheck size={15} />} label="Resolved" value={counts.resolved} tone="green" />
+                <Metric icon={<CheckCheck size={15} />} label="Closed" value={counts.resolved} tone="green" />
               </div>}
 
               <div className="list-toolbar">
                 <div className="filter-tabs">
                   {(["all", "open", "in_progress", "waiting", "resolved"] as const).map((value) => (
                     <button key={value} className={filter === value ? "selected" : ""} onClick={() => setFilter(value)}>
-                      {value === "all" ? "All tickets" : value === "in_progress" ? "In progress" : value[0].toUpperCase() + value.slice(1)}
+                      {value === "all" ? "All tickets" : value === "in_progress" ? "In progress" : value === "resolved" ? "Closed" : value[0].toUpperCase() + value.slice(1)}
                       {value === "all" && <span className="filter-count">{activeView === "assigned" ? counts.in_progress : tickets.length}</span>}
                     </button>
                   ))}
@@ -508,7 +516,7 @@ function App() {
                   <PriorityIcon priority={selectedTicket.priority} />
                   {isAgent && <div className="status-actions">
                     <select aria-label="Update status" value={selectedTicket.status} onChange={(event) => updateTicket({ status: event.target.value as Status })}>
-                      <option value="open">Open</option><option value="in_progress">In progress</option><option value="waiting">Waiting</option><option value="resolved">Resolved</option>
+                      <option value="open">Open</option><option value="in_progress">In progress</option><option value="waiting">Waiting</option><option value="resolved">Closed</option>
                     </select>
                     <select aria-label="Update priority" value={selectedTicket.priority} onChange={(event) => updateTicket({ priority: event.target.value as Priority })}>
                       <option value="urgent">Urgent priority</option><option value="high">High priority</option><option value="normal">Normal priority</option><option value="low">Low priority</option>
@@ -520,7 +528,7 @@ function App() {
                   <div className="detail-info-item"><span>Created</span><strong>{timeAgo(selectedTicket.createdAt)}</strong></div>
                   {selectedTicket.company && <div className="detail-info-item"><span>Company</span><strong>{selectedTicket.company.name}</strong></div>}
                   <div className="detail-info-item"><span>Source</span><strong><span className={`source-icon ${selectedTicket.source}`} />{selectedTicket.source === "email" ? "Email" : "Portal"}</strong></div>
-                  {isAgent ? <label className="detail-assignee"><div className="assignee-avatar">{selectedTicket.assignee ? initials(selectedTicket.assignee.name) : <UserRound size={14} />}</div><select aria-label="Assign ticket to agent" value={selectedTicket.assignee?.id ?? ""} onChange={(event) => updateTicket({ assigneeId: event.target.value ? Number(event.target.value) : null })}><option value="">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select><ChevronDown size={13} /></label>
+                  {isAgent ? <label className="detail-assignee"><div className="assignee-avatar">{selectedTicket.assignee ? initials(selectedTicket.assignee.name) : <UserRound size={14} />}</div><select aria-label="Assign ticket to agent" value={selectedTicket.assignee?.id ?? ""} onChange={(event) => updateTicket({ assigneeId: event.target.value ? Number(event.target.value) : null })}><option value="">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.priorityLabel} · {agent.name}</option>)}</select><ChevronDown size={13} /></label>
                     : <div className="detail-assignee"><div className="assignee-avatar">{selectedTicket.assignee ? initials(selectedTicket.assignee.name) : <UserRound size={14} />}</div><span>{selectedTicket.assignee?.name || "Unassigned"}</span></div>}
                 </div>
                 <TicketMetadataEditor
@@ -538,6 +546,12 @@ function App() {
                 {!selectedTicket.isFirstResponseOverdue && !selectedTicket.isResolutionOverdue && selectedTicket.status !== "resolved" && <div className="detail-sla">
                   <Clock3 size={14} /><span>First response by {new Date(selectedTicket.firstResponseDueAt).toLocaleString()}</span><span>Resolve by {new Date(selectedTicket.resolutionDueAt).toLocaleString()}</span>
                 </div>}
+                {detail?.assignmentHistory.length ? <section className="assignment-history" aria-label="Assignment history">
+                  <strong>Assignment history</strong>
+                  {detail.assignmentHistory.map((entry) => <span key={entry.id}>
+                    {entry.agentName}{entry.assignedByName ? ` · assigned by ${entry.assignedByName}` : " · automatic assignment"} · {timeAgo(entry.createdAt)}
+                  </span>)}
+                </section> : null}
                 <div className="conversation-heading"><span>CONVERSATION</span><span>{detail?.messages.length ?? 0} messages</span></div>
                 {detail?.attachments.length ? <div className="attachment-list" aria-label="Ticket attachments">
                   {detail.attachments.map((attachment) => <a key={attachment.id} className="ticket-attachment" href={`/api/tickets/${selectedTicket.id}/attachments/${attachment.id}`} target="_blank" rel="noreferrer">
@@ -636,7 +650,7 @@ function App() {
         <form className="create-modal" onSubmit={createTicket}>
           <div className="modal-heading"><div><div className="eyebrow">SUPPORT REQUEST</div><h2>Create a ticket</h2></div><button type="button" className="icon-button" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); }} aria-label="Close"><X size={18} /></button></div>
           {isAgent && <label>Customer<select name="customerId" required value={prefillCustomerId ?? ""} onChange={(event) => setPrefillCustomerId(event.target.value ? Number(event.target.value) : null)}><option value="" disabled>Select a customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.companyName ? `${customer.companyName} · ` : ""}{customer.name} · {customer.email}</option>)}</select></label>}
-          {!isAgent && <label>Send to an agent (optional)<select name="assigneeId" defaultValue=""><option value="">Auto-assign to the support team</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select><span className="form-hint">Choose a preferred support agent or leave this on automatic assignment.</span></label>}
+          {!isAgent && <label>Send to an agent (optional)<select name="assigneeId" defaultValue=""><option value="">Auto-assign by support priority</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.priorityLabel} · {agent.name}</option>)}</select><span className="form-hint">Choose a preferred agent or leave automatic assignment on. The support team’s primary-to-secondary order is used first.</span></label>}
           <label>Subject<input name="subject" required minLength={4} maxLength={160} placeholder="What do you need help with?" autoFocus /></label>
           <label>Description<textarea name="description" required minLength={10} maxLength={5000} placeholder="Share a few details so we can help…" rows={5} /></label>
           <label>Category<select name="category" defaultValue="Other"><option>Account access</option><option>Billing</option><option>Technical support</option><option>Feature request</option><option>Other</option></select></label>
@@ -681,11 +695,11 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
       ["First response SLA on time", `${report.sla.firstResponse.onTime}/${report.sla.firstResponse.evaluated}`],
       ["Resolution SLA on time", `${report.sla.resolution.onTime}/${report.sla.resolution.evaluated}`],
       [],
-      ["Daily activity", "Created", "Resolved"],
+      ["Daily activity", "Created", "Closed"],
       ...report.daily.map((entry) => [entry.day, entry.created, entry.resolved]),
       [],
       ["Status", "Tickets created in period"],
-      ...report.statuses.map((entry) => [entry.status, entry.count]),
+      ...report.statuses.map((entry) => [entry.status === "resolved" ? "closed" : entry.status, entry.count]),
       [],
       ["Priority", "Tickets created in period"],
       ...report.priorities.map((entry) => [entry.priority, entry.count]),
@@ -693,8 +707,11 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
       ["Channel", "Tickets created in period"],
       ...report.sources.map((entry) => [entry.source, entry.count]),
       [],
-      ["Agent", "Active assigned tickets"],
-      ...report.agentWorkload.map((entry) => [entry.name, entry.active]),
+      ["Agent", "Active assigned tickets", "Assigned in period", "Closed in period"],
+      ...report.agentWorkload.map((entry) => [entry.name, entry.active, entry.assignedInPeriod, entry.resolvedInPeriod]),
+      [],
+      ["Company", "Client user", "Email", "Tickets raised", "Active", "In progress", "Closed in period"],
+      ...report.customerActivity.map((entry) => [entry.companyName || "", entry.name, entry.email, entry.raisedInPeriod, entry.active, entry.inProgress, entry.resolvedInPeriod]),
       ...(workspaceWide ? [[], ["Company", "Tickets created in period"], ...report.companyVolume.map((entry) => [entry.name, entry.count])] : []),
     ];
     const csv = rows.map((row) => row.map((value) => {
@@ -735,15 +752,15 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
       <div className="report-metric-grid">
         <ReportMetric icon={<Inbox size={16} />} label="Tickets created" value={report.summary.created} tone="blue" caption={`In the last ${report.days} days`} />
         <ReportMetric icon={<Activity size={16} />} label="Active backlog" value={report.summary.activeBacklog} tone="amber" caption="Open across this report's scope" />
-        <ReportMetric icon={<CheckCheck size={16} />} label="Resolved" value={resolvedInPeriod} tone="green" caption="Resolved during this period" />
+        <ReportMetric icon={<CheckCheck size={16} />} label="Closed" value={resolvedInPeriod} tone="green" caption="Closed during this period" />
         <ReportMetric icon={<Clock3 size={16} />} label="Still active" value={report.summary.activeInPeriod} tone="violet" caption="From tickets created in this period" />
       </div>
       <div className="report-grid">
         <section className="report-card report-trend-card">
-          <div className="report-card-heading"><div><h2>Ticket activity</h2><p>Created and resolved each day</p></div><span>{report.days} days</span></div>
-          <div className="report-chart-legend"><span><i className="legend-created" />Created</span><span><i className="legend-resolved" />Resolved</span></div>
+          <div className="report-card-heading"><div><h2>Ticket activity</h2><p>Created and closed each day</p></div><span>{report.days} days</span></div>
+          <div className="report-chart-legend"><span><i className="legend-created" />Created</span><span><i className="legend-resolved" />Closed</span></div>
           <div className="report-trend-chart" role="img" aria-label={`Daily ticket activity over ${report.days} days`}>
-            {report.daily.map((entry) => <div className="report-trend-day" key={entry.day} title={`${entry.day}: ${entry.created} created, ${entry.resolved} resolved`} aria-label={`${entry.day}: ${entry.created} created, ${entry.resolved} resolved`}>
+            {report.daily.map((entry) => <div className="report-trend-day" key={entry.day} title={`${entry.day}: ${entry.created} created, ${entry.resolved} closed`} aria-label={`${entry.day}: ${entry.created} created, ${entry.resolved} closed`}>
               <div className="report-bar-pair">
                 <span className="report-bar-created" style={{ height: `${Math.max(3, entry.created / maxDaily * 112)}px` }} />
                 <span className="report-bar-resolved" style={{ height: `${Math.max(3, entry.resolved / maxDaily * 112)}px` }} />
@@ -759,7 +776,7 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
           <p className="report-footnote">Unresolved tickets enter the calculation after their target has elapsed.</p>
         </section>
         <ReportBreakdown title="Ticket status" subtitle="Current status of tickets opened in this period" rows={report.statuses.map((entry) => ({
-          label: entry.status === "in_progress" ? "In progress" : entry.status[0].toUpperCase() + entry.status.slice(1),
+          label: entry.status === "in_progress" ? "In progress" : entry.status === "resolved" ? "Closed" : entry.status[0].toUpperCase() + entry.status.slice(1),
           count: entry.count, tone: entry.status,
         }))} />
         <ReportBreakdown title="Priority mix" subtitle="Priority selected when tickets were opened" rows={report.priorities.map((entry) => ({
@@ -769,15 +786,18 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
           <div className="report-card-heading"><div><h2>Support channel</h2><p>Where tickets in this period came from</p></div><Mail size={16} /></div>
           {report.sources.map((entry) => <div className="report-source-row" key={entry.source}><span><i className={`source-icon ${entry.source}`} />{entry.source === "email" ? "Email" : "Client portal"}</span><strong>{entry.count}</strong></div>)}
         </section>
-        <section className="report-card">
-          <div className="report-card-heading"><div><h2>Agent workload</h2><p>Currently active tickets assigned to each agent</p></div><Users size={16} /></div>
-          {report.agentWorkload.length ? <div className="report-ranked-list">{report.agentWorkload.map((entry) => {
-            const maxActive = Math.max(1, ...report.agentWorkload.map((item) => item.active));
-            return <div className="report-ranked-row" key={entry.id}>
-              <span>{entry.name}</span><div className="report-rank-track"><i style={{ width: `${entry.active / maxActive * 100}%` }} /></div><strong>{entry.active}</strong>
-            </div>;
-          })}</div> : <p className="report-empty">No active agents to report.</p>}
+        <section className="report-card report-wide-card">
+          <div className="report-card-heading"><div><h2>Agent workload &amp; closures</h2><p>Current backlog, tickets assigned, and tickets closed by each agent</p></div><Users size={16} /></div>
+          {report.agentWorkload.length ? <div className="report-table-wrap"><table className="report-data-table"><thead><tr><th>Priority</th><th>Agent</th><th>Active</th><th>Assigned</th><th>Closed</th></tr></thead><tbody>
+            {report.agentWorkload.map((entry) => <tr key={entry.id}><td>{entry.routingPriority === 1 ? "Primary" : entry.routingPriority === 2 ? "Secondary" : `#${entry.routingPriority}`}</td><td>{entry.name}</td><td>{entry.active}</td><td>{entry.assignedInPeriod}</td><td>{entry.resolvedInPeriod}</td></tr>)}
+          </tbody></table></div> : <p className="report-empty">No active agents to report.</p>}
         </section>
+        {report.customerActivity.length > 0 && <section className="report-card report-wide-card">
+          <div className="report-card-heading"><div><h2>Client ticket activity</h2><p>Ticket ownership and progress by client user in this report’s scope</p></div><Users size={16} /></div>
+          <div className="report-table-wrap"><table className="report-data-table"><thead><tr><th>Company</th><th>Client user</th><th>Email</th><th>Raised</th><th>Active</th><th>In progress</th><th>Closed</th></tr></thead><tbody>
+            {report.customerActivity.map((entry) => <tr key={entry.id}><td>{entry.companyName || "—"}</td><td>{entry.name}</td><td>{entry.email}</td><td>{entry.raisedInPeriod}</td><td>{entry.active}</td><td>{entry.inProgress}</td><td>{entry.resolvedInPeriod}</td></tr>)}
+          </tbody></table></div>
+        </section>}
         {workspaceWide && <section className="report-card">
           <div className="report-card-heading"><div><h2>Company volume</h2><p>Top companies by new tickets this period</p></div><Users size={16} /></div>
           {report.companyVolume.length ? <div className="report-ranked-list">{report.companyVolume.map((entry) => {
@@ -1140,7 +1160,7 @@ function NotificationCenter({ notifications, onOpen }: {
 }
 
 function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
-  const [agents, setAgents] = useState<Array<{ id: number; name: string; email: string; isAdmin: boolean; disabledAt: string | null }>>([]);
+  const [agents, setAgents] = useState<Array<{ id: number; name: string; email: string; isAdmin: boolean; routingPriority: number; disabledAt: string | null }>>([]);
   const [invitations, setInvitations] = useState<Array<{ id: number; email: string; expiresAt: string }>>([]);
   const [sla, setSla] = useState({ firstResponseHours: 4, resolutionHours: 48 });
   const [emailStatus, setEmailStatus] = useState<{
@@ -1204,6 +1224,19 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update agent access."); }
   }
 
+  async function moveAgent(agent: typeof agents[number], offset: number) {
+    setError("");
+    setMessage("");
+    try {
+      await api(`/agents/${agent.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ routingPriority: agent.routingPriority + offset }),
+      });
+      await load();
+      setMessage(`${agent.name} moved to ${agent.routingPriority + offset === 1 ? "Primary" : agent.routingPriority + offset === 2 ? "Secondary" : `priority ${agent.routingPriority + offset}`}.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update agent routing priority."); }
+  }
+
   return <section className="feature-page admin-settings">
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />WORKSPACE ADMINISTRATION</div><h1>Settings</h1><p>Manage your support team, service targets, and mail connections.</p></div></div>
     {error && <div className="inline-error" role="alert">{error}<button onClick={() => setError("")}><X size={13} /></button></div>}
@@ -1213,8 +1246,9 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
       <div className="settings-card-heading"><div><h2>Support team</h2><p>Invite agents and control access to the workspace.</p></div><span>{agents.filter((agent) => !agent.disabledAt).length} active</span></div>
       <form className="invite-form" onSubmit={invite}><label htmlFor="invite-email">Agent email</label><div><input id="invite-email" name="email" type="email" placeholder="agent@company.com" required /><button className="button button-primary" type="submit"><Plus size={15} /> Invite agent</button></div></form>
       {invitationUrl && <p className="development-link">Development invitation link: <a href={invitationUrl}>{invitationUrl}</a></p>}
+      <p className="settings-hint">Automatic tickets follow Primary-to-secondary priority; agents with the same priority are balanced by active unresolved workload. Use the arrows to change priority.</p>
       <div className="admin-team-list">
-        {agents.map((agent) => <div className="admin-team-row" key={agent.id}><div className="avatar avatar-agent">{initials(agent.name)}</div><div className="directory-customer"><strong>{agent.name}{agent.isAdmin && <span className="admin-badge">ADMIN</span>}</strong><span>{agent.email}</span></div><span className={`team-state ${agent.disabledAt ? "team-disabled" : ""}`}>{agent.disabledAt ? "Disabled" : "Active"}</span><button className="button button-quiet" disabled={agent.isAdmin && !agent.disabledAt} onClick={() => toggleAgent(agent)}>{agent.disabledAt ? "Enable" : "Disable"}</button></div>)}
+        {agents.map((agent) => <div className="admin-team-row" key={agent.id}><div className="avatar avatar-agent">{initials(agent.name)}</div><div className="directory-customer"><strong>{agent.name}{agent.isAdmin && <span className="admin-badge">ADMIN</span>}</strong><span>{agent.email}</span></div><span className="agent-routing-priority">{agent.routingPriority === 1 ? "Primary" : agent.routingPriority === 2 ? "Secondary" : `#${agent.routingPriority}`}</span><button className="button button-quiet" aria-label={`Move ${agent.name} up in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority <= 1} onClick={() => moveAgent(agent, -1)}><ArrowUp size={13} /></button><button className="button button-quiet" aria-label={`Move ${agent.name} down in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority >= agents.filter((item) => !item.disabledAt).length} onClick={() => moveAgent(agent, 1)}><ArrowDown size={13} /></button><span className={`team-state ${agent.disabledAt ? "team-disabled" : ""}`}>{agent.disabledAt ? "Disabled" : "Active"}</span><button className="button button-quiet" disabled={agent.isAdmin && !agent.disabledAt} onClick={() => toggleAgent(agent)}>{agent.disabledAt ? "Enable" : "Disable"}</button></div>)}
       </div>
       {invitations.length > 0 && <div className="pending-invitations"><strong>Pending invitations</strong>{invitations.map((invitation) => <div key={invitation.id}><span>{invitation.email}</span><small>Expires {new Date(invitation.expiresAt).toLocaleString()}</small></div>)}</div>}
     </section>

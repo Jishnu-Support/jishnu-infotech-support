@@ -7,14 +7,14 @@ services:
     startCommand: npm start
     healthCheckPath: /api/health
     disk:
-      name: support-data
+      name: support-attachments
       mountPath: /var/data
       sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
-      - key: DATABASE_PATH
-        value: /var/data/ticketing.sqlite
+      - key: DATABASE_URL
+        sync: false
       - key: ATTACHMENTS_PATH
         value: /var/data/attachments
       - key: JWT_SECRET

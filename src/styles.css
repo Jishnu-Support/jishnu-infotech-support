@@ -315,6 +315,17 @@ h1, h2, p { margin-top: 0; }
 .admin-team-row .avatar { width: 28px; height: 28px; }
 .admin-team-row .button { height: 27px; font-size: 8px; }
 .admin-team-row .button:disabled { opacity: .5; }
+.admin-team-row .agent-routing-priority { min-width: 58px; color: #60789f; font-size: 8px; font-weight: 700; }
+.admin-team-row .button[aria-label^="Move "] { width: 27px; min-width: 27px; padding: 0; }
+.report-wide-card { grid-column: 1 / -1; }
+.report-table-wrap { width: 100%; overflow-x: auto; }
+.report-data-table { width: 100%; border-collapse: collapse; color: #627187; font-size: 9px; text-align: left; }
+.report-data-table th, .report-data-table td { padding: 9px 10px; border-bottom: 1px solid #edf0f3; white-space: nowrap; }
+.report-data-table th { color: #8491a2; font-size: 8px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; }
+.report-data-table td:first-child { color: #405067; font-weight: 600; }
+.report-data-table tbody tr:last-child td { border-bottom: 0; }
+.assignment-history { display: flex; flex-direction: column; gap: 6px; padding: 10px 16px; border-bottom: 1px solid #edf0f3; color: #8793a2; font-size: 8px; }
+.assignment-history strong { color: #4c5a6e; font-size: 9px; }
 .admin-badge { display: inline-block; margin-left: 7px; padding: 2px 4px; border-radius: 3px; color: #5573b3; background: #edf2ff; font-size: 7px; letter-spacing: .3px; vertical-align: middle; }
 .team-state { color: #478563; font-size: 8px; }
 .team-state.team-disabled { color: #a65c55; }

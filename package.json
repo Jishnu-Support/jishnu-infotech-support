@@ -8,7 +8,8 @@
     "dev:api": "node --watch server/index.js",
     "dev:web": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "db:import-sqlite": "node scripts/import-sqlite-to-postgres.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
@@ -25,6 +26,7 @@
     "mailparser": "^3.9.36",
     "multer": "^2.4.0",
     "nodemailer": "^10.0.16",
+    "pg": "^8.23.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },

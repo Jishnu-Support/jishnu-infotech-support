@@ -12,7 +12,7 @@ import { mkdirSync, unlinkSync } from "node:fs";
 import { fileTypeFromFile } from "file-type";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
-import { db } from "./db.js";
+import { db, initializeDatabase } from "./db.js";
 import { applicationUrl, emailIsConfigured, sendEmail } from "./email.js";
 
 const app = express();
@@ -83,7 +83,7 @@ function secureToken() {
   return randomBytes(32).toString("base64url");
 }
 
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const token = req.cookies.relay_session;
   if (!token) return res.status(401).json({ error: "Sign in to continue." });
   let payload;
@@ -92,7 +92,7 @@ function requireAuth(req, res, next) {
   } catch {
     return res.status(401).json({ error: "Your session has expired. Please sign in again." });
   }
-  const user = db.prepare(`
+  const user = await db.prepare(`
     SELECT u.id, u.name, u.email, u.role, u.is_admin, u.is_company_admin, u.company_id,
            u.approval_status, c.name AS company_name
     FROM users u LEFT JOIN companies c ON c.id = u.company_id
@@ -128,8 +128,8 @@ function companyIdForUser(user) {
   return user.role === "customer" ? user.company_id : null;
 }
 
-function slaConfiguration() {
-  const settings = db.prepare("SELECT key, value FROM workspace_settings WHERE key IN ('sla_first_response_hours', 'sla_resolution_hours')").all();
+async function slaConfiguration() {
+  const settings = await db.prepare("SELECT key, value FROM workspace_settings WHERE key IN ('sla_first_response_hours', 'sla_resolution_hours')").all();
   const values = Object.fromEntries(settings.map((row) => [row.key, Number(row.value)]));
   return {
     firstResponseHours: values.sla_first_response_hours || 4,
@@ -141,16 +141,46 @@ function deadlineFrom(createdAt, hours) {
   return Date.parse(`${createdAt.replace(" ", "T")}Z`) + hours * 60 * 60 * 1000;
 }
 
-function canAccessTicket(user, ticketId) {
-  if (user.role === "agent") return true;
-  if (user.is_company_admin) {
-    return Boolean(db.prepare("SELECT 1 FROM tickets WHERE id = ? AND company_id = ?").get(ticketId, user.company_id));
-  }
-  return Boolean(db.prepare("SELECT 1 FROM tickets WHERE id = ? AND customer_id = ? AND company_id = ?").get(ticketId, user.id, user.company_id));
+async function selectRoutingAgent() {
+  return await db.prepare(`
+    SELECT u.id
+    FROM users u
+    LEFT JOIN tickets t ON t.assignee_id = u.id AND t.status != 'resolved'
+    WHERE u.role = 'agent' AND u.disabled_at IS NULL
+    GROUP BY u.id
+    ORDER BY u.routing_priority, COUNT(t.id), u.id
+    LIMIT 1
+  `).get();
 }
 
-function ticketSummary(row) {
-  const sla = slaConfiguration();
+async function recordTicketAssignment(ticketId, agentId, assignedBy, source) {
+  await db.prepare(`
+    INSERT INTO ticket_assignment_history (ticket_id, agent_id, assigned_by, source)
+    VALUES (?, ?, ?, ?)
+  `).run(ticketId, agentId, assignedBy || null, source);
+}
+
+async function normalizeActiveAgentPriorities() {
+  const activeAgents = await db.prepare(`
+    SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL
+    ORDER BY routing_priority, id
+  `).all();
+  const updatePriority = db.prepare("UPDATE users SET routing_priority = ? WHERE id = ?");
+  for (const [index, agent] of activeAgents.entries()) {
+    await updatePriority.run(index + 1, agent.id);
+  }
+}
+
+async function canAccessTicket(user, ticketId) {
+  if (user.role === "agent") return true;
+  if (user.is_company_admin) {
+    return Boolean(await db.prepare("SELECT 1 FROM tickets WHERE id = ? AND company_id = ?").get(ticketId, user.company_id));
+  }
+  return Boolean(await db.prepare("SELECT 1 FROM tickets WHERE id = ? AND customer_id = ? AND company_id = ?").get(ticketId, user.id, user.company_id));
+}
+
+async function ticketSummary(row) {
+  const sla = await slaConfiguration();
   const firstResponseDueAt = new Date(deadlineFrom(row.created_at, sla.firstResponseHours)).toISOString();
   const resolutionDueAt = new Date(deadlineFrom(row.created_at, sla.resolutionHours)).toISOString();
   return {
@@ -253,12 +283,12 @@ function normalizedTicketMetadata(body, defaults = {}) {
 
 app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
 
-app.post("/api/auth/login", authLimiter, (req, res) => {
-  const email = typeof req.body.email === "string" ? req.body.email.trim() : "";
+app.post("/api/auth/login", authLimiter, async (req, res) => {
+  const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
   const password = typeof req.body.password === "string" ? req.body.password : "";
   if (!email || !password) return res.status(400).json({ error: "Enter your email and password." });
 
-  const user = db.prepare(`
+  const user = await db.prepare(`
     SELECT u.*, c.name AS company_name
     FROM users u LEFT JOIN companies c ON c.id = u.company_id
     WHERE u.email = ? COLLATE NOCASE AND u.disabled_at IS NULL
@@ -279,12 +309,12 @@ app.post("/api/auth/login", authLimiter, (req, res) => {
   res.json({ user: publicUser(user) });
 });
 
-app.get("/api/companies/available", (_req, res) => {
-  const companies = db.prepare("SELECT id, name FROM companies WHERE is_active = 1 ORDER BY name").all();
+app.get("/api/companies/available", async (_req, res) => {
+  const companies = await db.prepare("SELECT id, name FROM companies WHERE is_active = 1 ORDER BY name").all();
   res.json({ companies });
 });
 
-app.post("/api/auth/register", authLimiter, (req, res) => {
+app.post("/api/auth/register", authLimiter, async (req, res) => {
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
   const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
   const password = typeof req.body.password === "string" ? req.body.password : "";
@@ -298,7 +328,7 @@ app.post("/api/auth/register", authLimiter, (req, res) => {
   let approvalStatus = "pending";
   if (joinCode) {
     const codeHash = hashToken(joinCode.toUpperCase());
-    company = db.prepare(`
+    company = await db.prepare(`
       SELECT c.id, c.name FROM company_join_codes j
       JOIN companies c ON c.id = j.company_id
       WHERE j.code_hash = ? AND j.revoked_at IS NULL AND c.is_active = 1
@@ -307,19 +337,19 @@ app.post("/api/auth/register", authLimiter, (req, res) => {
     if (!company) return res.status(400).json({ error: "That company invitation code is invalid, expired, or revoked." });
     approvalStatus = "approved";
   } else if (Number.isInteger(requestedCompanyId) && requestedCompanyId > 0) {
-    company = db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(requestedCompanyId);
+    company = await db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(requestedCompanyId);
     if (!company) return res.status(400).json({ error: "Choose an available client company." });
   } else {
     return res.status(400).json({ error: "Choose a company or enter a company invitation code." });
   }
 
   try {
-    const id = Number(db.prepare(`
+    const id = Number((await db.prepare(`
       INSERT INTO users (name, email, password_hash, role, company_id, approval_status)
       VALUES (?, ?, ?, 'customer', ?, ?)
-    `).run(name, email, bcrypt.hashSync(password, 12), company.id, approvalStatus).lastInsertRowid);
+    `).run(name, email, bcrypt.hashSync(password, 12), company.id, approvalStatus)).lastInsertRowid);
     if (approvalStatus === "pending") {
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO notifications (user_id, ticket_id, kind, message)
         SELECT id, NULL, ?, ? FROM users
         WHERE role = 'customer' AND is_company_admin = 1 AND company_id = ? AND approval_status = 'approved'
@@ -329,7 +359,7 @@ app.post("/api/auth/register", authLimiter, (req, res) => {
         message: `Your account for ${company.name} is waiting for a company administrator to approve it.`,
       });
     }
-    const user = db.prepare(`
+    const user = await db.prepare(`
       SELECT u.id, u.name, u.email, u.role, u.is_admin, u.is_company_admin, u.company_id,
              u.approval_status, c.name AS company_name
       FROM users u JOIN companies c ON c.id = u.company_id WHERE u.id = ?
@@ -342,7 +372,7 @@ app.post("/api/auth/register", authLimiter, (req, res) => {
     });
     return res.status(201).json({ user: publicUser(user) });
   } catch (error) {
-    if (error.code === "SQLITE_CONSTRAINT_UNIQUE") return res.status(409).json({ error: "An account with this email already exists." });
+    if (error.code === "23505") return res.status(409).json({ error: "An account with this email already exists." });
     throw error;
   }
 });
@@ -356,12 +386,12 @@ app.post("/api/auth/password-reset", authLimiter, async (req, res) => {
     return res.status(503).json({ error: "Password recovery email is not configured. Ask your Jishnu Infotech administrator for help." });
   }
 
-  const user = db.prepare("SELECT id, name, email FROM users WHERE email = ? COLLATE NOCASE AND role = 'customer' AND disabled_at IS NULL").get(email);
+  const user = await db.prepare("SELECT id, name, email FROM users WHERE email = ? COLLATE NOCASE AND role = 'customer' AND disabled_at IS NULL").get(email);
   if (!user) return res.json({ message: "If a client account exists for that address, password-reset instructions have been sent." });
 
   const token = secureToken();
-  db.prepare("UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL").run(user.id);
-  db.prepare("INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)").run(
+  await db.prepare("UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL").run(user.id);
+  await db.prepare("INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)").run(
     user.id, hashToken(token), new Date(Date.now() + 30 * 60 * 1000).toISOString(),
   );
   const resetUrl = applicationUrl(`/reset-password?token=${encodeURIComponent(token)}`);
@@ -373,7 +403,7 @@ app.post("/api/auth/password-reset", authLimiter, async (req, res) => {
         text: `Hello ${user.name},\n\nUse this one-time link within 30 minutes to reset your password:\n${resetUrl}\n\nIf you did not request this, you can ignore this email.`,
       });
     } catch (error) {
-      db.prepare("UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE token_hash = ?").run(hashToken(token));
+      await db.prepare("UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE token_hash = ?").run(hashToken(token));
       console.error("Password-reset email delivery failed:", error.message);
       return res.status(503).json({ error: "Could not send the password-reset email. Please try again later." });
     }
@@ -383,30 +413,30 @@ app.post("/api/auth/password-reset", authLimiter, async (req, res) => {
   res.json({ message: "If a client account exists for that address, password-reset instructions have been sent." });
 });
 
-app.post("/api/auth/password-reset/complete", authLimiter, (req, res) => {
+app.post("/api/auth/password-reset/complete", authLimiter, async (req, res) => {
   const token = typeof req.body.token === "string" ? req.body.token : "";
   const password = typeof req.body.password === "string" ? req.body.password : "";
   if (password.length < 12 || password.length > 128) {
     return res.status(400).json({ error: "Password must be between 12 and 128 characters." });
   }
   const tokenHash = hashToken(token);
-  const reset = db.prepare(`
+  const reset = await db.prepare(`
     SELECT r.id, r.user_id FROM password_reset_tokens r
     JOIN users u ON u.id = r.user_id
     WHERE r.token_hash = ? AND r.used_at IS NULL AND datetime(r.expires_at) > CURRENT_TIMESTAMP
       AND u.role = 'customer' AND u.disabled_at IS NULL
   `).get(tokenHash);
   if (!reset) return res.status(400).json({ error: "This password-reset link is invalid or expired. Request a new one." });
-  db.transaction(() => {
-    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(bcrypt.hashSync(password, 12), reset.user_id);
-    db.prepare("UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL").run(reset.user_id);
+  await db.transaction(async () => {
+    await db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(bcrypt.hashSync(password, 12), reset.user_id);
+    await db.prepare("UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL").run(reset.user_id);
   })();
   res.json({ message: "Your password has been reset. You can now sign in." });
 });
 
-app.get("/api/auth/agent-invitations/validate", (req, res) => {
+app.get("/api/auth/agent-invitations/validate", async (req, res) => {
   const token = typeof req.query.token === "string" ? req.query.token : "";
-  const invitation = db.prepare(`
+  const invitation = await db.prepare(`
     SELECT email FROM agent_invitations
     WHERE token_hash = ? AND accepted_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP
   `).get(hashToken(token));
@@ -414,14 +444,14 @@ app.get("/api/auth/agent-invitations/validate", (req, res) => {
   res.json({ email: invitation.email });
 });
 
-app.post("/api/auth/agent-invitations/accept", (req, res) => {
+app.post("/api/auth/agent-invitations/accept", async (req, res) => {
   const token = typeof req.body.token === "string" ? req.body.token : "";
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
   const password = typeof req.body.password === "string" ? req.body.password : "";
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
   if (password.length < 12 || password.length > 128) return res.status(400).json({ error: "Password must be between 12 and 128 characters." });
   const tokenHash = hashToken(token);
-  const invitation = db.prepare(`
+  const invitation = await db.prepare(`
     SELECT id, email FROM agent_invitations
     WHERE token_hash = ? AND accepted_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP
   `).get(tokenHash);
@@ -429,21 +459,22 @@ app.post("/api/auth/agent-invitations/accept", (req, res) => {
 
   let userId;
   try {
-    const accept = db.transaction(() => {
-      const user = db.prepare("INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, 'agent')")
-        .run(name, invitation.email, bcrypt.hashSync(password, 12));
-      const accepted = db.prepare("UPDATE agent_invitations SET accepted_at = CURRENT_TIMESTAMP WHERE id = ? AND accepted_at IS NULL")
+    const accept = db.transaction(async () => {
+      const nextPriority = (await db.prepare("SELECT COALESCE(MAX(routing_priority), 0) + 1 AS priority FROM users WHERE role = 'agent' AND disabled_at IS NULL").get()).priority;
+      const user = await db.prepare("INSERT INTO users (name, email, password_hash, role, routing_priority) VALUES (?, ?, ?, 'agent', ?)")
+        .run(name, invitation.email, bcrypt.hashSync(password, 12), nextPriority);
+      const accepted = await db.prepare("UPDATE agent_invitations SET accepted_at = CURRENT_TIMESTAMP WHERE id = ? AND accepted_at IS NULL")
         .run(invitation.id);
       if (accepted.changes !== 1) throw new Error("Invitation has already been accepted.");
       return Number(user.lastInsertRowid);
     });
-    userId = accept();
+    userId = await accept();
   } catch (error) {
-    if (error.code === "SQLITE_CONSTRAINT_UNIQUE") return res.status(409).json({ error: "An account with this email already exists." });
+    if (error.code === "23505") return res.status(409).json({ error: "An account with this email already exists." });
     if (error.message === "Invitation has already been accepted.") return res.status(400).json({ error: "This invitation link has already been used." });
     throw error;
   }
-  const user = db.prepare("SELECT id, name, email, role, is_admin FROM users WHERE id = ?").get(userId);
+  const user = await db.prepare("SELECT id, name, email, role, is_admin FROM users WHERE id = ?").get(userId);
   res.cookie("relay_session", createToken(user), {
     httpOnly: true,
     secure: isProduction,
@@ -453,9 +484,9 @@ app.post("/api/auth/agent-invitations/accept", (req, res) => {
   res.status(201).json({ user: publicUser(user) });
 });
 
-app.get("/api/auth/client-invitations/validate", (req, res) => {
+app.get("/api/auth/client-invitations/validate", async (req, res) => {
   const token = typeof req.query.token === "string" ? req.query.token : "";
-  const invitation = db.prepare(`
+  const invitation = await db.prepare(`
     SELECT i.email, i.is_company_admin AS isCompanyAdmin, c.name AS companyName
     FROM client_invitations i JOIN companies c ON c.id = i.company_id
     WHERE i.token_hash = ? AND i.accepted_at IS NULL AND datetime(i.expires_at) > CURRENT_TIMESTAMP
@@ -465,14 +496,14 @@ app.get("/api/auth/client-invitations/validate", (req, res) => {
   res.json({ invitation });
 });
 
-app.post("/api/auth/client-invitations/accept", authLimiter, (req, res) => {
+app.post("/api/auth/client-invitations/accept", authLimiter, async (req, res) => {
   const token = typeof req.body.token === "string" ? req.body.token : "";
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
   const password = typeof req.body.password === "string" ? req.body.password : "";
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
   if (password.length < 12 || password.length > 128) return res.status(400).json({ error: "Password must be between 12 and 128 characters." });
   const tokenHash = hashToken(token);
-  const invitation = db.prepare(`
+  const invitation = await db.prepare(`
     SELECT i.id, i.email, i.company_id, i.is_company_admin
     FROM client_invitations i JOIN companies c ON c.id = i.company_id
     WHERE i.token_hash = ? AND i.accepted_at IS NULL AND datetime(i.expires_at) > CURRENT_TIMESTAMP
@@ -480,18 +511,18 @@ app.post("/api/auth/client-invitations/accept", authLimiter, (req, res) => {
   `).get(tokenHash);
   if (!invitation) return res.status(400).json({ error: "This company invitation is invalid or expired. Ask a company administrator for a new one." });
   try {
-    const accept = db.transaction(() => {
-      const user = db.prepare(`
+    const accept = db.transaction(async () => {
+      const user = await db.prepare(`
         INSERT INTO users (name, email, password_hash, role, company_id, is_company_admin)
         VALUES (?, ?, ?, 'customer', ?, ?)
       `).run(name, invitation.email, bcrypt.hashSync(password, 12), invitation.company_id, invitation.is_company_admin);
-      const updated = db.prepare("UPDATE client_invitations SET accepted_at = CURRENT_TIMESTAMP WHERE id = ? AND accepted_at IS NULL")
+      const updated = await db.prepare("UPDATE client_invitations SET accepted_at = CURRENT_TIMESTAMP WHERE id = ? AND accepted_at IS NULL")
         .run(invitation.id);
       if (updated.changes !== 1) throw new Error("Company invitation has already been accepted.");
       return Number(user.lastInsertRowid);
     });
-    const userId = accept();
-    const user = db.prepare(`
+    const userId = await accept();
+    const user = await db.prepare(`
       SELECT u.id, u.name, u.email, u.role, u.is_admin, u.is_company_admin, u.company_id,
              u.approval_status, c.name AS company_name
       FROM users u JOIN companies c ON c.id = u.company_id WHERE u.id = ?
@@ -504,7 +535,7 @@ app.post("/api/auth/client-invitations/accept", authLimiter, (req, res) => {
     });
     return res.status(201).json({ user: publicUser(user) });
   } catch (error) {
-    if (error.code === "SQLITE_CONSTRAINT_UNIQUE") return res.status(409).json({ error: "An account with this email already exists." });
+    if (error.code === "23505") return res.status(409).json({ error: "An account with this email already exists." });
     if (error.message === "Company invitation has already been accepted.") return res.status(400).json({ error: "This company invitation has already been used." });
     throw error;
   }
@@ -515,10 +546,10 @@ app.post("/api/agent-invitations", requireAuth, requireAdmin, async (req, res) =
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
     return res.status(400).json({ error: "Enter a valid agent email address." });
   }
-  if (db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(email)) {
+  if (await db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(email)) {
     return res.status(409).json({ error: "An account with this email already exists." });
   }
-  if (db.prepare("SELECT 1 FROM agent_invitations WHERE email = ? COLLATE NOCASE AND accepted_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP").get(email)) {
+  if (await db.prepare("SELECT 1 FROM agent_invitations WHERE email = ? COLLATE NOCASE AND accepted_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP").get(email)) {
     return res.status(409).json({ error: "A valid invitation has already been sent to this email address." });
   }
   if (isProduction && !emailIsConfigured()) {
@@ -527,7 +558,7 @@ app.post("/api/agent-invitations", requireAuth, requireAdmin, async (req, res) =
 
   const token = secureToken();
   const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO agent_invitations (email, token_hash, invited_by, expires_at)
     VALUES (?, ?, ?, ?)
   `).run(email, hashToken(token), req.user.id, expiresAt);
@@ -540,7 +571,7 @@ app.post("/api/agent-invitations", requireAuth, requireAdmin, async (req, res) =
         text: `You have been invited to join the Jishnu Infotech support team. Accept your invitation within 48 hours:\n${invitationUrl}`,
       });
     } catch (error) {
-      db.prepare("DELETE FROM agent_invitations WHERE id = ?").run(result.lastInsertRowid);
+      await db.prepare("DELETE FROM agent_invitations WHERE id = ?").run(result.lastInsertRowid);
       console.error("Agent invitation email delivery failed:", error.message);
       return res.status(503).json({ error: "Could not send the agent invitation email. Please check SMTP settings and try again." });
     }
@@ -555,8 +586,8 @@ app.post("/api/agent-invitations", requireAuth, requireAdmin, async (req, res) =
   });
 });
 
-app.get("/api/agent-invitations", requireAuth, requireAdmin, (_req, res) => {
-  const invitations = db.prepare(`
+app.get("/api/agent-invitations", requireAuth, requireAdmin, async (_req, res) => {
+  const invitations = await db.prepare(`
     SELECT i.id, i.email, i.expires_at AS expiresAt, i.accepted_at AS acceptedAt, i.created_at AS createdAt,
            u.name AS invitedBy
     FROM agent_invitations i JOIN users u ON u.id = i.invited_by
@@ -573,19 +604,19 @@ app.post("/api/auth/logout", (_req, res) => {
   res.status(204).end();
 });
 
-app.get("/api/tickets", requireAuth, (req, res) => {
+app.get("/api/tickets", requireAuth, async (req, res) => {
   const rows = req.user.role === "agent"
-    ? db.prepare(`${ticketSelect} ORDER BY
+    ? await db.prepare(`${ticketSelect} ORDER BY
         CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'waiting' THEN 2 ELSE 3 END,
         CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
         t.updated_at DESC`).all()
     : req.user.is_company_admin
-      ? db.prepare(`${ticketSelect} WHERE t.company_id = ? ORDER BY t.updated_at DESC`).all(req.user.company_id)
-      : db.prepare(`${ticketSelect} WHERE t.customer_id = ? AND t.company_id = ? ORDER BY t.updated_at DESC`).all(req.user.id, req.user.company_id);
-  res.json({ tickets: rows.map(ticketSummary) });
+      ? await db.prepare(`${ticketSelect} WHERE t.company_id = ? ORDER BY t.updated_at DESC`).all(req.user.company_id)
+      : await db.prepare(`${ticketSelect} WHERE t.customer_id = ? AND t.company_id = ? ORDER BY t.updated_at DESC`).all(req.user.id, req.user.company_id);
+  res.json({ tickets: await Promise.all(rows.map(ticketSummary)) });
 });
 
-app.get("/api/reports", requireAuth, (req, res) => {
+app.get("/api/reports", requireAuth, async (req, res) => {
   if (req.user.role !== "agent" && !req.user.is_company_admin) {
     return res.status(403).json({ error: "Reports are available to support agents and company administrators." });
   }
@@ -600,36 +631,36 @@ app.get("/api/reports", requireAuth, (req, res) => {
   const scopeParams = req.user.role === "agent" ? [] : [req.user.company_id];
   const createdRangeClause = `${scopeClause} AND created_at >= ? AND created_at < ?`;
   const createdRangeParams = [...scopeParams, startAt, endAt];
-  const activeBacklog = db.prepare(`SELECT COUNT(*) AS count FROM tickets WHERE ${scopeClause} AND status != 'resolved'`)
-    .get(...scopeParams).count;
-  const totals = db.prepare(`
+  const activeBacklog = (await db.prepare(`SELECT COUNT(*) AS count FROM tickets WHERE ${scopeClause} AND status != 'resolved'`)
+    .get(...scopeParams)).count;
+  const totals = await db.prepare(`
     SELECT COUNT(*) AS created,
            SUM(CASE WHEN status != 'resolved' THEN 1 ELSE 0 END) AS active
     FROM tickets WHERE ${createdRangeClause}
   `).get(...createdRangeParams);
-  const statusRows = db.prepare(`
+  const statusRows = await db.prepare(`
     SELECT status, COUNT(*) AS count FROM tickets
     WHERE ${createdRangeClause} GROUP BY status
   `).all(...createdRangeParams);
-  const priorityRows = db.prepare(`
+  const priorityRows = await db.prepare(`
     SELECT priority, COUNT(*) AS count FROM tickets
     WHERE ${createdRangeClause} GROUP BY priority
   `).all(...createdRangeParams);
-  const sourceRows = db.prepare(`
+  const sourceRows = await db.prepare(`
     SELECT source, COUNT(*) AS count FROM tickets
     WHERE ${createdRangeClause} GROUP BY source
   `).all(...createdRangeParams);
-  const createdByDay = db.prepare(`
+  const createdByDay = await db.prepare(`
     SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS count
     FROM tickets WHERE ${createdRangeClause} GROUP BY day
   `).all(...createdRangeParams);
-  const resolvedByDay = db.prepare(`
+  const resolvedByDay = await db.prepare(`
     SELECT substr(resolved_at, 1, 10) AS day, COUNT(*) AS count
     FROM tickets WHERE ${scopeClause} AND resolved_at >= ? AND resolved_at < ?
     GROUP BY day
   `).all(...scopeParams, startAt, endAt);
-  const sla = slaConfiguration();
-  const slaTickets = db.prepare(`
+  const sla = await slaConfiguration();
+  const slaTickets = await db.prepare(`
     SELECT created_at, first_response_at, resolved_at
     FROM tickets WHERE ${createdRangeClause}
   `).all(...createdRangeParams);
@@ -665,15 +696,42 @@ app.get("/api/reports", requireAuth, (req, res) => {
     const day = new Date(time).toISOString().slice(0, 10);
     daily.push({ day, ...(dateCounts.get(day) || { created: 0, resolved: 0 }) });
   }
-  const agentWorkload = db.prepare(`
-    SELECT u.id, u.name, COUNT(t.id) AS active
+  const agentWorkload = await db.prepare(`
+    SELECT u.id, u.name, u.routing_priority AS routingPriority,
+           COUNT(DISTINCT CASE WHEN t.status != 'resolved' THEN t.id END) AS active,
+           COUNT(DISTINCT CASE WHEN h.created_at >= ? AND h.created_at < ? THEN h.ticket_id END) AS assignedInPeriod,
+           COUNT(DISTINCT CASE WHEN t.resolved_by = u.id AND t.resolved_at >= ? AND t.resolved_at < ? THEN t.id END) AS resolvedInPeriod
     FROM users u
-    LEFT JOIN tickets t ON t.assignee_id = u.id AND t.status != 'resolved'
+    LEFT JOIN tickets t ON t.assignee_id = u.id
       AND ${req.user.role === "agent" ? "1 = 1" : "t.company_id = ?"}
+    LEFT JOIN ticket_assignment_history h ON h.agent_id = u.id
+      AND ${req.user.role === "agent" ? "1 = 1" : "EXISTS (SELECT 1 FROM tickets scoped WHERE scoped.id = h.ticket_id AND scoped.company_id = ?)"}
     WHERE u.role = 'agent' AND u.disabled_at IS NULL
-    GROUP BY u.id ORDER BY active DESC, u.name
-  `).all(...(req.user.role === "agent" ? [] : [req.user.company_id]));
-  const companyVolume = req.user.role === "agent" ? db.prepare(`
+    GROUP BY u.id ORDER BY u.routing_priority, active, u.id
+  `).all(
+    startAt, endAt, startAt, endAt,
+    ...(req.user.role === "agent" ? [] : [req.user.company_id, req.user.company_id]),
+  );
+  const customerActivity = req.user.role === "customer" || req.user.is_admin
+    ? await db.prepare(`
+        SELECT u.id, u.name, u.email, c.name AS companyName,
+               COUNT(DISTINCT CASE WHEN t.created_at >= ? AND t.created_at < ? THEN t.id END) AS raisedInPeriod,
+               COUNT(DISTINCT CASE WHEN t.status != 'resolved' THEN t.id END) AS active,
+               COUNT(DISTINCT CASE WHEN t.status = 'in_progress' THEN t.id END) AS inProgress,
+               COUNT(DISTINCT CASE WHEN t.resolved_at >= ? AND t.resolved_at < ? THEN t.id END) AS resolvedInPeriod
+        FROM users u
+        LEFT JOIN companies c ON c.id = u.company_id
+        LEFT JOIN tickets t ON t.customer_id = u.id
+          AND ${req.user.role === "agent" ? "1 = 1" : "t.company_id = ?"}
+        WHERE u.role = 'customer' AND u.approval_status = 'approved'
+          AND ${req.user.role === "agent" ? "1 = 1" : "u.company_id = ?"}
+        GROUP BY u.id, c.name ORDER BY 5 DESC, u.name
+      `).all(
+        startAt, endAt, startAt, endAt,
+        ...(req.user.role === "agent" ? [] : [req.user.company_id, req.user.company_id]),
+      )
+    : [];
+  const companyVolume = req.user.role === "agent" ? await db.prepare(`
     SELECT c.name, COUNT(t.id) AS count FROM tickets t
     JOIN companies c ON c.id = t.company_id
     WHERE t.created_at >= ? AND t.created_at < ?
@@ -701,11 +759,12 @@ app.get("/api/reports", requireAuth, (req, res) => {
     },
     agentWorkload,
     companyVolume,
+    customerActivity,
   });
 });
 
-app.get("/api/customers", requireAuth, requireAgent, (_req, res) => {
-  const customers = db.prepare(`
+app.get("/api/customers", requireAuth, requireAgent, async (_req, res) => {
+  const customers = await db.prepare(`
     SELECT u.id, u.name, u.email, u.company_id AS companyId, c.name AS companyName
     FROM users u LEFT JOIN companies c ON c.id = u.company_id
     WHERE u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL
@@ -714,36 +773,73 @@ app.get("/api/customers", requireAuth, requireAgent, (_req, res) => {
   res.json({ customers });
 });
 
-app.get("/api/agents", requireAuth, (_req, res) => {
-  const agents = db.prepare("SELECT id, name, email, is_admin AS isAdmin FROM users WHERE role = 'agent' AND disabled_at IS NULL ORDER BY name").all();
-  res.json({ agents });
+app.get("/api/agents", requireAuth, async (_req, res) => {
+  const agents = await db.prepare(`
+    SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority
+    FROM users WHERE role = 'agent' AND disabled_at IS NULL ORDER BY routing_priority, id
+  `).all();
+  res.json({ agents: agents.map((agent, index) => ({
+    ...agent,
+    priorityLabel: index === 0 ? "Primary" : index === 1 ? "Secondary" : `Agent ${index + 1}`,
+  })) });
 });
 
-app.patch("/api/agents/:id", requireAuth, requireAdmin, (req, res) => {
+app.patch("/api/agents/:id", requireAuth, requireAdmin, async (req, res) => {
   const agentId = Number(req.params.id);
   if (!Number.isInteger(agentId) || agentId < 1) return res.status(400).json({ error: "Invalid agent id." });
-  if (typeof req.body.disabled !== "boolean") return res.status(400).json({ error: "Choose whether to enable or disable the agent." });
-  const agent = db.prepare("SELECT id, is_admin, disabled_at FROM users WHERE id = ? AND role = 'agent'").get(agentId);
+  const hasDisabled = req.body.disabled !== undefined;
+  const hasRoutingPriority = req.body.routingPriority !== undefined;
+  if ((!hasDisabled && !hasRoutingPriority)
+    || (hasDisabled && typeof req.body.disabled !== "boolean")
+    || (hasRoutingPriority && (!Number.isInteger(req.body.routingPriority) || req.body.routingPriority < 1))) {
+    return res.status(400).json({ error: "Choose a valid agent access or routing-priority update." });
+  }
+  const agent = await db.prepare("SELECT id, is_admin, disabled_at, routing_priority FROM users WHERE id = ? AND role = 'agent'").get(agentId);
   if (!agent) return res.status(404).json({ error: "Agent not found." });
-  if (req.body.disabled && agentId === req.user.id) {
+  if (hasDisabled && req.body.disabled && agentId === req.user.id) {
     return res.status(400).json({ error: "You cannot disable your own account." });
   }
-  if (req.body.disabled && agent.is_admin) {
-    const adminCount = db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'agent' AND is_admin = 1 AND disabled_at IS NULL").get().count;
+  if (hasDisabled && req.body.disabled && agent.is_admin) {
+    const adminCount = (await db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'agent' AND is_admin = 1 AND disabled_at IS NULL").get()).count;
     if (adminCount <= 1) return res.status(400).json({ error: "The last active administrator cannot be disabled." });
   }
-  db.transaction(() => {
-    db.prepare("UPDATE users SET disabled_at = ? WHERE id = ?").run(req.body.disabled ? new Date().toISOString() : null, agentId);
-    if (req.body.disabled) db.prepare("UPDATE tickets SET assignee_id = NULL WHERE assignee_id = ? AND status != 'resolved'").run(agentId);
-  })();
-  res.json({ agent: db.prepare("SELECT id, name, email, is_admin AS isAdmin, disabled_at AS disabledAt FROM users WHERE id = ?").get(agentId) });
+  if (hasRoutingPriority) {
+    if (agent.disabled_at) return res.status(400).json({ error: "Enable this agent before changing their routing priority." });
+    const orderedAgents = await db.prepare(`
+      SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL
+      ORDER BY routing_priority, id
+    `).all();
+    if (req.body.routingPriority > orderedAgents.length) return res.status(400).json({ error: "Choose a priority within the active agent list." });
+    const currentIndex = orderedAgents.findIndex((entry) => entry.id === agentId);
+    orderedAgents.splice(req.body.routingPriority - 1, 0, orderedAgents.splice(currentIndex, 1)[0]);
+    const updatePriority = db.prepare("UPDATE users SET routing_priority = ? WHERE id = ?");
+    await db.transaction(async () => {
+      for (const [index, entry] of orderedAgents.entries()) {
+        await updatePriority.run(index + 1, entry.id);
+      }
+    })();
+  }
+  if (hasDisabled) {
+    await db.transaction(async () => {
+      await db.prepare("UPDATE users SET disabled_at = ? WHERE id = ?").run(req.body.disabled ? new Date().toISOString() : null, agentId);
+      if (req.body.disabled) {
+        const releasedTickets = await db.prepare("SELECT id FROM tickets WHERE assignee_id = ? AND status != 'resolved'").all(agentId);
+        await db.prepare("UPDATE tickets SET assignee_id = NULL WHERE assignee_id = ? AND status != 'resolved'").run(agentId);
+        for (const ticket of releasedTickets) {
+          await recordTicketAssignment(ticket.id, null, req.user.id, "agent_disabled");
+        }
+      }
+      await normalizeActiveAgentPriorities();
+    })();
+  }
+  res.json({ agent: await db.prepare("SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority, disabled_at AS disabledAt FROM users WHERE id = ?").get(agentId) });
 });
 
-app.get("/api/admin/sla-settings", requireAuth, requireAdmin, (_req, res) => {
-  res.json({ sla: slaConfiguration() });
+app.get("/api/admin/sla-settings", requireAuth, requireAdmin, async (_req, res) => {
+  res.json({ sla: await slaConfiguration() });
 });
 
-app.put("/api/admin/sla-settings", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/admin/sla-settings", requireAuth, requireAdmin, async (req, res) => {
   const firstResponseHours = Number(req.body.firstResponseHours);
   const resolutionHours = Number(req.body.resolutionHours);
   if (!Number.isFinite(firstResponseHours) || firstResponseHours < 0.25 || firstResponseHours > 720) {
@@ -752,16 +848,16 @@ app.put("/api/admin/sla-settings", requireAuth, requireAdmin, (req, res) => {
   if (!Number.isFinite(resolutionHours) || resolutionHours < 0.5 || resolutionHours > 2160) {
     return res.status(400).json({ error: "Resolution target must be between 0.5 and 2,160 hours." });
   }
-  db.transaction(() => {
-    db.prepare("INSERT INTO workspace_settings (key, value) VALUES ('sla_first_response_hours', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(firstResponseHours));
-    db.prepare("INSERT INTO workspace_settings (key, value) VALUES ('sla_resolution_hours', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(resolutionHours));
+  await db.transaction(async () => {
+    await db.prepare("INSERT INTO workspace_settings (key, value) VALUES ('sla_first_response_hours', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(firstResponseHours));
+    await db.prepare("INSERT INTO workspace_settings (key, value) VALUES ('sla_resolution_hours', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(resolutionHours));
   })();
-  res.json({ sla: slaConfiguration() });
+  res.json({ sla: await slaConfiguration() });
 });
 
-app.get("/api/admin/email-status", requireAuth, requireAdmin, (_req, res) => {
-  const outbox = db.prepare("SELECT status, COUNT(*) AS count FROM mail_outbox GROUP BY status").all();
-  const recentFailures = db.prepare(`
+app.get("/api/admin/email-status", requireAuth, requireAdmin, async (_req, res) => {
+  const outbox = await db.prepare("SELECT status, COUNT(*) AS count FROM mail_outbox GROUP BY status").all();
+  const recentFailures = await db.prepare(`
     SELECT recipient, last_error AS error, status, attempts, created_at AS createdAt
     FROM mail_outbox WHERE last_error IS NOT NULL
     ORDER BY created_at DESC LIMIT 5
@@ -776,12 +872,13 @@ app.get("/api/admin/email-status", requireAuth, requireAdmin, (_req, res) => {
   });
 });
 
-app.get("/api/admin/agents", requireAuth, requireAdmin, (_req, res) => {
-  const agents = db.prepare(`
-    SELECT id, name, email, is_admin AS isAdmin, disabled_at AS disabledAt
-    FROM users WHERE role = 'agent' ORDER BY disabled_at IS NOT NULL, name
+app.get("/api/admin/agents", requireAuth, requireAdmin, async (_req, res) => {
+  const agents = await db.prepare(`
+    SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority,
+           disabled_at AS disabledAt
+    FROM users WHERE role = 'agent' ORDER BY disabled_at IS NOT NULL, routing_priority, id
   `).all();
-  const invitations = db.prepare(`
+  const invitations = await db.prepare(`
     SELECT i.id, i.email, i.expires_at AS expiresAt, i.created_at AS createdAt, u.name AS invitedBy
     FROM agent_invitations i JOIN users u ON u.id = i.invited_by
     WHERE i.accepted_at IS NULL AND datetime(i.expires_at) > CURRENT_TIMESTAMP
@@ -790,8 +887,8 @@ app.get("/api/admin/agents", requireAuth, requireAdmin, (_req, res) => {
   res.json({ agents, invitations });
 });
 
-app.get("/api/admin/companies", requireAuth, requireAdmin, (_req, res) => {
-  const companies = db.prepare(`
+app.get("/api/admin/companies", requireAuth, requireAdmin, async (_req, res) => {
+  const companies = await db.prepare(`
     SELECT c.id, c.name, c.domain, c.is_active AS isActive,
            COUNT(DISTINCT u.id) AS userCount,
            COUNT(DISTINCT CASE WHEN u.approval_status = 'pending' THEN u.id END) AS pendingCount
@@ -811,7 +908,7 @@ app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => 
   if (domainInput && (!/^(?=.{1,253}$)(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(domainInput))) {
     return res.status(400).json({ error: "Enter a valid company email domain, or leave it blank." });
   }
-  if (db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(adminEmail)) {
+  if (await db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(adminEmail)) {
     return res.status(409).json({ error: "An account with this email already exists." });
   }
   if (isProduction && !emailIsConfigured()) return res.status(503).json({ error: "Company creation requires SMTP to invite its first administrator." });
@@ -822,19 +919,19 @@ app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => 
   let companyId;
   let invitationId;
   try {
-    const created = db.transaction(() => {
-      const company = db.prepare("INSERT INTO companies (name, slug, domain) VALUES (?, ?, ?)")
+    const created = db.transaction(async () => {
+      const company = await db.prepare("INSERT INTO companies (name, slug, domain) VALUES (?, ?, ?)")
         .run(name, slug, domainInput || null);
       const companyIdValue = Number(company.lastInsertRowid);
-      const invitation = db.prepare(`
+      const invitation = await db.prepare(`
         INSERT INTO client_invitations (company_id, email, is_company_admin, token_hash, invited_by, expires_at)
         VALUES (?, ?, 1, ?, ?, ?)
       `).run(companyIdValue, adminEmail, hashToken(token), req.user.id, expiresAt);
       return { companyId: companyIdValue, invitationId: Number(invitation.lastInsertRowid) };
     });
-    ({ companyId, invitationId } = created());
+    ({ companyId, invitationId } = await created());
   } catch (error) {
-    if (error.code === "SQLITE_CONSTRAINT_UNIQUE") {
+    if (error.code === "23505") {
       return res.status(409).json({ error: "A company with that name, address, or email domain already exists." });
     }
     throw error;
@@ -849,15 +946,15 @@ app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => 
       });
     }
   } catch (error) {
-    db.transaction(() => {
-      db.prepare("DELETE FROM client_invitations WHERE id = ?").run(invitationId);
-      db.prepare("DELETE FROM companies WHERE id = ?").run(companyId);
+    await db.transaction(async () => {
+      await db.prepare("DELETE FROM client_invitations WHERE id = ?").run(invitationId);
+      await db.prepare("DELETE FROM companies WHERE id = ?").run(companyId);
     })();
     console.error("Company administrator invitation email delivery failed:", error.message);
     return res.status(503).json({ error: "Could not send the company administrator invitation. Check SMTP settings and try again." });
   }
   res.status(201).json({
-    company: db.prepare("SELECT id, name, domain FROM companies WHERE id = ?").get(companyId),
+    company: await db.prepare("SELECT id, name, domain FROM companies WHERE id = ?").get(companyId),
     invitation: {
       email: adminEmail,
       emailSent: emailIsConfigured(),
@@ -867,23 +964,23 @@ app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => 
   });
 });
 
-app.get("/api/company/users", requireAuth, requireCompanyAdmin, (req, res) => {
+app.get("/api/company/users", requireAuth, requireCompanyAdmin, async (req, res) => {
   const requestedCompanyId = Number(req.query.companyId);
   const companyId = req.user.role === "agent" && req.user.is_admin ? requestedCompanyId : req.user.company_id;
   if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose a company." });
-  const company = db.prepare("SELECT id, name FROM companies WHERE id = ?").get(companyId);
+  const company = await db.prepare("SELECT id, name FROM companies WHERE id = ?").get(companyId);
   if (!company) return res.status(404).json({ error: "Company not found." });
-  const users = db.prepare(`
+  const users = await db.prepare(`
     SELECT id, name, email, is_company_admin AS isCompanyAdmin,
            approval_status AS approvalStatus, disabled_at AS disabledAt, created_at AS createdAt
     FROM users WHERE company_id = ? AND role = 'customer' ORDER BY approval_status = 'pending' DESC, name
   `).all(companyId);
-  const invitations = db.prepare(`
+  const invitations = await db.prepare(`
     SELECT id, email, is_company_admin AS isCompanyAdmin, expires_at AS expiresAt, created_at AS createdAt
     FROM client_invitations WHERE company_id = ? AND accepted_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP
     ORDER BY created_at DESC
   `).all(companyId);
-  const joinCodes = db.prepare(`
+  const joinCodes = await db.prepare(`
     SELECT id, expires_at AS expiresAt, revoked_at AS revokedAt, created_at AS createdAt
     FROM company_join_codes WHERE company_id = ? ORDER BY created_at DESC LIMIT 20
   `).all(companyId);
@@ -897,16 +994,16 @@ app.post("/api/company/invitations", requireAuth, requireCompanyAdmin, async (re
   const companyId = req.user.role === "agent" && req.user.is_admin ? requestedCompanyId : req.user.company_id;
   if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose a company." });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: "Enter a valid client email address." });
-  if (db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(email)) return res.status(409).json({ error: "An account with this email already exists." });
-  if (db.prepare("SELECT 1 FROM client_invitations WHERE email = ? COLLATE NOCASE AND accepted_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP").get(email)) {
+  if (await db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(email)) return res.status(409).json({ error: "An account with this email already exists." });
+  if (await db.prepare("SELECT 1 FROM client_invitations WHERE email = ? COLLATE NOCASE AND accepted_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP").get(email)) {
     return res.status(409).json({ error: "A valid client invitation has already been sent to this email." });
   }
   if (isProduction && !emailIsConfigured()) return res.status(503).json({ error: "Client invitations require configured outbound SMTP email." });
-  const company = db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(companyId);
+  const company = await db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(companyId);
   if (!company) return res.status(404).json({ error: "Company not found." });
   const token = secureToken();
   const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO client_invitations (company_id, email, is_company_admin, token_hash, invited_by, expires_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(companyId, email, isCompanyAdmin ? 1 : 0, hashToken(token), req.user.id, expiresAt);
@@ -918,7 +1015,7 @@ app.post("/api/company/invitations", requireAuth, requireCompanyAdmin, async (re
       text: `You have been invited to the ${company.name} client support portal. Accept within 48 hours:\n${invitationUrl}`,
     });
   } catch (error) {
-    db.prepare("DELETE FROM client_invitations WHERE id = ?").run(result.lastInsertRowid);
+    await db.prepare("DELETE FROM client_invitations WHERE id = ?").run(result.lastInsertRowid);
     console.error("Client invitation email delivery failed:", error.message);
     return res.status(503).json({ error: "Could not send the client invitation. Check SMTP settings and try again." });
   }
@@ -930,32 +1027,32 @@ app.post("/api/company/invitations", requireAuth, requireCompanyAdmin, async (re
   });
 });
 
-app.post("/api/company/join-codes", requireAuth, requireCompanyAdmin, (req, res) => {
+app.post("/api/company/join-codes", requireAuth, requireCompanyAdmin, async (req, res) => {
   const requestedCompanyId = Number(req.body.companyId);
   const companyId = req.user.role === "agent" && req.user.is_admin ? requestedCompanyId : req.user.company_id;
   if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose a company." });
-  const company = db.prepare("SELECT id FROM companies WHERE id = ? AND is_active = 1").get(companyId);
+  const company = await db.prepare("SELECT id FROM companies WHERE id = ? AND is_active = 1").get(companyId);
   if (!company) return res.status(404).json({ error: "Company not found." });
   const code = secureToken().replace(/[-_]/g, "").slice(0, 16).toUpperCase();
-  db.prepare("INSERT INTO company_join_codes (company_id, code_hash, created_by, expires_at) VALUES (?, ?, ?, ?)")
+  await db.prepare("INSERT INTO company_join_codes (company_id, code_hash, created_by, expires_at) VALUES (?, ?, ?, ?)")
     .run(companyId, hashToken(code), req.user.id, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString());
   res.status(201).json({ code, expiresInDays: 30 });
 });
 
-app.delete("/api/company/join-codes/:id", requireAuth, requireCompanyAdmin, (req, res) => {
+app.delete("/api/company/join-codes/:id", requireAuth, requireCompanyAdmin, async (req, res) => {
   const codeId = Number(req.params.id);
-  const code = db.prepare("SELECT id, company_id, revoked_at FROM company_join_codes WHERE id = ?").get(codeId);
+  const code = await db.prepare("SELECT id, company_id, revoked_at FROM company_join_codes WHERE id = ?").get(codeId);
   if (!code) return res.status(404).json({ error: "Invitation code not found." });
   if (!(req.user.role === "agent" && req.user.is_admin) && code.company_id !== req.user.company_id) {
     return res.status(404).json({ error: "Invitation code not found." });
   }
-  db.prepare("UPDATE company_join_codes SET revoked_at = CURRENT_TIMESTAMP WHERE id = ?").run(codeId);
+  await db.prepare("UPDATE company_join_codes SET revoked_at = CURRENT_TIMESTAMP WHERE id = ?").run(codeId);
   res.status(204).end();
 });
 
-app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, (req, res) => {
+app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, async (req, res) => {
   const userId = Number(req.params.id);
-  const user = db.prepare("SELECT id, company_id, is_company_admin, approval_status, disabled_at FROM users WHERE id = ? AND role = 'customer'").get(userId);
+  const user = await db.prepare("SELECT id, company_id, is_company_admin, approval_status, disabled_at FROM users WHERE id = ? AND role = 'customer'").get(userId);
   if (!user) return res.status(404).json({ error: "Client user not found." });
   const isWorkspaceAdmin = req.user.role === "agent" && req.user.is_admin;
   if (!isWorkspaceAdmin && user.company_id !== req.user.company_id) return res.status(404).json({ error: "Client user not found." });
@@ -969,7 +1066,7 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, (req, res)
   if (req.body.isCompanyAdmin !== undefined) {
     if (typeof req.body.isCompanyAdmin !== "boolean") return res.status(400).json({ error: "Company administrator setting must be true or false." });
     if (req.body.isCompanyAdmin !== Boolean(user.is_company_admin) && req.body.isCompanyAdmin === false) {
-      const adminCount = db.prepare("SELECT COUNT(*) AS count FROM users WHERE company_id = ? AND is_company_admin = 1 AND approval_status = 'approved' AND disabled_at IS NULL").get(user.company_id).count;
+      const adminCount = (await db.prepare("SELECT COUNT(*) AS count FROM users WHERE company_id = ? AND is_company_admin = 1 AND approval_status = 'approved' AND disabled_at IS NULL").get(user.company_id)).count;
       if (user.is_company_admin && adminCount <= 1) return res.status(400).json({ error: "The last active company administrator cannot be removed." });
     }
     updates.push("is_company_admin = ?");
@@ -978,7 +1075,7 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, (req, res)
   if (req.body.disabled !== undefined) {
     if (typeof req.body.disabled !== "boolean") return res.status(400).json({ error: "Disabled setting must be true or false." });
     if (req.body.disabled && user.is_company_admin) {
-      const adminCount = db.prepare("SELECT COUNT(*) AS count FROM users WHERE company_id = ? AND is_company_admin = 1 AND approval_status = 'approved' AND disabled_at IS NULL").get(user.company_id).count;
+      const adminCount = (await db.prepare("SELECT COUNT(*) AS count FROM users WHERE company_id = ? AND is_company_admin = 1 AND approval_status = 'approved' AND disabled_at IS NULL").get(user.company_id)).count;
       if (adminCount <= 1) return res.status(400).json({ error: "The last active company administrator cannot be disabled." });
     }
     updates.push("disabled_at = ?");
@@ -986,10 +1083,10 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, (req, res)
   }
   if (updates.length === 0) return res.status(400).json({ error: "Choose an account setting to update." });
   values.push(userId);
-  db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
-  db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND kind = ?")
+  await db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  await db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND kind = ?")
     .run(req.user.id, `company_join_request:${userId}`);
-  const updatedUser = db.prepare(`
+  const updatedUser = await db.prepare(`
     SELECT id, name, email, is_company_admin AS isCompanyAdmin,
            approval_status AS approvalStatus, disabled_at AS disabledAt
     FROM users WHERE id = ?
@@ -997,43 +1094,55 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, (req, res)
   res.json({ user: updatedUser });
 });
 
-app.get("/api/notifications", requireAuth, requireAgent, (req, res) => {
-  const notifications = db.prepare(`
+app.get("/api/notifications", requireAuth, requireAgent, async (req, res) => {
+  const notifications = await db.prepare(`
     SELECT id, ticket_id AS ticketId, kind, message, read_at AS readAt, created_at AS createdAt
     FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50
   `).all(req.user.id);
   res.json({ notifications, unreadCount: notifications.filter((notification) => !notification.readAt).length });
 });
 
-app.post("/api/notifications/read", requireAuth, requireAgent, (req, res) => {
+app.post("/api/notifications/read", requireAuth, requireAgent, async (req, res) => {
   const id = Number(req.body.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid notification id." });
-  db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?").run(id, req.user.id);
+  await db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?").run(id, req.user.id);
   res.status(204).end();
 });
 
-app.get("/api/tickets/:id", requireAuth, (req, res) => {
+app.get("/api/tickets/:id", requireAuth, async (req, res) => {
   const ticketId = Number(req.params.id);
   if (!Number.isInteger(ticketId) || ticketId < 1) return res.status(400).json({ error: "Invalid ticket id." });
-  if (!canAccessTicket(req.user, ticketId)) return res.status(404).json({ error: "Ticket not found." });
+  if (!await canAccessTicket(req.user, ticketId)) return res.status(404).json({ error: "Ticket not found." });
 
-  const ticket = db.prepare(`${ticketSelect} WHERE t.id = ?`).get(ticketId);
+  const ticket = await db.prepare(`${ticketSelect} WHERE t.id = ?`).get(ticketId);
   if (!ticket) return res.status(404).json({ error: "Ticket not found." });
-  const messages = db.prepare(`
+  const messages = (await db.prepare(`
     SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, u.id AS authorId, u.name AS authorName, u.role AS authorRole
     FROM messages m JOIN users u ON u.id = m.author_id
     WHERE m.ticket_id = ? AND (? = 1 OR m.is_internal = 0) ORDER BY m.id
   `).all(ticketId, req.user.role === "agent" ? 1 : 0)
-    .map((message) => ({ ...message, isInternal: Boolean(message.isInternal) }));
-  const attachments = db.prepare(`
+  ).map((message) => ({ ...message, isInternal: Boolean(message.isInternal) }));
+  const attachments = await db.prepare(`
     SELECT id, original_name AS name, mime_type AS mimeType, size_bytes AS sizeBytes,
            created_at AS createdAt, uploaded_by AS uploadedBy
     FROM ticket_attachments WHERE ticket_id = ? ORDER BY id
   `).all(ticketId);
+  const assignmentHistory = req.user.role === "agent" || req.user.is_company_admin
+    ? await db.prepare(`
+        SELECT h.id, h.source, h.created_at AS createdAt,
+               agent.id AS agentId, COALESCE(agent.name, 'Unassigned') AS agentName,
+               actor.name AS assignedByName
+        FROM ticket_assignment_history h
+        LEFT JOIN users agent ON agent.id = h.agent_id
+        LEFT JOIN users actor ON actor.id = h.assigned_by
+        WHERE h.ticket_id = ? ORDER BY h.id
+      `).all(ticketId)
+    : [];
   res.json({
-    ticket: ticketSummary(ticket),
+    ticket: await ticketSummary(ticket),
     messages,
     attachments,
+    assignmentHistory,
     categories: ticketCategories,
     canRate: req.user.role === "customer" && req.user.id === ticket.customer_id && ticket.status === "resolved",
   });
@@ -1061,14 +1170,14 @@ function discardUploadedFiles(files = []) {
   }
 }
 
-app.get("/api/tickets/:id/attachments/:attachmentId", requireAuth, (req, res) => {
+app.get("/api/tickets/:id/attachments/:attachmentId", requireAuth, async (req, res) => {
   const ticketId = Number(req.params.id);
   const attachmentId = Number(req.params.attachmentId);
   if (!Number.isInteger(ticketId) || !Number.isInteger(attachmentId) || ticketId < 1 || attachmentId < 1) {
     return res.status(400).json({ error: "Invalid ticket or attachment id." });
   }
-  if (!canAccessTicket(req.user, ticketId)) return res.status(404).json({ error: "Attachment not found." });
-  const attachment = db.prepare("SELECT storage_name, original_name, mime_type FROM ticket_attachments WHERE id = ? AND ticket_id = ?")
+  if (!await canAccessTicket(req.user, ticketId)) return res.status(404).json({ error: "Attachment not found." });
+  const attachment = await db.prepare("SELECT storage_name, original_name, mime_type FROM ticket_attachments WHERE id = ? AND ticket_id = ?")
     .get(attachmentId, ticketId);
   if (!attachment) return res.status(404).json({ error: "Attachment not found." });
   res.type(attachment.mime_type);
@@ -1077,7 +1186,7 @@ app.get("/api/tickets/:id/attachments/:attachmentId", requireAuth, (req, res) =>
   });
 });
 
-app.post("/api/tickets/:id/rating", requireAuth, (req, res) => {
+app.post("/api/tickets/:id/rating", requireAuth, async (req, res) => {
   const ticketId = Number(req.params.id);
   const rating = Number(req.body.rating);
   const comment = typeof req.body.comment === "string" ? req.body.comment.trim() : "";
@@ -1085,18 +1194,18 @@ app.post("/api/tickets/:id/rating", requireAuth, (req, res) => {
   if (req.user.role !== "customer") return res.status(403).json({ error: "Only the ticket owner can submit customer feedback." });
   if (!Number.isInteger(rating) || rating < 1 || rating > 5) return res.status(400).json({ error: "Choose a rating from 1 to 5." });
   if (comment.length > 1000) return res.status(400).json({ error: "Feedback must be 1,000 characters or fewer." });
-  const ticket = db.prepare("SELECT id, customer_id, status FROM tickets WHERE id = ? AND company_id = ?").get(ticketId, req.user.company_id);
+  const ticket = await db.prepare("SELECT id, customer_id, status FROM tickets WHERE id = ? AND company_id = ?").get(ticketId, req.user.company_id);
   if (!ticket || ticket.customer_id !== req.user.id) return res.status(404).json({ error: "Ticket not found." });
   if (ticket.status !== "resolved") return res.status(409).json({ error: "Feedback is available after this ticket is resolved." });
   try {
-    db.prepare("INSERT INTO ticket_ratings (ticket_id, customer_id, rating, comment) VALUES (?, ?, ?, ?)")
+    await db.prepare("INSERT INTO ticket_ratings (ticket_id, customer_id, rating, comment) VALUES (?, ?, ?, ?)")
       .run(ticketId, req.user.id, rating, comment);
   } catch (error) {
-    if (error.code === "SQLITE_CONSTRAINT_UNIQUE") return res.status(409).json({ error: "Feedback has already been submitted for this ticket." });
+    if (error.code === "23505") return res.status(409).json({ error: "Feedback has already been submitted for this ticket." });
     throw error;
   }
   res.status(201).json({
-    rating: db.prepare(`
+    rating: await db.prepare(`
       SELECT rating, comment, created_at AS createdAt, customer_id AS customerId
       FROM ticket_ratings WHERE ticket_id = ?
     `).get(ticketId),
@@ -1129,7 +1238,7 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
       discardUploadedFiles(req.files);
       return res.status(400).json({ error: "Choose a customer for this ticket." });
     }
-    const customer = db.prepare("SELECT id, company_id FROM users WHERE id = ? AND role = 'customer' AND approval_status = 'approved' AND disabled_at IS NULL").get(customerId);
+    const customer = await db.prepare("SELECT id, company_id FROM users WHERE id = ? AND role = 'customer' AND approval_status = 'approved' AND disabled_at IS NULL").get(customerId);
     if (!customer) {
       discardUploadedFiles(req.files);
       return res.status(400).json({ error: "Choose a valid customer." });
@@ -1141,7 +1250,7 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
     discardUploadedFiles(req.files);
     return res.status(400).json({ error: "Choose a valid support agent." });
   }
-  if (requestedAssignee !== null && !db.prepare("SELECT id FROM users WHERE id = ? AND role = 'agent' AND disabled_at IS NULL").get(requestedAssignee)) {
+  if (requestedAssignee !== null && !await db.prepare("SELECT id FROM users WHERE id = ? AND role = 'agent' AND disabled_at IS NULL").get(requestedAssignee)) {
     discardUploadedFiles(req.files);
     return res.status(400).json({ error: "Choose an active support agent." });
   }
@@ -1149,7 +1258,9 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
     ? { id: req.user.id }
     : requestedAssignee
       ? { id: requestedAssignee }
-      : db.prepare("SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL ORDER BY id LIMIT 1").get();
+      : await selectRoutingAgent();
+  const assignmentSource = req.user.role === "agent" ? "agent_created"
+    : requestedAssignee ? "client_selected" : "automatic";
   const files = req.files || [];
   const verifiedFiles = [];
   try {
@@ -1174,8 +1285,8 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
 
   let id;
   try {
-    const createTicket = db.transaction(() => {
-      const result = db.prepare(`
+    const createTicket = db.transaction(async () => {
+      const result = await db.prepare(`
         INSERT INTO tickets (subject, description, priority, category, tags_json, custom_fields_json, customer_id, company_id, assignee_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
@@ -1183,55 +1294,58 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
         JSON.stringify(metadata.customFields), customerId, companyId || null, agent?.id || null,
       );
       const ticketId = Number(result.lastInsertRowid);
-      db.prepare("INSERT INTO messages (ticket_id, author_id, body) VALUES (?, ?, ?)").run(ticketId, req.user.id, description);
+      await db.prepare("INSERT INTO messages (ticket_id, author_id, body) VALUES (?, ?, ?)").run(ticketId, req.user.id, description);
+      await recordTicketAssignment(ticketId, agent?.id, req.user.id, assignmentSource);
       const insertAttachment = db.prepare(`
         INSERT INTO ticket_attachments (ticket_id, uploaded_by, storage_name, original_name, mime_type, size_bytes)
         VALUES (?, ?, ?, ?, ?, ?)
       `);
-      verifiedFiles.forEach((file) => insertAttachment.run(ticketId, req.user.id, file.filename, file.originalName, file.mimeType, file.size));
+      for (const file of verifiedFiles) {
+        await insertAttachment.run(ticketId, req.user.id, file.filename, file.originalName, file.mimeType, file.size);
+      }
       return ticketId;
     });
-    id = createTicket();
+    id = await createTicket();
   } catch (error) {
     discardUploadedFiles(files);
     throw error;
   }
-  const ticket = db.prepare(`${ticketSelect} WHERE t.id = ?`).get(id);
-  res.status(201).json({ ticket: ticketSummary(ticket) });
+  const ticket = await db.prepare(`${ticketSelect} WHERE t.id = ?`).get(id);
+  res.status(201).json({ ticket: await ticketSummary(ticket) });
 });
 
-app.post("/api/tickets/:id/messages", requireAuth, (req, res) => {
+app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
   const ticketId = Number(req.params.id);
   const body = typeof req.body.body === "string" ? req.body.body.trim() : "";
   const isInternal = req.body.internal === true;
   if (!Number.isInteger(ticketId) || ticketId < 1) return res.status(400).json({ error: "Invalid ticket id." });
-  if (!canAccessTicket(req.user, ticketId)) return res.status(404).json({ error: "Ticket not found." });
+  if (!await canAccessTicket(req.user, ticketId)) return res.status(404).json({ error: "Ticket not found." });
   if (isInternal && req.user.role !== "agent") return res.status(403).json({ error: "Internal notes are only available to support agents." });
   if (body.length < 1 || body.length > 5000) return res.status(400).json({ error: "Reply must be between 1 and 5,000 characters." });
-  const ticket = db.prepare(`
+  const ticket = await db.prepare(`
     SELECT t.status, t.first_response_at, t.email_thread_id, t.subject, t.customer_id, c.email AS customer_email
     FROM tickets t JOIN users c ON c.id = t.customer_id WHERE t.id = ?
   `).get(ticketId);
   if (!ticket) return res.status(404).json({ error: "Ticket not found." });
 
-  const insertMessage = db.transaction(() => {
+  const insertMessage = db.transaction(async () => {
     const emailMessageId = !isInternal && req.user.role !== "customer" && emailIsConfigured()
       ? `<${randomUUID()}@${process.env.SMTP_MESSAGE_ID_DOMAIN || "support.jishnuinfotech.com"}>`
       : null;
-    const result = db.prepare("INSERT INTO messages (ticket_id, author_id, body, is_internal, email_message_id) VALUES (?, ?, ?, ?, ?)")
+    const result = await db.prepare("INSERT INTO messages (ticket_id, author_id, body, is_internal, email_message_id) VALUES (?, ?, ?, ?, ?)")
       .run(ticketId, req.user.id, body, isInternal ? 1 : 0, emailMessageId);
-    db.prepare("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticketId);
+    await db.prepare("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticketId);
     if (!isInternal && req.user.role === "customer" && ticket.status === "resolved") {
-      db.prepare("UPDATE tickets SET status = 'open', resolved_at = NULL WHERE id = ?").run(ticketId);
+      await db.prepare("UPDATE tickets SET status = 'open', resolved_at = NULL, resolved_by = NULL WHERE id = ?").run(ticketId);
     }
     if (!isInternal && req.user.role !== "customer" && !ticket.first_response_at) {
-      db.prepare("UPDATE tickets SET first_response_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticketId);
+      await db.prepare("UPDATE tickets SET first_response_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticketId);
     }
     if (emailMessageId) {
-      const previous = db.prepare("SELECT email_message_id FROM messages WHERE ticket_id = ? AND id < ? AND email_message_id IS NOT NULL ORDER BY id DESC LIMIT 1")
+      const previous = await db.prepare("SELECT email_message_id FROM messages WHERE ticket_id = ? AND id < ? AND email_message_id IS NOT NULL ORDER BY id DESC LIMIT 1")
         .get(ticketId, result.lastInsertRowid);
       const referencesHeader = [...new Set([ticket.email_thread_id, previous?.email_message_id].filter(Boolean))].join(" ");
-      db.prepare("INSERT INTO mail_outbox (recipient, subject, body, message_id, references_header) VALUES (?, ?, ?, ?, ?)")
+      await db.prepare("INSERT INTO mail_outbox (recipient, subject, body, message_id, references_header) VALUES (?, ?, ?, ?, ?)")
         .run(
           ticket.customer_email,
           `Re: ${ticket.subject}`,
@@ -1239,12 +1353,12 @@ app.post("/api/tickets/:id/messages", requireAuth, (req, res) => {
           emailMessageId,
           referencesHeader || null,
         );
-      db.prepare("UPDATE messages SET email_message_id = ? WHERE id = ?").run(emailMessageId, result.lastInsertRowid);
+      await db.prepare("UPDATE messages SET email_message_id = ? WHERE id = ?").run(emailMessageId, result.lastInsertRowid);
     }
     return result.lastInsertRowid;
   });
-  const id = insertMessage();
-  const messageRow = db.prepare(`
+  const id = await insertMessage();
+  const messageRow = await db.prepare(`
     SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, u.id AS authorId, u.name AS authorName, u.role AS authorRole
     FROM messages m JOIN users u ON u.id = m.author_id WHERE m.id = ?
   `).get(id);
@@ -1252,7 +1366,7 @@ app.post("/api/tickets/:id/messages", requireAuth, (req, res) => {
   res.status(201).json({ message, emailQueued: !isInternal && req.user.role !== "customer" && emailIsConfigured() });
 });
 
-app.patch("/api/tickets/:id", requireAuth, requireAgent, (req, res) => {
+app.patch("/api/tickets/:id", requireAuth, requireAgent, async (req, res) => {
   const ticketId = Number(req.params.id);
   const status = req.body.status;
   const priority = req.body.priority;
@@ -1267,10 +1381,10 @@ app.patch("/api/tickets/:id", requireAuth, requireAgent, (req, res) => {
   }
   if (assigneeId !== undefined && assigneeId !== null) {
     if (!Number.isInteger(assigneeId) || assigneeId < 1) return res.status(400).json({ error: "Invalid agent assignment." });
-    const agent = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'agent' AND disabled_at IS NULL").get(assigneeId);
+    const agent = await db.prepare("SELECT id FROM users WHERE id = ? AND role = 'agent' AND disabled_at IS NULL").get(assigneeId);
     if (!agent) return res.status(400).json({ error: "Choose a valid support agent." });
   }
-  const existing = db.prepare("SELECT * FROM tickets WHERE id = ?").get(ticketId);
+  const existing = await db.prepare("SELECT * FROM tickets WHERE id = ?").get(ticketId);
   if (!existing) return res.status(404).json({ error: "Ticket not found." });
   const metadata = metadataRequested ? normalizedTicketMetadata(req.body, {
     category: existing.category,
@@ -1292,13 +1406,19 @@ app.patch("/api/tickets/:id", requireAuth, requireAgent, (req, res) => {
   }
   fields.push("updated_at = CURRENT_TIMESTAMP");
   if (status === "resolved") {
-    fields.push("resolved_at = COALESCE(resolved_at, CURRENT_TIMESTAMP)");
+    fields.push("resolved_at = COALESCE(resolved_at, CURRENT_TIMESTAMP)", "resolved_by = COALESCE(resolved_by, ?)");
+    values.push(req.user.id);
   } else if (status !== undefined) {
-    fields.push("resolved_at = NULL");
+    fields.push("resolved_at = NULL", "resolved_by = NULL");
   }
   values.push(ticketId);
-  db.prepare(`UPDATE tickets SET ${fields.join(", ")} WHERE id = ?`).run(...values);
-  res.json({ ticket: ticketSummary(db.prepare(`${ticketSelect} WHERE t.id = ?`).get(ticketId)) });
+  await db.transaction(async () => {
+    await db.prepare(`UPDATE tickets SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+    if (assigneeId !== undefined && assigneeId !== existing.assignee_id) {
+      await recordTicketAssignment(ticketId, assigneeId, req.user.id, assigneeId === null ? "agent_unassigned" : "agent_reassigned");
+    }
+  })();
+  res.json({ ticket: await ticketSummary(await db.prepare(`${ticketSelect} WHERE t.id = ?`).get(ticketId)) });
 });
 
 app.use("/api", (_req, res) => res.status(404).json({ error: "API route not found." }));
@@ -1308,7 +1428,7 @@ async function flushMailOutbox() {
   if (!emailIsConfigured() || outboxRunning) return;
   outboxRunning = true;
   try {
-    const messages = db.prepare(`
+    const messages = await db.prepare(`
       SELECT id, recipient, subject, body, message_id AS messageId,
              references_header AS referencesHeader, attempts
       FROM mail_outbox
@@ -1329,10 +1449,10 @@ async function flushMailOutbox() {
             ? { References: references.join(" "), "In-Reply-To": references[references.length - 1] }
             : undefined,
         });
-        db.prepare("UPDATE mail_outbox SET status = 'sent', sent_at = CURRENT_TIMESTAMP, attempts = attempts + 1, last_error = NULL WHERE id = ?").run(message.id);
+        await db.prepare("UPDATE mail_outbox SET status = 'sent', sent_at = CURRENT_TIMESTAMP, attempts = attempts + 1, last_error = NULL WHERE id = ?").run(message.id);
       } catch (error) {
         const attempts = message.attempts + 1;
-        db.prepare(`
+        await db.prepare(`
           UPDATE mail_outbox SET attempts = ?, last_error = ?, status = ?
           WHERE id = ?
         `).run(attempts, String(error.message).slice(0, 500), attempts >= 5 ? "failed" : "pending", message.id);
@@ -1361,7 +1481,7 @@ async function pollSupportMailbox() {
     const lock = await client.getMailboxLock(mailbox);
     try {
       const uidValidity = String(client.mailbox.uidValidity);
-      const cursor = db.prepare("SELECT uid_validity, last_uid FROM email_cursors WHERE mailbox = ?").get(mailbox);
+      const cursor = await db.prepare("SELECT uid_validity, last_uid FROM email_cursors WHERE mailbox = ?").get(mailbox);
       const lastUid = cursor?.uid_validity === uidValidity ? cursor.last_uid : 0;
       const uids = await client.search({ uid: `${lastUid + 1}:*` });
       const maximumUid = uids.reduce((maximum, uid) => Math.max(maximum, uid), lastUid);
@@ -1370,12 +1490,12 @@ async function pollSupportMailbox() {
         if (!fetched?.source) continue;
         const parsed = await simpleParser(fetched.source);
         const messageId = parsed.messageId?.trim();
-        if (messageId && !db.prepare("SELECT 1 FROM messages WHERE email_message_id = ?").get(messageId)) {
+        if (messageId && !await db.prepare("SELECT 1 FROM messages WHERE email_message_id = ?").get(messageId)) {
           const sender = parsed.from?.value?.[0]?.address?.trim().toLowerCase();
           const subject = (parsed.subject || "Email support request").replace(/^\s*(re|fw|fwd)\s*:\s*/i, "").trim().slice(0, 160) || "Email support request";
           const body = (parsed.text || parsed.html?.replace(/<[^>]*>/g, " ") || "").trim().slice(0, 5000);
           if (sender && body) {
-            let senderUser = db.prepare("SELECT id, role, email, company_id AS companyId, approval_status AS approvalStatus FROM users WHERE email = ? COLLATE NOCASE").get(sender);
+            let senderUser = await db.prepare("SELECT id, role, email, company_id AS companyId, approval_status AS approvalStatus FROM users WHERE email = ? COLLATE NOCASE").get(sender);
             if (senderUser?.role === "agent") {
               await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
             } else if (senderUser && senderUser.approvalStatus !== "approved") {
@@ -1384,8 +1504,8 @@ async function pollSupportMailbox() {
             } else {
               const senderDomain = sender.split("@")[1];
               const senderCompany = senderUser
-                ? db.prepare("SELECT id FROM companies WHERE id = ? AND is_active = 1").get(senderUser.companyId)
-                : db.prepare("SELECT id FROM companies WHERE domain = ? COLLATE NOCASE AND is_active = 1").get(senderDomain);
+                ? await db.prepare("SELECT id FROM companies WHERE id = ? AND is_active = 1").get(senderUser.companyId)
+                : await db.prepare("SELECT id FROM companies WHERE domain = ? COLLATE NOCASE AND is_active = 1").get(senderDomain);
               if (!senderCompany) {
                 console.warn(`Inbound email from ${sender} has no active client company mapping; configure the company's verified email domain.`);
                 await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
@@ -1396,7 +1516,7 @@ async function pollSupportMailbox() {
                 ...(parsed.inReplyTo ? [parsed.inReplyTo] : []),
               ].filter(Boolean);
               const referencedTicket = references.length
-                ? db.prepare(`
+                ? await db.prepare(`
                     SELECT t.id FROM tickets t
                     LEFT JOIN messages m ON m.ticket_id = t.id
                     WHERE t.email_thread_id IN (${references.map(() => "?").join(",")})
@@ -1405,40 +1525,43 @@ async function pollSupportMailbox() {
                   `).get(...references, ...references)
                 : null;
 
-              const inboundId = senderUser?.id || Number(db.prepare(
+              const inboundId = senderUser?.id || Number((await db.prepare(
                 "INSERT INTO users (name, email, password_hash, role, company_id, approval_status) VALUES (?, ?, ?, 'customer', ?, 'approved')",
-              ).run(parsed.from.value[0].name?.trim().slice(0, 100) || sender, sender, bcrypt.hashSync(secureToken(), 12), senderCompany.id).lastInsertRowid);
-              const insertInbound = db.transaction(() => {
+              ).run(parsed.from.value[0].name?.trim().slice(0, 100) || sender, sender, bcrypt.hashSync(secureToken(), 12), senderCompany.id)).lastInsertRowid);
+              const insertInbound = db.transaction(async () => {
                 let ticketId = referencedTicket?.id;
                 if (!ticketId) {
-                  const assignedAgent = db.prepare("SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL ORDER BY is_admin DESC, id LIMIT 1").get();
-                  ticketId = Number(db.prepare(`
+                  const assignedAgent = await selectRoutingAgent();
+                  ticketId = Number((await db.prepare(`
                     INSERT INTO tickets (subject, description, status, priority, customer_id, company_id, assignee_id, source, email_thread_id)
                     VALUES (?, ?, 'open', 'normal', ?, ?, ?, 'email', ?)
-                  `).run(subject, body, inboundId, senderCompany.id, assignedAgent?.id || null, messageId).lastInsertRowid);
+                  `).run(subject, body, inboundId, senderCompany.id, assignedAgent?.id || null, messageId)).lastInsertRowid);
+                  await recordTicketAssignment(ticketId, assignedAgent?.id || null, null, "email_automatic");
                 }
-                db.prepare("INSERT OR IGNORE INTO messages (ticket_id, author_id, body, email_message_id) VALUES (?, ?, ?, ?)")
+                await db.prepare("INSERT OR IGNORE INTO messages (ticket_id, author_id, body, email_message_id) VALUES (?, ?, ?, ?)")
                   .run(ticketId, inboundId, body, messageId);
-                db.prepare("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticketId);
-                const ticket = db.prepare("SELECT assignee_id FROM tickets WHERE id = ?").get(ticketId);
+                await db.prepare("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticketId);
+                const ticket = await db.prepare("SELECT assignee_id FROM tickets WHERE id = ?").get(ticketId);
                 const recipients = ticket.assignee_id
                   ? [ticket.assignee_id]
-                  : db.prepare("SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL").all().map((agent) => agent.id);
+                  : (await db.prepare("SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL").all()).map((agent) => agent.id);
                 const addNotification = db.prepare("INSERT OR IGNORE INTO notifications (user_id, ticket_id, kind, message) VALUES (?, ?, ?, ?)");
-                recipients.forEach((recipientId) => addNotification.run(recipientId, ticketId, `client_email_reply:${messageId}`, `New email from ${sender} on ${subject}`));
+                for (const recipientId of recipients) {
+                  await addNotification.run(recipientId, ticketId, `client_email_reply:${messageId}`, `New email from ${sender} on ${subject}`);
+                }
               });
-              insertInbound();
+              await insertInbound();
               await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
             }
           }
         }
-        db.prepare(`
+        await db.prepare(`
           INSERT INTO email_cursors (mailbox, uid_validity, last_uid, updated_at)
           VALUES (?, ?, ?, CURRENT_TIMESTAMP)
           ON CONFLICT(mailbox) DO UPDATE SET uid_validity = excluded.uid_validity, last_uid = MAX(email_cursors.last_uid, excluded.last_uid), updated_at = CURRENT_TIMESTAMP
         `).run(mailbox, uidValidity, uid);
       }
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO email_cursors (mailbox, uid_validity, last_uid, updated_at)
         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(mailbox) DO UPDATE SET uid_validity = excluded.uid_validity, last_uid = MAX(email_cursors.last_uid, excluded.last_uid), updated_at = CURRENT_TIMESTAMP
@@ -1455,10 +1578,10 @@ async function pollSupportMailbox() {
   }
 }
 
-function checkServiceLevelDeadlines() {
-  const sla = slaConfiguration();
-  const agents = db.prepare("SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL").all();
-  const tickets = db.prepare(`
+async function checkServiceLevelDeadlines() {
+  const sla = await slaConfiguration();
+  const agents = await db.prepare("SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL").all();
+  const tickets = await db.prepare(`
     SELECT id, subject, status, created_at AS createdAt, first_response_at AS firstResponseAt, assignee_id AS assigneeId
     FROM tickets WHERE status != 'resolved'
   `).all();
@@ -1473,17 +1596,19 @@ function checkServiceLevelDeadlines() {
       overdueKinds.push(["resolution_overdue", `Resolution target is overdue for #${ticket.id}: ${ticket.subject}`]);
     }
     for (const [kind, message] of overdueKinds) {
-      recipients.forEach((recipientId) => addNotification.run(recipientId, ticket.id, kind, message));
+      for (const recipientId of recipients) {
+        await addNotification.run(recipientId, ticket.id, kind, message);
+      }
     }
   }
 }
 
 let slaCheckRunning = false;
-function safeSlaCheck() {
+async function safeSlaCheck() {
   if (slaCheckRunning) return;
   slaCheckRunning = true;
   try {
-    checkServiceLevelDeadlines();
+    await checkServiceLevelDeadlines();
   } catch (error) {
     console.error("Ticket SLA check failed:", error.message);
   } finally {
@@ -1497,10 +1622,12 @@ if (isProduction) {
   app.get("/{*path}", (_req, res) => res.sendFile(resolve(webRoot, "index.html")));
 }
 
+await initializeDatabase();
+
 app.listen(port, () => {
   console.log(`Ticketing API listening on port ${port}`);
-  safeSlaCheck();
-  setInterval(safeSlaCheck, 60 * 1000);
+  void safeSlaCheck();
+  setInterval(() => { void safeSlaCheck(); }, 60 * 1000);
   if (emailIsConfigured()) {
     void flushMailOutbox();
     setInterval(() => { void flushMailOutbox(); }, 15 * 1000);
