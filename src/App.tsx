@@ -1,27 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowUp, BarChart3, Bell, Check,
-  CheckCheck, ChevronDown, CircleHelp, Clock3, Inbox, LogOut, Mail, MessageCircle,
-  Download, Paperclip, Plus, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X,
+  CheckCheck, CircleHelp, Clock3, Inbox, LogOut, Mail, MessageCircle, Building2,
+  Download, Paperclip, Plus, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 
 type Role = "agent" | "customer";
 type Status = "open" | "in_progress" | "waiting" | "resolved";
 type Priority = "low" | "normal" | "high" | "urgent";
-type TicketCategory = "Account access" | "Billing" | "Technical support" | "Feature request" | "Other";
+type TicketCategory = "Functional" | "Technical" | "Account access" | "Billing" | "Technical support" | "Feature request" | "Other";
+type ConsultantSpecialty = "functional" | "technical" | "both";
 type User = {
   id: number; name: string; email: string; role: Role; isAdmin?: boolean;
-  isCompanyAdmin?: boolean; companyId?: number | null; companyName?: string | null;
+  isCompanyAdmin?: boolean; companyId?: number | null; companyName?: string | null; companySupportValidUntil?: string | null;
 };
-type Company = { id: number; name: string; domain?: string | null };
+type Company = { id: number; name: string; domain?: string | null; supportValidUntil?: string | null };
 type Ticket = {
   id: number; subject: string; description: string; status: Status; priority: Priority;
   category: TicketCategory; tags: string[]; customFields: Record<string, string>;
   source: "portal" | "email"; createdAt: string; updatedAt: string;
-  customer: { id: number; name: string; email: string };
+  customer: { id: number; name: string; email: string; contactNumber: string | null };
   company: Company | null;
-  assignee: { id: number; name: string } | null;
+  assignee: { id: number; name: string; email: string; contactNumber: string | null } | null;
   messageCount: number; lastMessage: string;
   firstResponseDueAt: string; resolutionDueAt: string;
   firstResponseAt: string | null; isFirstResponseOverdue: boolean; isResolutionOverdue: boolean;
@@ -32,7 +33,7 @@ type TicketAttachment = { id: number; name: string; mimeType: string; sizeBytes:
 type TicketDetail = { ticket: Ticket; messages: Message[]; attachments: TicketAttachment[]; assignmentHistory: AssignmentEvent[]; categories: TicketCategory[]; canRate: boolean };
 type Customer = {
   id: number; name: string; email: string; companyId?: number; companyName?: string;
-  routingPriority?: number; priorityLabel?: string;
+  routingPriority?: number; priorityLabel?: string; specialty?: ConsultantSpecialty;
 };
 type AssignmentEvent = {
   id: number; source: string; createdAt: string; agentId: number | null;
@@ -41,7 +42,7 @@ type AssignmentEvent = {
 type Notification = { id: number; ticketId: number; kind: string; message: string; readAt: string | null; createdAt: string };
 type AnalyticsReport = {
   days: number; startDate: string; endDate: string;
-  summary: { created: number; activeInPeriod: number; activeBacklog: number };
+  summary: { created: number; activeInPeriod: number; activeBacklog: number; waiting: number };
   statuses: Array<{ status: Status; count: number }>;
   priorities: Array<{ priority: Priority; count: number }>;
   sources: Array<{ source: "portal" | "email"; count: number }>;
@@ -53,7 +54,11 @@ type AnalyticsReport = {
   agentWorkload: Array<{ id: number; name: string; routingPriority: number; active: number; assignedInPeriod: number; resolvedInPeriod: number }>;
   companyVolume: Array<{ name: string; count: number }>;
   customerActivity: Array<{ id: number; name: string; email: string; companyName: string | null; raisedInPeriod: number; active: number; inProgress: number; resolvedInPeriod: number }>;
+  scopeCompany: { id: number; name: string } | null;
 };
+type ReportTicket = { id: number; subject: string; status: Status; priority: Priority; updatedAt: string; companyId: number | null; customerId: number; consultantId: number | null; companyName: string | null; customerName: string; consultantName: string | null };
+type ReportTicketDirectory = { companies: Array<{ id: number; name: string }>; customers: Array<{ id: number; name: string; email: string; companyName: string | null }>; consultants: Array<{ id: number; name: string }> };
+type KnowledgeBaseTicket = { id: number; issue: string; description: string; reportedAt: string; solution: string; closedAt: string; solutionType: string; clientName: string; consultantName: string };
 type PortalMode = "login" | "register";
 type ApiError = { error?: string };
 type AuthFlow = "portal" | "invite" | "client-invite" | "reset";
@@ -66,7 +71,20 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers: { ...(isFormData ? {} : { "Content-Type": "application/json" }), ...options.headers },
   });
   if (response.status === 204) return undefined as T;
-  const data = await response.json() as T & ApiError;
+  const body = await response.text();
+  if (!body.trim()) {
+    throw new Error(response.ok
+      ? "The server returned an empty response. Please try again."
+      : `The server returned an empty error response (${response.status}). Please try again.`);
+  }
+  let data: T & ApiError;
+  try {
+    data = JSON.parse(body) as T & ApiError;
+  } catch {
+    throw new Error(response.ok
+      ? "The server returned an invalid response. Please try again."
+      : `The server returned an invalid error response (${response.status}). Please try again.`);
+  }
   if (!response.ok) throw new Error(data.error || "Something went wrong.");
   return data;
 }
@@ -81,6 +99,13 @@ function timeAgo(date: string) {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+function ticketUpdatedLabel(date: string) {
+  const updatedAt = new Date(date.replace(" ", "T") + "Z");
+  if (Number.isNaN(updatedAt.getTime())) return timeAgo(date);
+  if (Date.now() - updatedAt.getTime() <= 24 * 60 * 60 * 1000) return timeAgo(date);
+  return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" }).format(updatedAt);
+}
+
 function formatBytes(bytes: number) {
   return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
@@ -89,11 +114,27 @@ function initials(name: string) {
   return name.split(" ").map((part) => part[0]).slice(0, 2).join("").toUpperCase();
 }
 
+function displayClientName(name: string) {
+  return name.replace(/0$/, "");
+}
+
+function dateLabel(date: string) {
+  const [year, month, day] = date.slice(0, 10).split("-");
+  return year && month && day ? `${day}/${month}/${year}` : date;
+}
+
+function isContractExpired(date?: string | null) {
+  return Boolean(date && new Date().toISOString().slice(0, 10) > date.slice(0, 10));
+}
+
+function consultantSupportsCategory(agent: Customer, category: string) {
+  return !["Functional", "Technical"].includes(category)
+    || agent.specialty === "both"
+    || agent.specialty === category.toLowerCase();
+}
+
 function CompanyLogo({ className }: { className: string }) {
-  return <picture className={className}>
-    <source media="(max-width: 820px)" srcSet="/jishnu-infotech-favicon.webp" />
-    <img src="/jishnu-infotech-logo.webp" alt="Jishnu Infotech" />
-  </picture>;
+  return <img className={className} src="/jishnu-infotech-logo.webp" alt="Jishnu Infotech" />;
 }
 
 function StatusPill({ status }: { status: Status }) {
@@ -101,6 +142,37 @@ function StatusPill({ status }: { status: Status }) {
     open: "Open", in_progress: "In progress", waiting: "Waiting", resolved: "Closed",
   };
   return <span className={`status-pill status-${status}`}><span className="status-dot" />{labels[status]}</span>;
+}
+
+function AssignmentHistorySection({ entries }: { entries: AssignmentEvent[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const visibleEntries = expanded ? entries : entries.slice(-2);
+  return <section className="assignment-history" aria-label="Assignment history">
+    <strong>Assignment history</strong>
+    {visibleEntries.map((entry) => <span key={entry.id}>
+      {entry.agentName}{entry.assignedByName ? ` · assigned by ${entry.assignedByName}` : " · automatic assignment"} · {timeAgo(entry.createdAt)}
+    </span>)}
+    {entries.length > 2 && <button type="button" className="assignment-history-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+      {expanded ? "Show less" : `Show all ${entries.length} assignments`}
+    </button>}
+  </section>;
+}
+
+function NewTicketPopup({ ticket, onDismiss, onOpen }: { ticket: Ticket; onDismiss: () => void; onOpen: () => void }) {
+  return <div className="modal-scrim feedback-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onDismiss(); }}>
+    <section className="create-modal feedback-modal new-ticket-modal" role="dialog" aria-modal="true" aria-labelledby="new-ticket-title">
+      <div className="modal-heading">
+        <div><div className="eyebrow">NEW TICKET · #{String(ticket.id).padStart(4, "0")}</div><h2 id="new-ticket-title">A ticket has been created for you</h2></div>
+        <button type="button" className="icon-button" onClick={onDismiss} aria-label="Close ticket notice"><X size={18} /></button>
+      </div>
+      <div className="new-ticket-summary">
+        <strong>{ticket.subject}</strong>
+        <span>{ticket.category} · {ticket.priority[0].toUpperCase() + ticket.priority.slice(1)} priority · {ticket.assignee?.name || "Waiting for Consultant assignment"}</span>
+        <p>{ticket.description}</p>
+      </div>
+      <div className="modal-footer"><button type="button" className="button button-quiet" onClick={onDismiss}>Later</button><button type="button" className="button button-primary" onClick={onOpen}>View ticket <ArrowRight size={14} /></button></div>
+    </section>
+  </div>;
 }
 
 function PriorityIcon({ priority }: { priority: Priority }) {
@@ -126,7 +198,10 @@ function App() {
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [renewalPopup, setRenewalPopup] = useState(false);
+  const [newTicketCategory, setNewTicketCategory] = useState<TicketCategory | "">("");
   const [feedbackTicketId, setFeedbackTicketId] = useState<number | null>(null);
+  const [newTicketAlert, setNewTicketAlert] = useState<Ticket | null>(null);
   const [feedbackSubmittedId, setFeedbackSubmittedId] = useState<number | null>(null);
   const [dismissedFeedbackIds, setDismissedFeedbackIds] = useState<Set<number>>(() => new Set());
   const [prefillCustomerId, setPrefillCustomerId] = useState<number | null>(null);
@@ -141,18 +216,27 @@ function App() {
   const [actionMessage, setActionMessage] = useState("");
   const [replyInternal, setReplyInternal] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
+  const knownTicketIds = useRef<Set<number> | null>(null);
 
   const refreshTickets = useCallback(async () => {
     const result = await api<{ tickets: Ticket[] }>("/tickets");
+    if (user?.role === "customer") {
+      const knownIds = knownTicketIds.current;
+      if (knownIds) {
+        const newlyCreated = result.tickets.filter((ticket) => ticket.customer.id === user.id && !knownIds.has(ticket.id));
+        if (newlyCreated.length) setNewTicketAlert(newlyCreated[newlyCreated.length - 1]);
+      }
+      knownTicketIds.current = new Set(result.tickets.map((ticket) => ticket.id));
+    }
     setTickets(result.tickets);
     setSelectedId((current) => current && result.tickets.some((ticket) => ticket.id === current)
-      ? current : result.tickets[0]?.id ?? null);
-  }, []);
+      ? current : null);
+  }, [user]);
 
   useEffect(() => {
     api<{ user: User }>("/auth/me")
       .then(({ user: currentUser }) => { setUser(currentUser); return api<{ tickets: Ticket[] }>("/tickets"); })
-      .then(({ tickets: loaded }) => { setTickets(loaded); setSelectedId(loaded[0]?.id ?? null); })
+      .then(({ tickets: loaded }) => { knownTicketIds.current = new Set(loaded.map((ticket) => ticket.id)); setTickets(loaded); setSelectedId(null); })
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
   }, []);
@@ -269,12 +353,14 @@ function App() {
       });
       if (result.user.role !== portal) {
         await api("/auth/logout", { method: "POST" });
-        throw new Error(`This account is for the ${result.user.role === "agent" ? "agent" : "client"} portal. Choose the matching portal and try again.`);
+        throw new Error(`This account is for the ${result.user.role === "agent" ? "Consultant" : "client"} portal. Choose the matching portal and try again.`);
       }
       setUser(result.user);
+      setActiveView("inbox");
       const loaded = await api<{ tickets: Ticket[] }>("/tickets");
+      knownTicketIds.current = new Set(loaded.tickets.map((ticket) => ticket.id));
       setTickets(loaded.tickets);
-      setSelectedId(loaded.tickets[0]?.id ?? null);
+      setSelectedId(null);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "Unable to sign in.");
     }
@@ -290,6 +376,7 @@ function App() {
         body: JSON.stringify({
           name: form.get("name"),
           email: form.get("email"),
+          contactNumber: form.get("contactNumber"),
           password: form.get("password"),
           companyId: form.get("companyId"),
           joinCode: form.get("joinCode"),
@@ -300,6 +387,8 @@ function App() {
         setPortalMode("login");
       } else if (result.user) {
         setUser(result.user);
+        setActiveView("inbox");
+        knownTicketIds.current = new Set();
         setTickets([]);
         setSelectedId(null);
       }
@@ -311,6 +400,9 @@ function App() {
   async function signOut() {
     await api("/auth/logout", { method: "POST" });
     setUser(null);
+    setActiveView("inbox");
+    knownTicketIds.current = null;
+    setNewTicketAlert(null);
     setTickets([]);
     setSelectedId(null);
     setDetail(null);
@@ -355,13 +447,19 @@ function App() {
     try {
       const result = await api<{ ticket: Ticket }>("/tickets", { method: "POST", body: form });
       setShowCreate(false);
+      setNewTicketCategory("");
       await refreshTickets();
       setSelectedId(result.ticket.id);
       setActiveView("inbox");
       setFilter("all");
       setPrefillCustomerId(null);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Could not create ticket.");
+      if (error instanceof Error && error.message === "Please Renewal Your Support Contract") {
+        setShowCreate(false);
+        setRenewalPopup(true);
+      } else {
+        setActionError(error instanceof Error ? error.message : "Could not create ticket.");
+      }
     }
   }
 
@@ -375,9 +473,11 @@ function App() {
     onComplete={async (acceptedUser) => {
       if (acceptedUser) {
         setUser(acceptedUser);
+        setActiveView("inbox");
         const loaded = await api<{ tickets: Ticket[] }>("/tickets");
+        knownTicketIds.current = new Set(loaded.tickets.map((ticket) => ticket.id));
         setTickets(loaded.tickets);
-        setSelectedId(loaded.tickets[0]?.id ?? null);
+        setSelectedId(null);
       } else {
         window.history.replaceState({}, "", "/");
         setAuthFlow("portal");
@@ -399,9 +499,34 @@ function App() {
   />;
 
   const isAgent = user.role === "agent";
+  const isSuperAdmin = isAgent && Boolean(user.isAdmin);
   const isCompanyAdmin = user.role === "customer" && Boolean(user.isCompanyAdmin);
   const selectedTicket = detail?.ticket;
+  const canChangeAssignment = Boolean(selectedTicket && (
+    (isAgent && (isSuperAdmin || selectedTicket.assignee?.id === user.id))
+    || (!isAgent && selectedTicket.customer.id === user.id)
+  ));
   const heading = isAgent ? "Support inbox" : "My requests";
+  async function openNewTicketForm() {
+    if (!isAgent) {
+      try {
+        const result = await api<{ user: User }>("/auth/me");
+        setUser(result.user);
+        if (isContractExpired(result.user.companySupportValidUntil)) {
+          setRenewalPopup(true);
+          return;
+        }
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : "Could not verify your company support contract.");
+        setShowCreate(true);
+        return;
+      }
+    }
+    setPrefillCustomerId(null);
+    setNewTicketCategory("");
+    setActionError("");
+    setShowCreate(true);
+  }
 
   return (
     <div className="app-shell">
@@ -424,14 +549,17 @@ function App() {
             <button aria-label="Notifications" title="Notifications" className={`nav-item ${activeView === "notifications" ? "active" : ""}`} onClick={() => setActiveView("notifications")}>
               <Bell size={17} /><span>Notifications</span>{unreadCount > 0 && <span className="nav-count">{unreadCount}</span>}
             </button>
+            <button aria-label="Knowledge Base" title="Knowledge Base" className={`nav-item ${activeView === "knowledge" ? "active" : ""}`} onClick={() => setActiveView("knowledge")}>
+              <BookOpen size={17} /><span>Knowledge Base</span>
+            </button>
           </>}
           {isCompanyAdmin && <button aria-label="Company users" title="Company users" className={`nav-item ${activeView === "company-users" ? "active" : ""}`} onClick={() => setActiveView("company-users")}>
             <Users size={17} /><span>Company users</span>
           </button>}
-          {isAgent && user.isAdmin && <button aria-label="Companies" title="Companies" className={`nav-item ${activeView === "companies" ? "active" : ""}`} onClick={() => setActiveView("companies")}>
+          {isSuperAdmin && <button aria-label="Companies" title="Companies" className={`nav-item ${activeView === "companies" ? "active" : ""}`} onClick={() => setActiveView("companies")}>
             <Users size={17} /><span>Companies</span>
           </button>}
-          {(isAgent || isCompanyAdmin) && <button aria-label="Reports" title="Reports" className={`nav-item ${activeView === "reports" ? "active" : ""}`} onClick={() => setActiveView("reports")}>
+          {(isSuperAdmin || isCompanyAdmin) && <button aria-label="Reports" title="Reports" className={`nav-item ${activeView === "reports" ? "active" : ""}`} onClick={() => setActiveView("reports")}>
             <BarChart3 size={17} /><span>Reports</span>
           </button>}
           <div className="nav-divider" />
@@ -441,15 +569,12 @@ function App() {
               <Mail size={17} /><span>Email</span><span className="connected-dot" title="Email integration status is available in administrator settings" />
             </button>
           </>}
-          <button aria-label="Knowledge base" title="Knowledge base" className={`nav-item ${activeView === "knowledge" ? "active" : ""}`} onClick={() => setActiveView("knowledge")}>
-            <CircleHelp size={17} /><span>Knowledge base</span><span className="soon-tag">SOON</span>
-          </button>
         </nav>
         <div className="sidebar-bottom">
-          {isAgent && user.isAdmin && <button aria-label="Settings" title="Settings" className={`nav-item ${activeView === "settings" ? "active" : ""}`} onClick={() => setActiveView("settings")}><Settings2 size={17} /><span>Settings</span></button>}
+          {isSuperAdmin && <button aria-label="Settings" title="Settings" className={`nav-item ${activeView === "settings" ? "active" : ""}`} onClick={() => setActiveView("settings")}><Settings2 size={17} /><span>Settings</span></button>}
           <div className="sidebar-profile">
             <div className={`avatar ${isAgent ? "avatar-agent" : ""}`}>{initials(user.name)}</div>
-            <div className="profile-copy"><strong>{user.name}</strong><span>{isAgent ? "Support agent" : user.companyName || "Client"}{isCompanyAdmin ? " · Admin" : ""}</span></div>
+            <div className="profile-copy"><strong>{isAgent ? user.name : displayClientName(user.name)}</strong><span>{isAgent ? (user.isAdmin ? "Super Admin" : "Consultant") : user.companyName || "Client"}{isCompanyAdmin ? " · Company Admin" : ""}</span></div>
             <button className="icon-button profile-menu" onClick={signOut} title="Sign out"><LogOut size={16} /></button>
           </div>
         </div>
@@ -457,7 +582,7 @@ function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" ? heading : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
+          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
           <div className="topbar-actions">
             <div className="search-box"><Search size={15} /><input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tickets…" /><kbd>Ctrl K</kbd></div>
             <div className="topbar-avatar">{initials(user.name)}</div>
@@ -473,7 +598,7 @@ function App() {
                   <h1>{activeView === "assigned" ? "Assigned to me" : heading}</h1>
                   <p>{isAgent ? "Stay on top of every customer conversation." : "Track your support conversations in one place."}</p>
                 </div>
-                <button className="button button-primary" onClick={() => { setPrefillCustomerId(null); setActionError(""); setShowCreate(true); }}><Plus size={16} /> New ticket</button>
+                <button className="button button-primary" onClick={openNewTicketForm}><Plus size={16} /> New ticket</button>
               </div>
 
               {isAgent && <div className="metrics-row">
@@ -502,7 +627,7 @@ function App() {
                   <button key={ticket.id} className={`ticket-row ${selectedId === ticket.id ? "selected" : ""}`} onClick={() => setSelectedId(ticket.id)}>
                     <div className="ticket-row-top">
                       <span className="ticket-number">#{String(ticket.id).padStart(4, "0")}</span>
-                      <span className="ticket-time">{timeAgo(ticket.updatedAt)}</span>
+                      <span className="ticket-time">{ticketUpdatedLabel(ticket.updatedAt)}</span>
                     </div>
                     <div className="ticket-subject">{ticket.subject}</div>
                     <div className="ticket-row-taxonomy"><span>{ticket.category}</span>{ticket.tags.slice(0, 2).map((tag) => <span className="ticket-tag" key={tag}>{tag}</span>)}</div>
@@ -510,7 +635,7 @@ function App() {
                     <div className="ticket-row-bottom">
                       <div className="ticket-person">
                         <span className={`tiny-avatar ${ticket.source === "email" ? "email-avatar" : ""}`}>{initials(ticket.customer.name)}</span>
-                        <span>{ticket.customer.name}</span>
+                        <span>{displayClientName(ticket.customer.name)}</span>
                       </div>
                       <div className="ticket-row-meta"><PriorityIcon priority={ticket.priority} /><StatusPill status={ticket.status} /></div>
                     </div>
@@ -526,6 +651,7 @@ function App() {
                   <div className="detail-title-wrap"><span className="ticket-number">#{String(selectedTicket.id).padStart(4, "0")}</span><h2>{selectedTicket.subject}</h2></div>
                   <div className="detail-actions"><button className="icon-button" aria-label="Close ticket detail" onClick={() => setSelectedId(null)}><X size={18} /></button></div>
                 </div>
+                <div className="detail-scroll-area">
                 <div className="detail-statusbar">
                   <StatusPill status={selectedTicket.status} />
                   <span className="detail-status-separator" />
@@ -540,20 +666,17 @@ function App() {
                   </div>}
                 </div>
                 <div className="detail-info">
-                  <div className="detail-person"><div className="avatar customer-avatar">{initials(selectedTicket.customer.name)}</div><div><strong>{selectedTicket.customer.name}</strong><span>{selectedTicket.customer.email}</span></div></div>
+                  {isAgent
+                    ? <div className="detail-person"><div className="avatar customer-avatar">{initials(selectedTicket.customer.name)}</div><div><strong>Client · {displayClientName(selectedTicket.customer.name)}</strong><span>{selectedTicket.customer.email}</span><span className="detail-contact-number">Contact: {selectedTicket.customer.contactNumber || "Unavailable"}</span></div></div>
+                    : selectedTicket.assignee
+                      ? <div className="detail-person"><div className="avatar avatar-agent">{initials(selectedTicket.assignee.name)}</div><div><strong>Consultant · {selectedTicket.assignee.name}</strong><span>{selectedTicket.assignee.email}</span><span className="detail-contact-number">Contact: {selectedTicket.assignee.contactNumber || "Unavailable"}</span></div></div>
+                      : <div className="detail-person"><div className="avatar avatar-agent"><UserRound size={14} /></div><div><strong>Consultant</strong><span>Not assigned yet</span></div></div>}
                   <div className="detail-info-item"><span>Created</span><strong>{timeAgo(selectedTicket.createdAt)}</strong></div>
                   {selectedTicket.company && <div className="detail-info-item"><span>Company</span><strong>{selectedTicket.company.name}</strong></div>}
                   <div className="detail-info-item"><span>Source</span><strong><span className={`source-icon ${selectedTicket.source}`} />{selectedTicket.source === "email" ? "Email" : "Portal"}</strong></div>
-                  {isAgent ? <label className="detail-assignee"><div className="assignee-avatar">{selectedTicket.assignee ? initials(selectedTicket.assignee.name) : <UserRound size={14} />}</div><select aria-label="Assign ticket to agent" value={selectedTicket.assignee?.id ?? ""} onChange={(event) => updateTicket({ assigneeId: event.target.value ? Number(event.target.value) : null })}><option value="">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.priorityLabel} · {agent.name}</option>)}</select><ChevronDown size={13} /></label>
+                  {canChangeAssignment ? <label className="detail-assignee"><div className="assignee-avatar">{selectedTicket.assignee ? initials(selectedTicket.assignee.name) : <UserRound size={14} />}</div><select aria-label="Assign ticket to consultant" value={selectedTicket.assignee?.id ?? ""} onChange={(event) => updateTicket({ assigneeId: event.target.value ? Number(event.target.value) : null })}><option value="">Unassigned</option>{agents.filter((agent) => consultantSupportsCategory(agent, selectedTicket.category)).map((agent) => <option key={agent.id} value={agent.id}>{agent.priorityLabel} · {agent.name}</option>)}</select></label>
                     : <div className="detail-assignee"><div className="assignee-avatar">{selectedTicket.assignee ? initials(selectedTicket.assignee.name) : <UserRound size={14} />}</div><span>{selectedTicket.assignee?.name || "Unassigned"}</span></div>}
                 </div>
-                <TicketMetadataEditor
-                  key={selectedTicket.id}
-                  ticket={selectedTicket}
-                  categories={detail?.categories || ["Account access", "Billing", "Technical support", "Feature request", "Other"]}
-                  canEdit={isAgent}
-                  onSave={(metadata) => updateTicket(metadata)}
-                />
                 {(selectedTicket.isFirstResponseOverdue || selectedTicket.isResolutionOverdue) && <div className="detail-sla detail-sla-overdue" role="status">
                   <Clock3 size={14} /><strong>SLA overdue</strong>
                   {selectedTicket.isFirstResponseOverdue && <span>First response target missed</span>}
@@ -562,19 +685,15 @@ function App() {
                 {!selectedTicket.isFirstResponseOverdue && !selectedTicket.isResolutionOverdue && selectedTicket.status !== "resolved" && <div className="detail-sla">
                   <Clock3 size={14} /><span>First response by {new Date(selectedTicket.firstResponseDueAt).toLocaleString()}</span><span>Resolve by {new Date(selectedTicket.resolutionDueAt).toLocaleString()}</span>
                 </div>}
-                {detail?.assignmentHistory.length ? <section className="assignment-history" aria-label="Assignment history">
-                  <strong>Assignment history</strong>
-                  {detail.assignmentHistory.map((entry) => <span key={entry.id}>
-                    {entry.agentName}{entry.assignedByName ? ` · assigned by ${entry.assignedByName}` : " · automatic assignment"} · {timeAgo(entry.createdAt)}
-                  </span>)}
-                </section> : null}
-                <div className="conversation-heading"><span>CONVERSATION</span><span>{detail?.messages.length ?? 0} messages</span></div>
+                {detail?.assignmentHistory.length ? <AssignmentHistorySection key={selectedTicket.id} entries={detail.assignmentHistory} /> : null}
                 {detail?.attachments.length ? <div className="attachment-list" aria-label="Ticket attachments">
+                  <strong className="attachment-heading">Attachments</strong>
                   {detail.attachments.map((attachment) => <a key={attachment.id} className="ticket-attachment" href={`/api/tickets/${selectedTicket.id}/attachments/${attachment.id}`} target="_blank" rel="noreferrer">
                     <span className="attachment-icon"><Paperclip size={14} /></span><span><strong>{attachment.name}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span><Download size={14} />
                   </a>)}
                 </div> : null}
-                {isAgent && <div className="internal-note-notice"><ShieldCheck size={13} /><span>Internal notes are visible only to support agents.</span></div>}
+                <div className="conversation-heading"><span>Conversation</span><span>{detail?.messages.length ?? 0} messages</span></div>
+                {isAgent && <div className="internal-note-notice"><ShieldCheck size={13} /><span>Internal notes are visible only to Consultants.</span></div>}
                 <div className="conversation">
                   {detail?.messages.map((message, index) => {
                     const fromAgent = message.authorRole === "agent";
@@ -587,6 +706,7 @@ function App() {
                     </article>;
                   })}
                 </div>
+                </div>
                 <div className="reply-wrap">
                   {actionError && <div className="inline-error">{actionError}<button onClick={() => setActionError("")}><X size={13} /></button></div>}
                   {actionMessage && <div className="inline-success">{actionMessage}<button onClick={() => setActionMessage("")}><X size={13} /></button></div>}
@@ -596,7 +716,7 @@ function App() {
                   </div>}
                   <form className="reply-composer" onSubmit={sendReply}>
                     <textarea name="reply" placeholder={isAgent ? (replyInternal ? "Write an internal note for the support team…" : "Write a reply to the customer…") : "Reply to this conversation…"} maxLength={5000} required />
-                    <div className="composer-footer"><span>{replyInternal ? <><ShieldCheck size={14} /> Only support agents can see this note</> : <><Sparkles size={14} /> Replies are visible to the customer</>}</span><button className="button button-primary send-button" type="submit">{replyInternal ? "Add note" : "Send reply"} <Send size={14} /></button></div>
+                    <div className="composer-footer"><span>{replyInternal ? <><ShieldCheck size={14} /> Only Consultants can see this note</> : <><Sparkles size={14} /> Replies are visible to the customer</>}</span><button className="button button-primary send-button" type="submit">{replyInternal ? "Add note" : "Send reply"} <Send size={14} /></button></div>
                   </form>
                 </div>
               </section>
@@ -605,11 +725,13 @@ function App() {
             )}
           </div>
         ) : (
-          activeView === "customers" && isAgent
+          activeView === "knowledge" && isAgent
+            ? <KnowledgeBase />
+            : activeView === "customers" && isAgent
             ? <CustomerDirectory
               customers={customers}
               tickets={tickets}
-              onCreateTicket={(customerId) => { setPrefillCustomerId(customerId); setShowCreate(true); setActionError(""); }}
+              onCreateTicket={(customerId) => { setPrefillCustomerId(customerId); setNewTicketCategory(""); setShowCreate(true); setActionError(""); }}
               onViewTickets={(customerName) => { setSearch(customerName); setActiveView("inbox"); setFilter("all"); }}
             />
             : activeView === "notifications" && isAgent
@@ -624,17 +746,17 @@ function App() {
                   setActiveView("inbox");
                 }}
               />
-              : activeView === "reports" && (isAgent || isCompanyAdmin)
-                ? <AnalyticsDashboard workspaceWide={isAgent} />
-                : activeView === "settings" && isAgent && user.isAdmin
+              : activeView === "reports" && (isSuperAdmin || isCompanyAdmin)
+                ? <AnalyticsDashboard workspaceWide={isSuperAdmin} />
+              : activeView === "settings" && isSuperAdmin
                 ? <AdminSettings onChanged={async () => {
                   await refreshTickets();
                   const result = await api<{ agents: Customer[] }>("/agents");
                   setAgents(result.agents);
                 }} />
-                : (activeView === "companies" && isAgent && user.isAdmin) || (activeView === "company-users" && isCompanyAdmin)
+              : (activeView === "companies" && isSuperAdmin) || (activeView === "company-users" && isCompanyAdmin)
                   ? <CompanyManagement
-                    workspaceAdmin={isAgent && Boolean(user.isAdmin)}
+                    workspaceAdmin={isSuperAdmin}
                     initialCompanyId={user.role === "customer" ? user.companyId || null : null}
                     onChanged={async () => {
                       await refreshTickets();
@@ -652,19 +774,25 @@ function App() {
         )}
       </main>
 
-      {showCreate && <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) { setShowCreate(false); setPrefillCustomerId(null); } }}>
+      {showCreate && <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) { setShowCreate(false); setPrefillCustomerId(null); setNewTicketCategory(""); } }}>
         <form className="create-modal" onSubmit={createTicket}>
-          <div className="modal-heading"><div><div className="eyebrow">SUPPORT REQUEST</div><h2>Create a ticket</h2></div><button type="button" className="icon-button" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); }} aria-label="Close"><X size={18} /></button></div>
+          <div className="modal-heading"><div><div className="eyebrow">SUPPORT REQUEST</div><h2>Create a ticket</h2></div><button type="button" className="icon-button" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); setNewTicketCategory(""); }} aria-label="Close"><X size={18} /></button></div>
+          <label>Category<select name="category" required value={newTicketCategory} onChange={(event) => setNewTicketCategory(event.target.value as TicketCategory | "")}><option value="" disabled>Select Functional or Technical</option><option value="Functional">Functional</option><option value="Technical">Technical</option></select></label>
           {isAgent && <label>Customer<select name="customerId" required value={prefillCustomerId ?? ""} onChange={(event) => setPrefillCustomerId(event.target.value ? Number(event.target.value) : null)}><option value="" disabled>Select a customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.companyName ? `${customer.companyName} · ` : ""}{customer.name} · {customer.email}</option>)}</select></label>}
-          {!isAgent && <label>Send to an agent (optional)<select name="assigneeId" defaultValue=""><option value="">Auto-assign by support priority</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.priorityLabel} · {agent.name}</option>)}</select><span className="form-hint">Choose a preferred agent or leave automatic assignment on. The support team’s primary-to-secondary order is used first.</span></label>}
           <label>Subject<input name="subject" required minLength={4} maxLength={160} placeholder="What do you need help with?" autoFocus /></label>
           <label>Description<textarea name="description" required minLength={10} maxLength={5000} placeholder="Share a few details so we can help…" rows={5} /></label>
-          <label>Category<select name="category" defaultValue="Other"><option>Account access</option><option>Billing</option><option>Technical support</option><option>Feature request</option><option>Other</option></select></label>
           <label>Priority<select name="priority" defaultValue="normal"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
           <label>Attachments<input name="attachments" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" /><span className="form-hint">Up to 5 PDF or image files, 10 MB each.</span></label>
           {actionError && <div className="inline-error">{actionError}</div>}
-          <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); }}>Cancel</button><button className="button button-primary" type="submit"><Plus size={15} /> Create ticket</button></div>
+          <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); setNewTicketCategory(""); }}>Cancel</button><button className="button button-primary" type="submit"><Plus size={15} /> Create ticket</button></div>
         </form>
+      </div>}
+      {renewalPopup && <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) setRenewalPopup(false); }}>
+        <section className="create-modal contract-renewal-modal" role="dialog" aria-modal="true" aria-labelledby="contract-renewal-title">
+          <div className="modal-heading"><div><div className="eyebrow">SUPPORT CONTRACT</div><h2 id="contract-renewal-title">Please Renewal Your Support Contract</h2></div><button type="button" className="icon-button" aria-label="Close" onClick={() => setRenewalPopup(false)}><X size={18} /></button></div>
+          <p>Your company’s support contract has expired. Please contact your company administrator or Jishnu Infotech to renew it before raising new tickets.</p>
+          <div className="modal-footer"><button type="button" className="button button-primary" onClick={() => setRenewalPopup(false)}>Close</button></div>
+        </section>
       </div>}
       {feedbackTicketId !== null && (() => {
         const feedbackTicket = tickets.find((ticket) => ticket.id === feedbackTicketId);
@@ -690,12 +818,30 @@ function App() {
           }}
         />;
       })()}
+      {newTicketAlert && user.role === "customer" && feedbackTicketId === null && !showCreate && <NewTicketPopup
+        ticket={newTicketAlert}
+        onDismiss={() => setNewTicketAlert(null)}
+        onOpen={() => {
+          setSelectedId(newTicketAlert.id);
+          setActiveView("inbox");
+          setFilter("all");
+          setNewTicketAlert(null);
+        }}
+      />}
     </div>
   );
 }
 
 function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
   const [days, setDays] = useState(30);
+  const [selectedCompanyId, setSelectedCompanyId] = useState("");
+  const [ticketFilters, setTicketFilters] = useState({ customerId: "", consultantId: "", dateFrom: "", dateTo: "", month: "" });
+  const [ticketDirectory, setTicketDirectory] = useState<ReportTicketDirectory>({ companies: [], customers: [], consultants: [] });
+  const [ticketRows, setTicketRows] = useState<ReportTicket[]>([]);
+  const [ticketPage, setTicketPage] = useState(1);
+  const [ticketTotal, setTicketTotal] = useState(0);
+  const [loadingTickets, setLoadingTickets] = useState(true);
+  const [ticketError, setTicketError] = useState("");
   const [report, setReport] = useState<AnalyticsReport | null>(null);
   const [loadingReport, setLoadingReport] = useState(true);
   const [error, setError] = useState("");
@@ -705,20 +851,59 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
     setLoadingReport(true);
     setError("");
     setReport(null);
-    api<AnalyticsReport>(`/reports?days=${days}`)
+    const query = new URLSearchParams({ days: String(days) });
+    if (selectedCompanyId) query.set("companyId", selectedCompanyId);
+    api<AnalyticsReport>(`/reports?${query}`)
       .then((result) => { if (active) setReport(result); })
       .catch((reason: Error) => { if (active) setError(reason.message); })
       .finally(() => { if (active) setLoadingReport(false); });
     return () => { active = false; };
-  }, [days]);
+  }, [days, selectedCompanyId]);
+
+  useEffect(() => {
+    let active = true;
+    setLoadingTickets(true);
+    setTicketError("");
+    const query = new URLSearchParams({ page: String(ticketPage) });
+    if (selectedCompanyId) query.set("companyId", selectedCompanyId);
+    for (const [key, value] of Object.entries(ticketFilters)) if (value) query.set(key, value);
+    api<{ tickets: ReportTicket[]; total: number; page: number; pageSize: number } & ReportTicketDirectory>(`/report-tickets?${query}`)
+      .then((result) => {
+        if (!active) return;
+        setTicketRows(result.tickets);
+        setTicketTotal(result.total);
+        setTicketPage(result.page);
+        setTicketDirectory({ companies: result.companies, customers: result.customers, consultants: result.consultants });
+      })
+      .catch((reason: Error) => { if (active) setTicketError(reason.message); })
+      .finally(() => { if (active) setLoadingTickets(false); });
+    return () => { active = false; };
+  }, [selectedCompanyId, ticketFilters, ticketPage]);
+
+  function updateTicketFilter(key: keyof typeof ticketFilters, value: string) {
+    setTicketPage(1);
+    setTicketFilters((current) => ({
+      ...current,
+      [key]: value,
+      ...(key === "month" && value ? { dateFrom: "", dateTo: "" } : {}),
+      ...((key === "dateFrom" || key === "dateTo") && value ? { month: "" } : {}),
+    }));
+  }
+
+  function resetTicketFilters() {
+    setSelectedCompanyId("");
+    setTicketFilters({ customerId: "", consultantId: "", dateFrom: "", dateTo: "", month: "" });
+    setTicketPage(1);
+  }
 
   function exportReport() {
     if (!report) return;
     const rows: Array<Array<string | number>> = [
       ["Jishnu Infotech Support Report", `${report.startDate} to ${report.endDate}`],
-      ["Scope", workspaceWide ? "All client companies" : "Your company"],
+      ["Scope", workspaceWide ? report.scopeCompany?.name || "All client companies" : "Your company"],
       ["Tickets created", report.summary.created],
-      ["Active backlog", report.summary.activeBacklog],
+      ["Active", report.summary.activeBacklog],
+      ["Waiting", report.summary.waiting],
       ["Active tickets created in period", report.summary.activeInPeriod],
       ["First response SLA on time", `${report.sla.firstResponse.onTime}/${report.sla.firstResponse.evaluated}`],
       ["Resolution SLA on time", `${report.sla.resolution.onTime}/${report.sla.resolution.evaluated}`],
@@ -735,12 +920,15 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
       ["Channel", "Tickets created in period"],
       ...report.sources.map((entry) => [entry.source, entry.count]),
       [],
-      ["Agent", "Active assigned tickets", "Assigned in period", "Closed in period"],
+      ["Consultant", "Active assigned tickets", "Assigned in period", "Closed in period"],
       ...report.agentWorkload.map((entry) => [entry.name, entry.active, entry.assignedInPeriod, entry.resolvedInPeriod]),
       [],
       ["Company", "Client user", "Email", "Tickets raised", "Active", "In progress", "Closed in period"],
       ...report.customerActivity.map((entry) => [entry.companyName || "", entry.name, entry.email, entry.raisedInPeriod, entry.active, entry.inProgress, entry.resolvedInPeriod]),
-      ...(workspaceWide ? [[], ["Company", "Tickets created in period"], ...report.companyVolume.map((entry) => [entry.name, entry.count])] : []),
+      [],
+      ["Ticket", "Subject", "Company", "Client", "Status", "Priority", "Consultant", "Last updated"],
+      ...ticketRows.map((ticket) => [ticket.id, ticket.subject, ticket.companyName || "", ticket.customerName, ticket.status, ticket.priority, ticket.consultantName || "Unassigned", ticket.updatedAt]),
+      ...(workspaceWide && !report.scopeCompany ? [[], ["Company", "Tickets created in period"], ...report.companyVolume.map((entry) => [entry.name, entry.count])] : []),
     ];
     const csv = rows.map((row) => row.map((value) => {
       const text = String(value);
@@ -779,9 +967,9 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
     {loadingReport ? <div className="report-loading" role="status">Loading report…</div> : report && <>
       <div className="report-metric-grid">
         <ReportMetric icon={<Inbox size={16} />} label="Tickets created" value={report.summary.created} tone="blue" caption={`In the last ${report.days} days`} />
-        <ReportMetric icon={<Activity size={16} />} label="Active backlog" value={report.summary.activeBacklog} tone="amber" caption="Open across this report's scope" />
+        <ReportMetric icon={<Activity size={16} />} label="Active" value={report.summary.activeBacklog} tone="amber" caption="Open across this report's scope" />
         <ReportMetric icon={<CheckCheck size={16} />} label="Closed" value={resolvedInPeriod} tone="green" caption="Closed during this period" />
-        <ReportMetric icon={<Clock3 size={16} />} label="Still active" value={report.summary.activeInPeriod} tone="violet" caption="From tickets created in this period" />
+        <ReportMetric icon={<Clock3 size={16} />} label="Waiting" value={report.summary.waiting} tone="violet" caption="Currently waiting across this report's scope" />
       </div>
       <div className="report-grid">
         <section className="report-card report-trend-card">
@@ -810,15 +998,11 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
         <ReportBreakdown title="Priority mix" subtitle="Priority selected when tickets were opened" rows={report.priorities.map((entry) => ({
           label: entry.priority[0].toUpperCase() + entry.priority.slice(1), count: entry.count, tone: entry.priority,
         }))} />
-        <section className="report-card">
-          <div className="report-card-heading"><div><h2>Support channel</h2><p>Where tickets in this period came from</p></div><Mail size={16} /></div>
-          {report.sources.map((entry) => <div className="report-source-row" key={entry.source}><span><i className={`source-icon ${entry.source}`} />{entry.source === "email" ? "Email" : "Client portal"}</span><strong>{entry.count}</strong></div>)}
-        </section>
         <section className="report-card report-wide-card">
-          <div className="report-card-heading"><div><h2>Agent workload &amp; closures</h2><p>Current backlog, tickets assigned, and tickets closed by each agent</p></div><Users size={16} /></div>
-          {report.agentWorkload.length ? <div className="report-table-wrap"><table className="report-data-table"><thead><tr><th>Priority</th><th>Agent</th><th>Active</th><th>Assigned</th><th>Closed</th></tr></thead><tbody>
+          <div className="report-card-heading"><div><h2>Consultant workload &amp; closures</h2><p>Current backlog, tickets assigned, and tickets closed by each Consultant</p></div><Users size={16} /></div>
+          {report.agentWorkload.length ? <div className="report-table-wrap"><table className="report-data-table"><thead><tr><th>Priority</th><th>Consultant</th><th>Active</th><th>Assigned</th><th>Closed</th></tr></thead><tbody>
             {report.agentWorkload.map((entry) => <tr key={entry.id}><td>{entry.routingPriority === 1 ? "Primary" : entry.routingPriority === 2 ? "Secondary" : `#${entry.routingPriority}`}</td><td>{entry.name}</td><td>{entry.active}</td><td>{entry.assignedInPeriod}</td><td>{entry.resolvedInPeriod}</td></tr>)}
-          </tbody></table></div> : <p className="report-empty">No active agents to report.</p>}
+          </tbody></table></div> : <p className="report-empty">No active Consultants to report.</p>}
         </section>
         {report.customerActivity.length > 0 && <section className="report-card report-wide-card">
           <div className="report-card-heading"><div><h2>Client ticket activity</h2><p>Ticket ownership and progress by client user in this report’s scope</p></div><Users size={16} /></div>
@@ -826,7 +1010,7 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
             {report.customerActivity.map((entry) => <tr key={entry.id}><td>{entry.companyName || "—"}</td><td>{entry.name}</td><td>{entry.email}</td><td>{entry.raisedInPeriod}</td><td>{entry.active}</td><td>{entry.inProgress}</td><td>{entry.resolvedInPeriod}</td></tr>)}
           </tbody></table></div>
         </section>}
-        {workspaceWide && <section className="report-card">
+        {workspaceWide && !report.scopeCompany && <section className="report-card">
           <div className="report-card-heading"><div><h2>Company volume</h2><p>Top companies by new tickets this period</p></div><Users size={16} /></div>
           {report.companyVolume.length ? <div className="report-ranked-list">{report.companyVolume.map((entry) => {
             const maxCount = Math.max(1, ...report.companyVolume.map((item) => item.count));
@@ -835,6 +1019,40 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
             </div>;
           })}</div> : <p className="report-empty">No new tickets in this period.</p>}
         </section>}
+        <section className="report-card report-wide-card">
+          <div className="report-card-heading"><div><h2>Ticket details</h2><p>Filter by company, client user, Consultant, or creation date. {ticketTotal.toLocaleString()} matching tickets.</p></div><Inbox size={16} /></div>
+          <div className="report-ticket-filters">
+            {workspaceWide && <label>Company
+              <select aria-label="Filter by company" value={selectedCompanyId} onChange={(event) => { setSelectedCompanyId(event.target.value); setTicketFilters((current) => ({ ...current, customerId: "" })); setTicketPage(1); }}>
+                <option value="">All companies</option>
+                {ticketDirectory.companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}
+              </select>
+            </label>}
+            <label>Client user
+              <select aria-label="Filter by client user" value={ticketFilters.customerId} onChange={(event) => updateTicketFilter("customerId", event.target.value)}>
+                <option value="">All client users</option>
+                {ticketDirectory.customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}{customer.companyName ? ` · ${customer.companyName}` : ""}</option>)}
+              </select>
+            </label>
+            <label>Consultant
+              <select aria-label="Filter by Consultant" value={ticketFilters.consultantId} onChange={(event) => updateTicketFilter("consultantId", event.target.value)}>
+                <option value="">All Consultants</option>
+                {ticketDirectory.consultants.map((consultant) => <option key={consultant.id} value={consultant.id}>{consultant.name}</option>)}
+              </select>
+            </label>
+            <label>Created from<input aria-label="Filter created from date" type="date" value={ticketFilters.dateFrom} onChange={(event) => updateTicketFilter("dateFrom", event.target.value)} /></label>
+            <label>Created to<input aria-label="Filter created to date" type="date" value={ticketFilters.dateTo} onChange={(event) => updateTicketFilter("dateTo", event.target.value)} /></label>
+            <label>Created month<input aria-label="Filter by creation month" type="month" value={ticketFilters.month} onChange={(event) => updateTicketFilter("month", event.target.value)} /></label>
+            <button className="button button-quiet" type="button" onClick={resetTicketFilters}>Clear filters</button>
+          </div>
+          {ticketError && <div className="inline-error" role="alert">{ticketError}</div>}
+          {loadingTickets ? <p className="report-empty" role="status">Loading matching tickets…</p> : ticketRows.length ? <>
+            <div className="report-table-wrap"><table className="report-data-table"><thead><tr><th>Ticket</th><th>Company</th><th>Client</th><th>Status</th><th>Priority</th><th>Consultant</th><th>Updated</th></tr></thead><tbody>
+              {ticketRows.map((ticket) => <tr key={ticket.id}><td><strong>#{ticket.id}</strong><br />{ticket.subject}</td><td>{ticket.companyName || "—"}</td><td>{ticket.customerName}</td><td>{ticket.status === "in_progress" ? "In progress" : ticket.status === "resolved" ? "Closed" : ticket.status[0].toUpperCase() + ticket.status.slice(1)}</td><td>{ticket.priority[0].toUpperCase() + ticket.priority.slice(1)}</td><td>{ticket.consultantName || "Unassigned"}</td><td>{new Date(ticket.updatedAt).toLocaleString()}</td></tr>)}
+            </tbody></table></div>
+            <div className="report-ticket-pagination"><span>Page {ticketPage} of {Math.max(1, Math.ceil(ticketTotal / 50))}</span><div><button className="button button-quiet" type="button" disabled={ticketPage <= 1 || loadingTickets} onClick={() => setTicketPage((page) => page - 1)}>Previous</button><button className="button button-quiet" type="button" disabled={ticketPage >= Math.ceil(ticketTotal / 50) || loadingTickets} onClick={() => setTicketPage((page) => page + 1)}>Next</button></div></div>
+          </> : <p className="report-empty">No tickets match the selected filters.</p>}
+        </section>
       </div>
     </>}
   </section>;
@@ -867,80 +1085,6 @@ function ReportBreakdown({ title, subtitle, rows }: {
       <strong>{row.count}</strong>
     </div>)}
     {!total && <p className="report-empty">No tickets in this period.</p>}
-  </section>;
-}
-
-function CustomFieldsEditor({ fields, onChange }: {
-  fields: Record<string, string>;
-  onChange: (fields: Record<string, string>) => void;
-}) {
-  const entries = Object.entries(fields);
-  function updateEntry(index: number, key: string, value: string) {
-    const updated = [...entries];
-    const previous = updated[index];
-    updated[index] = [key, value];
-    const next = Object.fromEntries(updated.filter((entry) => entry[0] || entry[1]));
-    if (!key && value) next[`Field ${index + 1}`] = value;
-    if (previous[0] && previous[0] !== key) delete next[previous[0]];
-    onChange(next);
-  }
-  return <fieldset className="custom-fields-editor">
-    <legend>Custom fields (optional)</legend>
-    {entries.map(([key, value], index) => <div className="custom-field-input-row" key={`${index}-${key}`}>
-      <input aria-label={`Custom field ${index + 1} name`} value={key.startsWith("Field ") && !value ? "" : key}
-        placeholder="Field name" maxLength={40} onChange={(event) => updateEntry(index, event.target.value, value)} />
-      <input aria-label={`Custom field ${index + 1} value`} value={value} placeholder="Value" maxLength={500}
-        onChange={(event) => updateEntry(index, key, event.target.value)} />
-      <button type="button" className="icon-button" aria-label={`Remove custom field ${index + 1}`}
-        onClick={() => onChange(Object.fromEntries(entries.filter((_, itemIndex) => itemIndex !== index)))}><X size={14} /></button>
-    </div>)}
-    {entries.length < 10 && <button type="button" className="custom-field-add" onClick={() => onChange({ ...fields, [`Field ${entries.length + 1}`]: "" })}>
-      <Plus size={13} /> Add custom field
-    </button>}
-  </fieldset>;
-}
-
-function TicketMetadataEditor({ ticket, categories, canEdit, onSave }: {
-  ticket: Ticket;
-  categories: TicketCategory[];
-  canEdit: boolean;
-  onSave: (metadata: { category: TicketCategory; tags: string[]; customFields: Record<string, string> }) => Promise<void>;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [category, setCategory] = useState<TicketCategory>(ticket.category);
-  const [tags, setTags] = useState(ticket.tags.join(", "));
-  const [customFields, setCustomFields] = useState(ticket.customFields);
-  const [error, setError] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  async function save(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSaving(true);
-    setError("");
-    try {
-      await onSave({ category, tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean), customFields });
-      setEditing(false);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not update ticket details.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return <section className={`ticket-metadata ${editing ? "ticket-metadata-editing" : ""}`}>
-    <div className="ticket-metadata-heading"><strong>Details</strong>{canEdit && <button type="button" onClick={() => { setError(""); setEditing((value) => !value); }}>{editing ? "Cancel" : "Edit details"}</button>}</div>
-    {editing ? <form className="ticket-metadata-form" onSubmit={save}>
-      <label>Category<select value={category} onChange={(event) => setCategory(event.target.value as TicketCategory)}>{categories.map((item) => <option key={item}>{item}</option>)}</select></label>
-      <label>Tags<input value={tags} onChange={(event) => setTags(event.target.value)} maxLength={320} placeholder="Separate tags with commas" /></label>
-      <CustomFieldsEditor fields={customFields} onChange={setCustomFields} />
-      {error && <div className="inline-error" role="alert">{error}</div>}
-      <button className="button button-primary" type="submit" disabled={saving}>{saving ? "Saving…" : "Save details"}</button>
-    </form> : <div className="ticket-metadata-content">
-      <span className="category-chip">{ticket.category}</span>
-      {ticket.tags.map((tag) => <span className="ticket-tag" key={tag}>{tag}</span>)}
-      {Object.entries(ticket.customFields).map(([key, value]) => <span className="custom-field-value" key={key}><strong>{key}:</strong> {value}</span>)}
-      {!ticket.tags.length && !Object.keys(ticket.customFields).length && <span className="metadata-empty">No tags or custom fields</span>}
-    </div>}
   </section>;
 }
 
@@ -1005,8 +1149,9 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   const [companies, setCompanies] = useState<Array<Company & { userCount: number; pendingCount: number }>>([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(initialCompanyId);
   const [companyName, setCompanyName] = useState("");
-  const [companyDomain, setCompanyDomain] = useState("");
   const [firstAdminEmail, setFirstAdminEmail] = useState("");
+  const [newCompanySupportValidUntil, setNewCompanySupportValidUntil] = useState("");
+  const [editSupportValidUntil, setEditSupportValidUntil] = useState("");
   const [companyUsers, setCompanyUsers] = useState<CompanyUser[]>([]);
   const [invitations, setInvitations] = useState<Array<{ id: number; email: string; isCompanyAdmin: boolean; expiresAt: string }>>([]);
   const [joinCodes, setJoinCodes] = useState<JoinCode[]>([]);
@@ -1048,12 +1193,12 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     try {
       const result = await api<{ company: Company; invitation: { email: string; invitationUrl?: string } }>("/admin/companies", {
         method: "POST",
-        body: JSON.stringify({ name: companyName, domain: companyDomain, adminEmail: firstAdminEmail }),
+        body: JSON.stringify({ name: companyName, adminEmail: firstAdminEmail, supportValidUntil: newCompanySupportValidUntil }),
       });
       setSelectedCompanyId(result.company.id);
       setCompanyName("");
-      setCompanyDomain("");
       setFirstAdminEmail("");
+      setNewCompanySupportValidUntil("");
       setInvitationUrl(result.invitation.invitationUrl || "");
       setMessage(`Created ${result.company.name} and invited ${result.invitation.email} as company administrator.`);
       await loadCompanies();
@@ -1112,6 +1257,25 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   }
 
   const selectedCompany = companies.find((company) => company.id === selectedCompanyId);
+  useEffect(() => {
+    setEditSupportValidUntil(selectedCompany?.supportValidUntil?.slice(0, 10) || "");
+  }, [selectedCompany?.id, selectedCompany?.supportValidUntil]);
+
+  async function updateSupportValidUntil(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedCompanyId) return;
+    setError("");
+    setMessage("");
+    try {
+      const result = await api<{ company: Company }>(`/admin/companies/${selectedCompanyId}/support-valid-until`, {
+        method: "PATCH", body: JSON.stringify({ supportValidUntil: editSupportValidUntil }),
+      });
+      setCompanies((current) => current.map((company) => company.id === result.company.id
+        ? { ...company, supportValidUntil: result.company.supportValidUntil } : company));
+      setMessage(`Support contract validity updated for ${result.company.name}.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update support contract validity."); }
+  }
+
   return <section className="feature-page company-management">
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />{workspaceAdmin ? "JISHNU INFOTECH ADMINISTRATION" : "COMPANY ADMINISTRATION"}</div><h1>{workspaceAdmin ? "Client companies" : "Company users"}</h1><p>{workspaceAdmin ? "Create isolated client workspaces and manage their access." : `Manage users and enrollment for ${companies.find((company) => company.id === selectedCompanyId)?.name || "your company"}.`}</p></div></div>
     {error && <div className="inline-error" role="alert">{error}<button onClick={() => setError("")}><X size={13} /></button></div>}
@@ -1122,19 +1286,24 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       <div className="settings-card-heading"><div><h2>Create a client company</h2><p>Each company has isolated client accounts and tickets. Its first administrator receives an invitation.</p></div><Plus size={18} /></div>
       <form className="company-create-form" onSubmit={createCompany}>
         <label>Company name<input value={companyName} onChange={(event) => setCompanyName(event.target.value)} minLength={2} maxLength={120} required /></label>
-        <label>Company email domain (optional)<input value={companyDomain} onChange={(event) => setCompanyDomain(event.target.value)} placeholder="client.example" /><span className="form-hint">Used to match inbound email; enter only a domain you have verified with the company.</span></label>
-        <label>First company admin email<input type="email" value={firstAdminEmail} onChange={(event) => setFirstAdminEmail(event.target.value)} required /></label>
+        <label>Company admin email<input type="email" value={firstAdminEmail} onChange={(event) => setFirstAdminEmail(event.target.value)} required /></label>
+        <label>Support valid until<input type="date" value={newCompanySupportValidUntil} onChange={(event) => setNewCompanySupportValidUntil(event.target.value)} required /></label>
         <button className="button button-primary" type="submit"><Plus size={15} /> Create company</button>
       </form>
       <div className="company-list">
         {companies.map((company) => <button type="button" className={`company-select-row ${company.id === selectedCompanyId ? "selected" : ""}`} key={company.id} onClick={() => setSelectedCompanyId(company.id)}>
-          <span><strong>{company.name}</strong><small>{company.domain || "No email domain mapped"} · {company.userCount} users · {company.pendingCount} pending</small></span><ArrowRight size={15} />
+          <span><strong>{company.name}</strong><small>{company.domain || "No email domain mapped"} · {company.userCount} users · {company.pendingCount} pending · Support valid until {company.supportValidUntil ? dateLabel(company.supportValidUntil) : "Not set"}</small></span><ArrowRight size={15} />
         </button>)}
       </div>
     </section>}
 
     {selectedCompanyId && <section className="settings-card">
       <div className="settings-card-heading"><div><h2>{selectedCompany?.name || "Team access"}</h2><p>Invite colleagues, generate reusable company codes, or review sign-up requests.</p></div><Users size={18} /></div>
+      {workspaceAdmin && <form className="support-contract-form" onSubmit={updateSupportValidUntil}>
+        <label>Support valid until<input type="date" value={editSupportValidUntil} onChange={(event) => setEditSupportValidUntil(event.target.value)} required /></label>
+        <span>Clients can raise tickets through this date. Only the Super Admin can change it.</span>
+        <button className="button button-primary" type="submit" disabled={!editSupportValidUntil}>Save date</button>
+      </form>}
       <form className="invite-form" onSubmit={inviteUser}>
         <label htmlFor="company-user-email">Invite a user</label>
         <div><input id="company-user-email" type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="colleague@company.com" required />
@@ -1146,7 +1315,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       {companyUsers.some((user) => user.approvalStatus === "pending") && <div className="company-users-section">
         <h3>Requests awaiting approval</h3>
         {companyUsers.filter((user) => user.approvalStatus === "pending").map((user) => <div className="admin-team-row" key={user.id}>
-          <div className="directory-customer"><strong>{user.name}</strong><span>{user.email}</span></div>
+          <div className="directory-customer"><strong>{displayClientName(user.name)}</strong><span>{user.email}</span></div>
           <button className="button button-primary" onClick={() => updateUser(user, { approvalStatus: "approved" })}>Approve</button>
           <button className="button button-quiet" onClick={() => updateUser(user, { approvalStatus: "rejected" })}>Decline</button>
         </div>)}
@@ -1179,7 +1348,7 @@ function NotificationCenter({ notifications, onOpen }: {
   onOpen: (notification: Notification) => void;
 }) {
   return <section className="feature-page">
-    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />AGENT WORKSPACE</div><h1>Notifications</h1><p>Ticket replies and service-level alerts assigned to you.</p></div></div>
+    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />CONSULTANT WORKSPACE</div><h1>Notifications</h1><p>Ticket replies and service-level alerts assigned to you.</p></div></div>
     <div className="directory-list">
       {notifications.length === 0
         ? <div className="empty-list"><Bell size={27} /><strong>You're all caught up</strong><span>New ticket alerts will show here.</span></div>
@@ -1191,8 +1360,8 @@ function NotificationCenter({ notifications, onOpen }: {
 }
 
 function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
-  const [agents, setAgents] = useState<Array<{ id: number; name: string; email: string; isAdmin: boolean; routingPriority: number; disabledAt: string | null }>>([]);
-  const [invitations, setInvitations] = useState<Array<{ id: number; email: string; expiresAt: string }>>([]);
+  const [agents, setAgents] = useState<Array<{ id: number; name: string; email: string; isAdmin: boolean; routingPriority: number; specialty: ConsultantSpecialty; disabledAt: string | null }>>([]);
+  const [invitations, setInvitations] = useState<Array<{ id: number; email: string; specialty: ConsultantSpecialty; expiresAt: string }>>([]);
   const [sla, setSla] = useState({ firstResponseHours: 4, resolutionHours: 48 });
   const [emailStatus, setEmailStatus] = useState<{
     smtpConfigured: boolean; imapConfigured: boolean; smtpHost: string | null; inboundMailbox: string | null;
@@ -1223,13 +1392,33 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
     const form = new FormData(formElement);
     try {
       const result = await api<{ invitation: { email: string; emailSent: boolean; invitationUrl?: string } }>("/agent-invitations", {
-        method: "POST", body: JSON.stringify({ email: form.get("email") }),
+        method: "POST", body: JSON.stringify({ email: form.get("email"), specialty: form.get("specialty") }),
       });
       setMessage(result.invitation.emailSent ? `Invitation email sent to ${result.invitation.email}.` : `Invitation created for ${result.invitation.email}.`);
       setInvitationUrl(result.invitation.invitationUrl || "");
       formElement.reset();
       await load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not invite this agent."); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not invite this Consultant."); }
+  }
+
+  async function createConsultant(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    setError("");
+    setMessage("");
+    const form = new FormData(formElement);
+    try {
+      const result = await api<{ agent: { name: string; email: string; isAdmin: boolean } }>("/admin/agents", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.get("name"), email: form.get("email"), contactNumber: form.get("contactNumber"), password: form.get("password"),
+          isAdmin: form.get("isAdmin") === "on", specialty: form.get("specialty"),
+        }),
+      });
+      setMessage(`${result.agent.isAdmin ? "Super Admin" : "Consultant"} account created for ${result.agent.name} (${result.agent.email}). Share the initial password with them through a secure channel.`);
+      formElement.reset();
+      await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create the account."); }
   }
 
   async function saveSla(event: FormEvent<HTMLFormElement>) {
@@ -1252,7 +1441,7 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
       await load();
       await onChanged();
       setMessage(agent.disabledAt ? `${agent.name} re-enabled.` : `${agent.name} disabled and open assignments released.`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update agent access."); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update Consultant access."); }
   }
 
   async function moveAgent(agent: typeof agents[number], offset: number) {
@@ -1265,7 +1454,7 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
       });
       await load();
       setMessage(`${agent.name} moved to ${agent.routingPriority + offset === 1 ? "Primary" : agent.routingPriority + offset === 2 ? "Secondary" : `priority ${agent.routingPriority + offset}`}.`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update agent routing priority."); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update Consultant routing priority."); }
   }
 
   return <section className="feature-page admin-settings">
@@ -1274,18 +1463,27 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
     {message && <div className="inline-success" role="status">{message}<button onClick={() => setMessage("")}><X size={13} /></button></div>}
 
     <section className="settings-card">
-      <div className="settings-card-heading"><div><h2>Support team</h2><p>Invite agents and control access to the workspace.</p></div><span>{agents.filter((agent) => !agent.disabledAt).length} active</span></div>
-      <form className="invite-form" onSubmit={invite}><label htmlFor="invite-email">Agent email</label><div><input id="invite-email" name="email" type="email" placeholder="agent@company.com" required /><button className="button button-primary" type="submit"><Plus size={15} /> Invite agent</button></div></form>
+      <div className="settings-card-heading"><div><h2>Consultant team</h2><p>Create accounts directly or invite by email, then control team access.</p></div><span>{agents.filter((agent) => !agent.disabledAt).length} active</span></div>
+      <form className="team-create-form" onSubmit={createConsultant}>
+        <label>Full name<input name="name" autoComplete="name" minLength={2} maxLength={120} required placeholder="Consultant name" /></label>
+        <label>Work email<input name="email" type="email" autoComplete="email" maxLength={254} required placeholder="consultant@company.com" /></label>
+        <label>Contact number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} required placeholder="+91 98765 43210" /></label>
+        <label>Consultant type<select name="specialty" defaultValue="" required><option value="" disabled>Select specialty</option><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Both</option></select></label>
+        <label>Initial password<input name="password" type="password" autoComplete="new-password" minLength={12} maxLength={128} required placeholder="At least 12 characters" /><small>Share this password with the new user through a secure channel.</small></label>
+        <label className="team-admin-option"><input name="isAdmin" type="checkbox" /> Grant Super Admin permissions</label>
+        <button className="button button-primary" type="submit"><Plus size={15} /> Create account</button>
+      </form>
+      <form className="invite-form" onSubmit={invite}><label htmlFor="invite-email">Or send an email invitation (requires SMTP)</label><label className="invite-specialty">Consultant type<select name="specialty" defaultValue="" required><option value="" disabled>Select specialty</option><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Both</option></select></label><div><input id="invite-email" name="email" type="email" placeholder="consultant@jishnuinfotech.com" required disabled={!emailStatus?.smtpConfigured} /><button className="button button-primary" type="submit" disabled={!emailStatus?.smtpConfigured}><Plus size={15} /> Invite Consultant</button></div>{!emailStatus?.smtpConfigured && <small>SMTP is not configured. Use direct account creation above.</small>}</form>
       {invitationUrl && <p className="development-link">Development invitation link: <a href={invitationUrl}>{invitationUrl}</a></p>}
-      <p className="settings-hint">Automatic tickets follow Primary-to-secondary priority; agents with the same priority are balanced by active unresolved workload. Use the arrows to change priority.</p>
+      <p className="settings-hint">Automatic tickets follow Primary-to-secondary priority; Consultants with the same priority are balanced by active unresolved workload. Use the arrows to change priority.</p>
       <div className="admin-team-list">
-        {agents.map((agent) => <div className="admin-team-row" key={agent.id}><div className="avatar avatar-agent">{initials(agent.name)}</div><div className="directory-customer"><strong>{agent.name}{agent.isAdmin && <span className="admin-badge">ADMIN</span>}</strong><span>{agent.email}</span></div><span className="agent-routing-priority">{agent.routingPriority === 1 ? "Primary" : agent.routingPriority === 2 ? "Secondary" : `#${agent.routingPriority}`}</span><button className="button button-quiet" aria-label={`Move ${agent.name} up in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority <= 1} onClick={() => moveAgent(agent, -1)}><ArrowUp size={13} /></button><button className="button button-quiet" aria-label={`Move ${agent.name} down in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority >= agents.filter((item) => !item.disabledAt).length} onClick={() => moveAgent(agent, 1)}><ArrowDown size={13} /></button><span className={`team-state ${agent.disabledAt ? "team-disabled" : ""}`}>{agent.disabledAt ? "Disabled" : "Active"}</span><button className="button button-quiet" disabled={agent.isAdmin && !agent.disabledAt} onClick={() => toggleAgent(agent)}>{agent.disabledAt ? "Enable" : "Disable"}</button></div>)}
+        {agents.map((agent) => <div className="admin-team-row" key={agent.id}><div className="avatar avatar-agent">{initials(agent.name)}</div><div className="directory-customer"><strong>{agent.name}{Boolean(agent.isAdmin) && <span className="admin-badge">SUPER ADMIN</span>}</strong><span>{agent.email}</span></div><span className="consultant-specialty-label">{agent.specialty === "both" ? "Functional + Technical" : agent.specialty[0].toUpperCase() + agent.specialty.slice(1)}</span><span className="agent-routing-priority">{agent.routingPriority === 1 ? "Primary" : agent.routingPriority === 2 ? "Secondary" : `#${agent.routingPriority}`}</span><button className="button button-quiet" aria-label={`Move ${agent.name} up in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority <= 1} onClick={() => moveAgent(agent, -1)}><ArrowUp size={13} /></button><button className="button button-quiet" aria-label={`Move ${agent.name} down in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority >= agents.filter((item) => !item.disabledAt).length} onClick={() => moveAgent(agent, 1)}><ArrowDown size={13} /></button><span className={`team-state ${agent.disabledAt ? "team-disabled" : ""}`}>{agent.disabledAt ? "Disabled" : "Active"}</span><button className="button button-quiet" disabled={Boolean(agent.isAdmin) && !agent.disabledAt} onClick={() => toggleAgent(agent)}>{agent.disabledAt ? "Enable" : "Disable"}</button></div>)}
       </div>
-      {invitations.length > 0 && <div className="pending-invitations"><strong>Pending invitations</strong>{invitations.map((invitation) => <div key={invitation.id}><span>{invitation.email}</span><small>Expires {new Date(invitation.expiresAt).toLocaleString()}</small></div>)}</div>}
+      {invitations.length > 0 && <div className="pending-invitations"><strong>Pending invitations</strong>{invitations.map((invitation) => <div key={invitation.id}><span>{invitation.email} · {invitation.specialty === "both" ? "Both" : invitation.specialty[0].toUpperCase() + invitation.specialty.slice(1)}</span><small>Expires {new Date(invitation.expiresAt).toLocaleString()}</small></div>)}</div>}
     </section>
 
     <section className="settings-card">
-      <div className="settings-card-heading"><div><h2>Service-level targets</h2><p>Elapsed time from ticket creation. Alerts appear in the assigned agent's notifications.</p></div><Clock3 size={18} /></div>
+      <div className="settings-card-heading"><div><h2>Service-level targets</h2><p>Elapsed time from ticket creation. Alerts appear in the assigned Consultant's notifications.</p></div><Clock3 size={18} /></div>
       <form className="sla-form" onSubmit={saveSla}>
         <label>First response target (hours)<input type="number" min="0.25" max="720" step="0.25" value={sla.firstResponseHours} onChange={(event) => setSla({ ...sla, firstResponseHours: Number(event.target.value) })} required /></label>
         <label>Resolution target (hours)<input type="number" min="0.5" max="2160" step="0.5" value={sla.resolutionHours} onChange={(event) => setSla({ ...sla, resolutionHours: Number(event.target.value) })} required /></label>
@@ -1337,7 +1535,7 @@ function InvitationOrResetScreen({ flow, token, notice, error, onComplete }: {
       if (flow === "invite" || flow === "client-invite") {
         const acceptPath = flow === "invite" ? "/auth/agent-invitations/accept" : "/auth/client-invitations/accept";
         const result = await api<{ user: User }>(acceptPath, {
-          method: "POST", body: JSON.stringify({ token, name: form.get("name"), password: form.get("password") }),
+          method: "POST", body: JSON.stringify({ token, name: form.get("name"), contactNumber: form.get("contactNumber"), password: form.get("password") }),
         });
         window.history.replaceState({}, "", "/");
         await onComplete(result.user);
@@ -1355,14 +1553,17 @@ function InvitationOrResetScreen({ flow, token, notice, error, onComplete }: {
     <div className="login-brand"><CompanyLogo className="company-logo-login" /></div>
     <div className="login-intro"><div className="eyebrow"><span className="eyebrow-live" />JISHNU INFOTECH SUPPORT</div>
       <h1>{flow === "invite" ? <>Join the support<br />team.</> : flow === "client-invite" ? <>Join your company<br />workspace.</> : <>Choose a new<br />password.</>}</h1>
-      <p>{flow === "invite" ? "Set up your agent account to access the support workspace." : flow === "client-invite" ? "Complete your client account invitation." : "Create a new password for your client portal account."}</p>
+      <p>{flow === "invite" ? "Set up your Consultant account to access the support workspace." : flow === "client-invite" ? "Complete your client account invitation." : "Create a new password for your client portal account."}</p>
     </div>
     {(formError || error) && <div className="inline-error" role="alert">{formError || error}</div>}
     {flow === "invite" && email && <p className="auth-notice">Invitation for <strong>{email}</strong></p>}
     {flow === "client-invite" && email && <p className="auth-notice">Invitation for <strong>{email}</strong> to join <strong>{companyName}</strong>.</p>}
     {notice && <p className="auth-notice">{notice}</p>}
     {!(formError || error) || flow === "reset" ? <form className="login-form" onSubmit={submit}>
-      {(flow === "invite" || flow === "client-invite") && <label>Your name<input name="name" autoComplete="name" minLength={2} maxLength={100} required /></label>}
+      {(flow === "invite" || flow === "client-invite") && <>
+        <label>Your name<input name="name" autoComplete="name" minLength={2} maxLength={100} required /></label>
+        <label>Contact number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
+      </>}
       <label>New password<input name="password" type="password" minLength={12} maxLength={128} autoComplete="new-password" placeholder="At least 12 characters" required /></label>
       <button className="button button-primary login-button" type="submit" disabled={busy}>{busy ? "Please wait…" : flow === "reset" ? "Reset password" : "Accept invitation"} <ArrowRight size={16} /></button>
     </form> : null}
@@ -1380,18 +1581,11 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
   onSubmit: (event: FormEvent<HTMLFormElement>, portal: Role) => void;
   onRegister: (event: FormEvent<HTMLFormElement>) => void;
 }) {
-  const [companies, setCompanies] = useState<Company[]>([]);
   const [showRecovery, setShowRecovery] = useState(false);
   const [recoveryError, setRecoveryError] = useState("");
   const [recoveryNotice, setRecoveryNotice] = useState("");
   const [recoveryUrl, setRecoveryUrl] = useState("");
   const [recoveryBusy, setRecoveryBusy] = useState(false);
-  useEffect(() => {
-    api<{ companies: Company[] }>("/companies/available")
-      .then(({ companies: available }) => setCompanies(available))
-      .catch((reason: Error) => setRecoveryError(reason.message));
-  }, []);
-
   async function requestPasswordReset(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setRecoveryError("");
@@ -1417,7 +1611,7 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
       <div className="login-intro"><div className="eyebrow"><span className="eyebrow-live" />JISHNU INFOTECH SUPPORT</div><h1>{portal === "customer" ? <>Client support,<br />made straightforward.</> : <>Your support team,<br />in one workspace.</>}</h1><p>{portal === "customer" ? "Open a service request, follow its progress, and continue the conversation with our team." : "Review the shared queue, respond to client requests, and keep every ticket moving."}</p></div>
       <div className="portal-tabs" role="tablist" aria-label="Choose your portal">
         <button type="button" className={portal === "customer" ? "selected" : ""} role="tab" aria-selected={portal === "customer"} onClick={() => onPortalChange("customer")}><Users size={14} /> Client portal</button>
-        <button type="button" className={portal === "agent" ? "selected" : ""} role="tab" aria-selected={portal === "agent"} onClick={() => onPortalChange("agent")}><Inbox size={14} /> Agent portal</button>
+        <button type="button" className={portal === "agent" ? "selected" : ""} role="tab" aria-selected={portal === "agent"} onClick={() => onPortalChange("agent")}><Inbox size={14} /> Consultant portal</button>
       </div>
       {portal === "customer" && !showRecovery && <div className="auth-mode-tabs">
         <button type="button" className={mode === "login" ? "selected" : ""} onClick={() => onModeChange("login")}>Sign in</button>
@@ -1434,8 +1628,8 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
       </form> : <form className="login-form" onSubmit={mode === "register" && portal === "customer" ? onRegister : (event) => onSubmit(event, portal)}>
         {mode === "register" && portal === "customer" && <>
           <label>Your name<input name="name" autoComplete="name" minLength={2} maxLength={100} placeholder="Full name" required /></label>
-          <label>Company<select name="companyId" defaultValue=""><option value="">Choose your company</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select><span className="form-hint">New company requests need approval. An invitation code activates access immediately.</span></label>
-          <label>Company invitation code (optional)<input name="joinCode" autoComplete="off" placeholder="Enter a code from your company admin" /></label>
+          <label>Company invitation code<input name="joinCode" autoComplete="off" placeholder="Enter a code from your company admin" required /><span className="form-hint">Your invitation code identifies your company and activates your account.</span></label>
+          <label>Contact number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
         </>}
         <label>Email address<input name="email" type="email" autoComplete="username" placeholder="you@company.com" required /></label>
         <label>Password<div className="password-field"><input name="password" type="password" autoComplete={mode === "register" ? "new-password" : "current-password"} minLength={mode === "register" ? 12 : undefined} placeholder={mode === "register" ? "At least 12 characters" : "Enter your password"} required /></div></label>
@@ -1444,10 +1638,100 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
       </form>}
       {!showRecovery && mode === "login" && portal === "customer" && <button type="button" className="forgot-password-link" onClick={() => { setShowRecovery(true); setRecoveryError(""); setRecoveryNotice(""); }}>Forgot password?</button>}
       <div className="login-help"><ShieldCheck size={15} /> Your support workspace, securely connected</div>
-      {import.meta.env.MODE === "development" && mode === "login" && !showRecovery && <div className="login-demo"><span>DEMO ACCESS</span><div><button type="button" onClick={() => { const email = document.querySelector<HTMLInputElement>('input[name="email"]'); const password = document.querySelector<HTMLInputElement>('input[name="password"]'); if (email && password) { email.value = portal === "agent" ? "alex@relaysupport.test" : "sam@northstar.test"; password.value = portal === "agent" ? "Support123!" : "Customer123!"; } }}>Fill {portal === "agent" ? "agent" : "client"} demo</button></div></div>}
     </div>
     <footer className="login-footer"><span>© 2026 Jishnu Infotech</span><span><CircleHelp size={13} /> Need help signing in?</span></footer>
   </main>;
+}
+
+function KnowledgeBase() {
+  const [tickets, setTickets] = useState<KnowledgeBaseTicket[]>([]);
+  const [openTicket, setOpenTicket] = useState<TicketDetail | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const pageSize = 50;
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError("");
+    api<{ tickets: KnowledgeBaseTicket[]; total: number }>(`/knowledge-base?page=${page}&search=${encodeURIComponent(search)}`)
+      .then((result) => {
+        if (!active) return;
+        setTickets(result.tickets);
+        setTotal(result.total);
+      })
+      .catch((reason: Error) => { if (active) setError(reason.message); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [page, search]);
+
+  const formatDate = (value: string) => {
+    const date = new Date(value.replace(" ", "T") + (value.endsWith("Z") ? "" : "Z"));
+    return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit", month: "2-digit", year: "numeric",
+    }).format(date);
+  };
+
+  async function showConversation(ticketId: number) {
+    setOpenTicket(null);
+    setDetailError("");
+    setLoadingDetail(true);
+    try {
+      setOpenTicket(await api<TicketDetail>(`/tickets/${ticketId}`));
+    } catch (reason) {
+      setDetailError(reason instanceof Error ? reason.message : "Could not load this ticket conversation.");
+    } finally {
+      setLoadingDetail(false);
+    }
+  }
+
+  return <section className="feature-page knowledge-page">
+    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />CONSULTANT WORKSPACE</div><h1>Knowledge Base</h1><p>Resolved tickets and the solutions shared with clients.</p></div></div>
+    <form className="directory-toolbar" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(query.trim()); }}>
+      <div className="search-box"><Search size={15} /><input aria-label="Search resolved tickets" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tickets, clients, Consultants, or solutions…" /><button className="button button-quiet" type="submit">Search</button></div>
+      <span>{total} resolved {total === 1 ? "ticket" : "tickets"}</span>
+    </form>
+    {error && <div className="inline-error" role="alert">{error}</div>}
+    {loading ? <div className="report-empty" role="status">Loading resolved tickets…</div> : tickets.length === 0
+      ? <div className="empty-list"><BookOpen size={27} /><strong>No resolved tickets found</strong><span>{search ? "Try a different search." : "Resolved tickets will appear here with their recorded solutions."}</span></div>
+      : <div className="knowledge-list">{tickets.map((ticket) => <article className="knowledge-card" key={ticket.id}>
+        <div className="knowledge-card-heading"><div><span className="knowledge-ticket-id">Ticket #{ticket.id}</span><h2>{ticket.issue}</h2></div><span className="knowledge-type">{ticket.solutionType}</span></div>
+        <div className="knowledge-meta"><div><span>Reported</span><strong>{formatDate(ticket.reportedAt)}</strong></div><div><span>Closed</span><strong>{formatDate(ticket.closedAt)}</strong></div><div><span>Client</span><strong>{displayClientName(ticket.clientName)}</strong></div><div><span>Handled by</span><strong>{ticket.consultantName}</strong></div></div>
+        <div className="knowledge-content"><div><h3>Ticket Description</h3><p>{ticket.description}</p></div><div><h3>Solution Provided</h3><p>{ticket.solution}</p></div></div>
+        <button className="button button-quiet knowledge-conversation-button" type="button" onClick={() => showConversation(ticket.id)}><MessageCircle size={14} /> View full conversation</button>
+      </article>)}</div>}
+    {!loading && total > pageSize && <div className="report-ticket-pagination"><span>Page {page} of {Math.ceil(total / pageSize)}</span><div><button className="button button-quiet" type="button" disabled={page <= 1} onClick={() => setPage((current) => current - 1)}>Previous</button><button className="button button-quiet" type="button" disabled={page >= Math.ceil(total / pageSize)} onClick={() => setPage((current) => current + 1)}>Next</button></div></div>}
+    {(loadingDetail || detailError) && <div className="modal-scrim knowledge-modal-scrim" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !loadingDetail) setDetailError(""); }}>
+      <section className="knowledge-conversation-modal" role="dialog" aria-modal="true" aria-label="Ticket conversation">
+        <div className="modal-heading"><div><div className="eyebrow">TICKET CONVERSATION</div><h2>{loadingDetail ? "Loading conversation…" : "Could not load conversation"}</h2></div>{!loadingDetail && <button type="button" className="icon-button" aria-label="Close" onClick={() => setDetailError("")}><X size={18} /></button>}</div>
+        {!loadingDetail && <div className="inline-error" role="alert">{detailError}</div>}
+      </section>
+    </div>}
+    {openTicket && <div className="modal-scrim knowledge-modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpenTicket(null); }}>
+      <section className="knowledge-conversation-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-conversation-title">
+        <header className="knowledge-conversation-header"><div><div className="eyebrow">TICKET #{String(openTicket.ticket.id).padStart(4, "0")} · FULL HISTORY</div><h2 id="knowledge-conversation-title">{openTicket.ticket.subject}</h2></div><button type="button" className="icon-button" aria-label="Close conversation" onClick={() => setOpenTicket(null)}><X size={18} /></button></header>
+        <div className="knowledge-conversation-scroll">
+          <div className="knowledge-conversation-summary"><StatusPill status={openTicket.ticket.status} /><span>Reported {formatDate(openTicket.ticket.createdAt)}</span><span>Client: {displayClientName(openTicket.ticket.customer.name)}</span><span>Handled by: {openTicket.ticket.assignee?.name || "Unassigned"}</span></div>
+          <article className="knowledge-original-request"><strong>Original ticket description</strong><p>{openTicket.ticket.description}</p></article>
+          {openTicket.assignmentHistory.length > 0 && <AssignmentHistorySection entries={openTicket.assignmentHistory} />}
+          {openTicket.attachments.length > 0 && <div className="attachment-list" aria-label="Ticket attachments"><strong className="attachment-heading">Attachments</strong>{openTicket.attachments.map((attachment) => <a key={attachment.id} className="ticket-attachment" href={`/api/tickets/${openTicket.ticket.id}/attachments/${attachment.id}`} target="_blank" rel="noreferrer"><span className="attachment-icon"><Paperclip size={14} /></span><span><strong>{attachment.name}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span><Download size={14} /></a>)}</div>}
+          <div className="conversation-heading"><span>Conversation</span><span>{openTicket.messages.length} messages</span></div>
+          {openTicket.messages.length ? <div className="conversation">{openTicket.messages.map((message, index) => {
+            const fromConsultant = message.authorRole === "agent";
+            return <article key={message.id} className={`message ${fromConsultant ? "message-agent" : ""} ${message.isInternal ? "message-internal" : ""}`}>
+              <div className={`message-avatar ${fromConsultant ? "agent-message-avatar" : ""}`}>{initials(message.authorName)}</div><div className="message-content"><div className="message-meta"><strong>{message.authorName}</strong>{message.isInternal ? <span className="internal-note-badge">INTERNAL NOTE</span> : fromConsultant && <span className="agent-badge">CONSULTANT</span>}<time>{timeAgo(message.createdAt)}</time>{index === 0 && !message.isInternal && <span className="original-label">Original request</span>}</div><p>{message.body}</p></div>
+            </article>;
+          })}</div> : <p className="knowledge-no-messages">No conversation messages were recorded for this ticket.</p>}
+        </div>
+      </section>
+    </div>}
+  </section>;
 }
 
 function CustomerDirectory({ customers, tickets, onCreateTicket, onViewTickets }: {
@@ -1458,26 +1742,40 @@ function CustomerDirectory({ customers, tickets, onCreateTicket, onViewTickets }
 }) {
   const [query, setQuery] = useState("");
   const filteredCustomers = customers.filter((customer) =>
-    `${customer.name} ${customer.email}`.toLowerCase().includes(query.trim().toLowerCase()));
+    `${customer.companyName || "Unassigned company"} ${customer.name} ${customer.email}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const customersByCompany = new Map<string, Customer[]>();
+  for (const customer of filteredCustomers) {
+    const companyName = customer.companyName || "Unassigned company";
+    customersByCompany.set(companyName, [...(customersByCompany.get(companyName) || []), customer]);
+  }
+  const companyGroups = [...customersByCompany.entries()].sort(([a], [b]) => a.localeCompare(b));
   return <section className="feature-page">
-    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />AGENT WORKSPACE</div><h1>Clients</h1><p>Review client accounts and their support history.</p></div></div>
-    <div className="directory-toolbar"><div className="search-box"><Search size={15} /><input aria-label="Search clients" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients…" /></div><span>{filteredCustomers.length} clients</span></div>
-    <div className="directory-list">
+    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />CONSULTANT WORKSPACE</div><h1>Clients</h1><p>Review client accounts and their support history.</p></div></div>
+    <div className="directory-toolbar"><div className="search-box"><Search size={15} /><input aria-label="Search clients" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients…" /></div><span>{filteredCustomers.length} clients · {companyGroups.length} companies</span></div>
       {filteredCustomers.length === 0
         ? <div className="empty-list"><Users size={27} /><strong>No clients found</strong><span>{customers.length ? "Try a different name or email." : "Client accounts will appear here when they register."}</span></div>
-        : filteredCustomers.map((customer) => {
-          const customerTickets = tickets.filter((ticket) => ticket.customer.id === customer.id);
-          const activeCount = customerTickets.filter((ticket) => ticket.status !== "resolved").length;
-          return <article className="directory-row" key={customer.id}>
-            <div className="avatar customer-avatar">{initials(customer.name)}</div>
-            <div className="directory-customer"><strong>{customer.name}</strong><span>{customer.email}</span></div>
-            <div className="directory-stat"><strong>{customerTickets.length}</strong><span>Total tickets</span></div>
-            <div className="directory-stat"><strong>{activeCount}</strong><span>Active</span></div>
-            <button className="button button-quiet directory-action" onClick={() => onViewTickets(customer.name)}>View tickets</button>
-            <button className="button button-primary directory-action" onClick={() => onCreateTicket(customer.id)}><Plus size={14} /> New ticket</button>
-          </article>;
+        : companyGroups.map(([companyName, companyCustomers]) => {
+          const companyCustomerIds = new Set(companyCustomers.map((customer) => customer.id));
+          const companyTickets = tickets.filter((ticket) => companyCustomerIds.has(ticket.customer.id));
+          const activeCompanyTickets = companyTickets.filter((ticket) => ticket.status !== "resolved").length;
+          return <section className="directory-company-group" key={companyName}>
+            <div className="directory-company-heading"><div><Building2 size={16} /><strong>{companyName}</strong></div><span>{companyCustomers.length} {companyCustomers.length === 1 ? "client" : "clients"} · {companyTickets.length} tickets · {activeCompanyTickets} active</span></div>
+            <div className="directory-list">
+              {companyCustomers.map((customer) => {
+                const customerTickets = tickets.filter((ticket) => ticket.customer.id === customer.id);
+                const activeCount = customerTickets.filter((ticket) => ticket.status !== "resolved").length;
+                return <article className="directory-row" key={customer.id}>
+                  <div className="avatar customer-avatar">{initials(customer.name)}</div>
+                  <div className="directory-customer"><strong>{displayClientName(customer.name)}</strong><span>{customer.email}</span></div>
+                  <div className="directory-stat"><strong>{customerTickets.length}</strong><span>Total tickets</span></div>
+                  <div className="directory-stat"><strong>{activeCount}</strong><span>Active</span></div>
+                  <button className="button button-quiet directory-action" onClick={() => onViewTickets(customer.name)}>View tickets</button>
+                  <button className="button button-primary directory-action" onClick={() => onCreateTicket(customer.id)}><Plus size={14} /> New ticket</button>
+                </article>;
+              })}
+            </div>
+          </section>;
         })}
-    </div>
   </section>;
 }
 
@@ -1491,7 +1789,7 @@ function FeaturePlaceholder({ view }: { view: string }) {
       <div className="integration-illustration">{isEmail ? <Mail size={27} /> : isSettings ? <Settings2 size={27} /> : <CircleHelp size={27} />}</div>
       <span className="integration-status"><span />{isEmail ? "SMTP + IMAP" : "COMING SOON"}</span>
       <h2>{isEmail ? "Email is part of your ticket workflow" : isSettings ? "Workspace settings are administrator-only" : "Help customers help themselves"}</h2>
-      <p>{isEmail ? "Agent replies are queued for delivery over SMTP. Incoming messages are checked over IMAP and matched to ticket conversations. Configure both connections in the server environment." : isSettings ? "Ask a workspace administrator to manage team access and service-level targets." : "The self-service knowledge base is planned for a later phase."}</p>
+      <p>{isEmail ? "Consultant replies are queued for delivery over SMTP. Incoming messages are checked over IMAP and matched to ticket conversations. Configure both connections in the server environment." : isSettings ? "Ask your Super Admin to manage team access and service-level targets." : "The self-service knowledge base is planned for a later phase."}</p>
       {isEmail ? <button className="button button-quiet" disabled><Mail size={15} /> Manage connection in administrator settings</button> : <button className="button button-quiet" disabled><Check size={15} /> Planned for a future release</button>}
       <div className="integration-note"><ShieldCheck size={15} />{isEmail ? "SMTP delivery and IMAP intake remain inactive until valid mailbox credentials are configured." : "We are building this with your support workflow in mind."}</div>
     </div>

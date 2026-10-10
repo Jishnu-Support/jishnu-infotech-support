@@ -14,6 +14,8 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { db, initializeDatabase } from "./db.js";
 import { applicationUrl, emailIsConfigured, sendEmail } from "./email.js";
+import { reportAccess, ticketAccessFilter } from "./authz.js";
+import { normalizedTicketMetadata, ticketCategories } from "./validation.js";
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -44,7 +46,6 @@ const permittedAttachmentTypes = new Map([
   ["image/webp", ".webp"],
   ["application/pdf", ".pdf"],
 ]);
-const ticketCategories = ["Account access", "Billing", "Technical support", "Feature request", "Other"];
 const attachmentUpload = multer({
   storage: multer.diskStorage({
     destination: attachmentsRoot,
@@ -73,11 +74,13 @@ function publicUser(user) {
     id: user.id,
     name: user.name,
     email: user.email,
+    contactNumber: user.contact_number || null,
     role: user.role,
     isAdmin: Boolean(user.is_admin),
     isCompanyAdmin: Boolean(user.is_company_admin),
     companyId: user.company_id || null,
     companyName: user.company_name || null,
+    companySupportValidUntil: user.company_support_valid_until || null,
     approvalStatus: user.approval_status || "approved",
   };
 }
@@ -94,6 +97,25 @@ function secureToken() {
   return randomBytes(32).toString("base64url");
 }
 
+function validContactNumber(value) {
+  if (typeof value !== "string") return null;
+  const contactNumber = value.trim();
+  const digits = contactNumber.replace(/\D/g, "");
+  return /^\+?[0-9][0-9\s().-]{5,19}$/.test(contactNumber) && digits.length >= 7 && digits.length <= 15
+    ? contactNumber
+    : null;
+}
+
+function validDateOnly(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function supportContractExpired(supportValidUntil) {
+  return Boolean(supportValidUntil && new Date().toISOString().slice(0, 10) > String(supportValidUntil).slice(0, 10));
+}
+
 async function requireAuth(req, res, next) {
   const token = req.cookies.relay_session;
   if (!token) return res.status(401).json({ error: "Sign in to continue." });
@@ -104,8 +126,8 @@ async function requireAuth(req, res, next) {
     return res.status(401).json({ error: "Your session has expired. Please sign in again." });
   }
   const user = await db.prepare(`
-    SELECT u.id, u.name, u.email, u.role, u.is_admin, u.is_company_admin, u.company_id,
-           u.approval_status, c.name AS company_name
+    SELECT u.id, u.name, u.email, u.contact_number, u.role, u.is_admin, u.is_company_admin, u.company_id,
+           u.approval_status, c.name AS company_name, c.support_valid_until AS company_support_valid_until
     FROM users u LEFT JOIN companies c ON c.id = u.company_id
     WHERE u.id = ? AND u.disabled_at IS NULL
   `).get(Number(payload.sub));
@@ -118,7 +140,7 @@ async function requireAuth(req, res, next) {
 }
 
 function requireAgent(req, res, next) {
-  if (req.user.role === "customer") return res.status(403).json({ error: "Only support agents can do that." });
+  if (req.user.role === "customer") return res.status(403).json({ error: "Only Consultants can do that." });
   next();
 }
 
@@ -152,16 +174,19 @@ function deadlineFrom(createdAt, hours) {
   return Date.parse(`${createdAt.replace(" ", "T")}Z`) + hours * 60 * 60 * 1000;
 }
 
-async function selectRoutingAgent() {
+async function selectRoutingAgent(category) {
+  const specialty = category === "Functional" || category === "Technical" ? category.toLowerCase() : null;
+  const specialtyFilter = specialty ? "AND (u.specialty = 'both' OR u.specialty = ?)" : "";
   return await db.prepare(`
     SELECT u.id
     FROM users u
     LEFT JOIN tickets t ON t.assignee_id = u.id AND t.status != 'resolved'
     WHERE u.role = 'agent' AND u.disabled_at IS NULL
+      ${specialtyFilter}
     GROUP BY u.id
     ORDER BY u.routing_priority, COUNT(t.id), u.id
     LIMIT 1
-  `).get();
+  `).get(...(specialty ? [specialty] : []));
 }
 
 async function recordTicketAssignment(ticketId, agentId, assignedBy, source) {
@@ -183,11 +208,8 @@ async function normalizeActiveAgentPriorities() {
 }
 
 async function canAccessTicket(user, ticketId) {
-  if (user.role === "agent") return true;
-  if (user.is_company_admin) {
-    return Boolean(await db.prepare("SELECT 1 FROM tickets WHERE id = ? AND company_id = ?").get(ticketId, user.company_id));
-  }
-  return Boolean(await db.prepare("SELECT 1 FROM tickets WHERE id = ? AND customer_id = ? AND company_id = ?").get(ticketId, user.id, user.company_id));
+  const access = ticketAccessFilter(user, ticketId);
+  return Boolean(await db.prepare(`SELECT 1 FROM tickets WHERE ${access.sql}`).get(...access.params));
 }
 
 async function ticketSummary(row) {
@@ -213,8 +235,8 @@ async function ticketSummary(row) {
     company: row.company_name ? { id: row.company_id, name: row.company_name } : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    customer: { id: row.customer_id, name: row.customer_name, email: row.customer_email },
-    assignee: row.assignee_id ? { id: row.assignee_id, name: row.assignee_name } : null,
+    customer: { id: row.customer_id, name: row.customer_name, email: row.customer_email, contactNumber: row.customer_contact_number || null },
+    assignee: row.assignee_id ? { id: row.assignee_id, name: row.assignee_name, email: row.assignee_email, contactNumber: row.assignee_contact_number || null } : null,
     messageCount: row.message_count,
     lastMessage: row.last_message || row.description,
     firstResponseDueAt,
@@ -227,9 +249,9 @@ async function ticketSummary(row) {
 }
 
 const ticketSelect = `
-  SELECT t.*, c.name AS customer_name, c.email AS customer_email,
+  SELECT t.*, c.name AS customer_name, c.email AS customer_email, c.contact_number AS customer_contact_number,
          co.name AS company_name,
-         a.id AS assignee_id, a.name AS assignee_name,
+         a.id AS assignee_id, a.name AS assignee_name, a.email AS assignee_email, a.contact_number AS assignee_contact_number,
          (SELECT COUNT(*) FROM messages m WHERE m.ticket_id = t.id AND m.is_internal = 0) AS message_count,
          (SELECT COUNT(*) FROM ticket_attachments x WHERE x.ticket_id = t.id) AS attachment_count,
          (SELECT body FROM messages m WHERE m.ticket_id = t.id AND m.is_internal = 0 ORDER BY m.id DESC LIMIT 1) AS last_message,
@@ -260,38 +282,6 @@ function parseJsonObject(value) {
   }
 }
 
-function normalizedTicketMetadata(body, defaults = {}) {
-  const category = body.category === undefined ? defaults.category || "Other" : body.category;
-  if (typeof category !== "string" || !ticketCategories.includes(category)) {
-    return { error: "Choose a valid ticket category." };
-  }
-  let tags = body.tags === undefined ? defaults.tags || [] : body.tags;
-  if (typeof tags === "string") tags = tags.split(",");
-  if (!Array.isArray(tags) || tags.length > 10 || tags.some((tag) => typeof tag !== "string" || tag.trim().length > 32)) {
-    return { error: "Add up to 10 tags, each 32 characters or fewer." };
-  }
-  tags = [...new Set(tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean))];
-
-  let customFields = body.customFields === undefined ? defaults.customFields || {} : body.customFields;
-  if (typeof customFields === "string") {
-    try { customFields = JSON.parse(customFields || "{}"); } catch {
-      return { error: "Custom fields must be valid JSON data." };
-    }
-  }
-  if (!customFields || typeof customFields !== "object" || Array.isArray(customFields) || Object.keys(customFields).length > 10) {
-    return { error: "Add up to 10 custom fields." };
-  }
-  const normalizedFields = {};
-  for (const [key, value] of Object.entries(customFields)) {
-    const label = key.trim();
-    if (!label || label.length > 40 || typeof value !== "string" || value.trim().length > 500) {
-      return { error: "Custom field names must be 1–40 characters and values 500 characters or fewer." };
-    }
-    if (value.trim()) normalizedFields[label] = value.trim();
-  }
-  return { category, tags, customFields: normalizedFields };
-}
-
 app.get("/api/health", async (_req, res) => {
   try {
     await db.prepare("SELECT 1").get();
@@ -307,7 +297,7 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
   if (!email || !password) return res.status(400).json({ error: "Enter your email and password." });
 
   const user = await db.prepare(`
-    SELECT u.*, c.name AS company_name
+    SELECT u.*, c.name AS company_name, c.support_valid_until AS company_support_valid_until
     FROM users u LEFT JOIN companies c ON c.id = u.company_id
     WHERE u.email = ? COLLATE NOCASE AND u.disabled_at IS NULL
   `).get(email);
@@ -335,11 +325,13 @@ app.get("/api/companies/available", async (_req, res) => {
 app.post("/api/auth/register", authLimiter, async (req, res) => {
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
   const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
+  const contactNumber = validContactNumber(req.body.contactNumber);
   const password = typeof req.body.password === "string" ? req.body.password : "";
   const joinCode = typeof req.body.joinCode === "string" ? req.body.joinCode.trim() : "";
   const requestedCompanyId = Number(req.body.companyId);
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: "Enter a valid email address." });
+  if (!contactNumber) return res.status(400).json({ error: "Enter a valid contact number (7 to 15 digits)." });
   if (password.length < 12 || password.length > 128) return res.status(400).json({ error: "Password must be between 12 and 128 characters." });
 
   let company;
@@ -363,9 +355,9 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
 
   try {
     const id = Number((await db.prepare(`
-      INSERT INTO users (name, email, password_hash, role, company_id, approval_status)
-      VALUES (?, ?, ?, 'customer', ?, ?)
-    `).run(name, email, bcrypt.hashSync(password, 12), company.id, approvalStatus)).lastInsertRowid);
+      INSERT INTO users (name, email, contact_number, password_hash, role, company_id, approval_status)
+      VALUES (?, ?, ?, ?, 'customer', ?, ?)
+    `).run(name, email, contactNumber, bcrypt.hashSync(password, 12), company.id, approvalStatus)).lastInsertRowid);
     if (approvalStatus === "pending") {
       await db.prepare(`
         INSERT INTO notifications (user_id, ticket_id, kind, message)
@@ -378,8 +370,8 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
       });
     }
     const user = await db.prepare(`
-      SELECT u.id, u.name, u.email, u.role, u.is_admin, u.is_company_admin, u.company_id,
-             u.approval_status, c.name AS company_name
+      SELECT u.id, u.name, u.email, u.contact_number, u.role, u.is_admin, u.is_company_admin, u.company_id,
+             u.approval_status, c.name AS company_name, c.support_valid_until AS company_support_valid_until
       FROM users u JOIN companies c ON c.id = u.company_id WHERE u.id = ?
     `).get(id);
     res.cookie("relay_session", createToken(user), {
@@ -455,7 +447,7 @@ app.post("/api/auth/password-reset/complete", authLimiter, async (req, res) => {
 app.get("/api/auth/agent-invitations/validate", async (req, res) => {
   const token = typeof req.query.token === "string" ? req.query.token : "";
   const invitation = await db.prepare(`
-    SELECT email FROM agent_invitations
+    SELECT email, specialty FROM agent_invitations
     WHERE token_hash = ? AND accepted_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP
   `).get(hashToken(token));
   if (!invitation) return res.status(400).json({ error: "This invitation link is invalid or expired. Ask an administrator for a new invitation." });
@@ -465,12 +457,14 @@ app.get("/api/auth/agent-invitations/validate", async (req, res) => {
 app.post("/api/auth/agent-invitations/accept", async (req, res) => {
   const token = typeof req.body.token === "string" ? req.body.token : "";
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+  const contactNumber = validContactNumber(req.body.contactNumber);
   const password = typeof req.body.password === "string" ? req.body.password : "";
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
+  if (!contactNumber) return res.status(400).json({ error: "Enter a valid contact number (7 to 15 digits)." });
   if (password.length < 12 || password.length > 128) return res.status(400).json({ error: "Password must be between 12 and 128 characters." });
   const tokenHash = hashToken(token);
   const invitation = await db.prepare(`
-    SELECT id, email FROM agent_invitations
+    SELECT id, email, specialty FROM agent_invitations
     WHERE token_hash = ? AND accepted_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP
   `).get(tokenHash);
   if (!invitation) return res.status(400).json({ error: "This invitation link is invalid or expired. Ask an administrator for a new invitation." });
@@ -479,8 +473,8 @@ app.post("/api/auth/agent-invitations/accept", async (req, res) => {
   try {
     const accept = db.transaction(async () => {
       const nextPriority = (await db.prepare("SELECT COALESCE(MAX(routing_priority), 0) + 1 AS priority FROM users WHERE role = 'agent' AND disabled_at IS NULL").get()).priority;
-      const user = await db.prepare("INSERT INTO users (name, email, password_hash, role, routing_priority) VALUES (?, ?, ?, 'agent', ?)")
-        .run(name, invitation.email, bcrypt.hashSync(password, 12), nextPriority);
+      const user = await db.prepare("INSERT INTO users (name, email, contact_number, password_hash, role, routing_priority, specialty) VALUES (?, ?, ?, ?, 'agent', ?, ?)")
+        .run(name, invitation.email, contactNumber, bcrypt.hashSync(password, 12), nextPriority, invitation.specialty);
       const accepted = await db.prepare("UPDATE agent_invitations SET accepted_at = CURRENT_TIMESTAMP WHERE id = ? AND accepted_at IS NULL")
         .run(invitation.id);
       if (accepted.changes !== 1) throw new Error("Invitation has already been accepted.");
@@ -492,7 +486,7 @@ app.post("/api/auth/agent-invitations/accept", async (req, res) => {
     if (error.message === "Invitation has already been accepted.") return res.status(400).json({ error: "This invitation link has already been used." });
     throw error;
   }
-  const user = await db.prepare("SELECT id, name, email, role, is_admin FROM users WHERE id = ?").get(userId);
+  const user = await db.prepare("SELECT id, name, email, contact_number, role, is_admin FROM users WHERE id = ?").get(userId);
   res.cookie("relay_session", createToken(user), {
     httpOnly: true,
     secure: isProduction,
@@ -517,8 +511,10 @@ app.get("/api/auth/client-invitations/validate", async (req, res) => {
 app.post("/api/auth/client-invitations/accept", authLimiter, async (req, res) => {
   const token = typeof req.body.token === "string" ? req.body.token : "";
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+  const contactNumber = validContactNumber(req.body.contactNumber);
   const password = typeof req.body.password === "string" ? req.body.password : "";
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
+  if (!contactNumber) return res.status(400).json({ error: "Enter a valid contact number (7 to 15 digits)." });
   if (password.length < 12 || password.length > 128) return res.status(400).json({ error: "Password must be between 12 and 128 characters." });
   const tokenHash = hashToken(token);
   const invitation = await db.prepare(`
@@ -531,9 +527,9 @@ app.post("/api/auth/client-invitations/accept", authLimiter, async (req, res) =>
   try {
     const accept = db.transaction(async () => {
       const user = await db.prepare(`
-        INSERT INTO users (name, email, password_hash, role, company_id, is_company_admin)
-        VALUES (?, ?, ?, 'customer', ?, ?)
-      `).run(name, invitation.email, bcrypt.hashSync(password, 12), invitation.company_id, invitation.is_company_admin);
+        INSERT INTO users (name, email, contact_number, password_hash, role, company_id, is_company_admin)
+        VALUES (?, ?, ?, ?, 'customer', ?, ?)
+      `).run(name, invitation.email, contactNumber, bcrypt.hashSync(password, 12), invitation.company_id, invitation.is_company_admin);
       const updated = await db.prepare("UPDATE client_invitations SET accepted_at = CURRENT_TIMESTAMP WHERE id = ? AND accepted_at IS NULL")
         .run(invitation.id);
       if (updated.changes !== 1) throw new Error("Company invitation has already been accepted.");
@@ -541,8 +537,8 @@ app.post("/api/auth/client-invitations/accept", authLimiter, async (req, res) =>
     });
     const userId = await accept();
     const user = await db.prepare(`
-      SELECT u.id, u.name, u.email, u.role, u.is_admin, u.is_company_admin, u.company_id,
-             u.approval_status, c.name AS company_name
+      SELECT u.id, u.name, u.email, u.contact_number, u.role, u.is_admin, u.is_company_admin, u.company_id,
+             u.approval_status, c.name AS company_name, c.support_valid_until AS company_support_valid_until
       FROM users u JOIN companies c ON c.id = u.company_id WHERE u.id = ?
     `).get(userId);
     res.cookie("relay_session", createToken(user), {
@@ -561,8 +557,12 @@ app.post("/api/auth/client-invitations/accept", authLimiter, async (req, res) =>
 
 app.post("/api/agent-invitations", requireAuth, requireAdmin, async (req, res) => {
   const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
+  const specialty = req.body.specialty;
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
-    return res.status(400).json({ error: "Enter a valid agent email address." });
+    return res.status(400).json({ error: "Enter a valid Consultant email address." });
+  }
+  if (!["functional", "technical", "both"].includes(specialty)) {
+    return res.status(400).json({ error: "Choose Functional, Technical, or Both for the Consultant specialty." });
   }
   if (await db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(email)) {
     return res.status(409).json({ error: "An account with this email already exists." });
@@ -571,27 +571,27 @@ app.post("/api/agent-invitations", requireAuth, requireAdmin, async (req, res) =
     return res.status(409).json({ error: "A valid invitation has already been sent to this email address." });
   }
   if (isProduction && !emailIsConfigured()) {
-    return res.status(503).json({ error: "Agent invitations require configured outbound SMTP email." });
+    return res.status(503).json({ error: "Consultant invitations require configured outbound SMTP email." });
   }
 
   const token = secureToken();
   const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
   const result = await db.prepare(`
-    INSERT INTO agent_invitations (email, token_hash, invited_by, expires_at)
-    VALUES (?, ?, ?, ?)
-  `).run(email, hashToken(token), req.user.id, expiresAt);
+    INSERT INTO agent_invitations (email, specialty, token_hash, invited_by, expires_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(email, specialty, hashToken(token), req.user.id, expiresAt);
   const invitationUrl = applicationUrl(`/invite?token=${encodeURIComponent(token)}`);
   if (emailIsConfigured()) {
     try {
       await sendEmail({
         to: email,
-        subject: "You are invited to the Jishnu Infotech agent portal",
+        subject: "You are invited to the Jishnu Infotech Consultant portal",
         text: `You have been invited to join the Jishnu Infotech support team. Accept your invitation within 48 hours:\n${invitationUrl}`,
       });
     } catch (error) {
       await db.prepare("DELETE FROM agent_invitations WHERE id = ?").run(result.lastInsertRowid);
-      console.error("Agent invitation email delivery failed:", error.message);
-      return res.status(503).json({ error: "Could not send the agent invitation email. Please check SMTP settings and try again." });
+      console.error("Consultant invitation email delivery failed:", error.message);
+      return res.status(503).json({ error: "Could not send the Consultant invitation email. Please check SMTP settings and try again." });
     }
   }
   res.status(201).json({
@@ -606,7 +606,7 @@ app.post("/api/agent-invitations", requireAuth, requireAdmin, async (req, res) =
 
 app.get("/api/agent-invitations", requireAuth, requireAdmin, async (_req, res) => {
   const invitations = await db.prepare(`
-    SELECT i.id, i.email, i.expires_at AS expiresAt, i.accepted_at AS acceptedAt, i.created_at AS createdAt,
+    SELECT i.id, i.email, i.specialty, i.expires_at AS expiresAt, i.accepted_at AS acceptedAt, i.created_at AS createdAt,
            u.name AS invitedBy
     FROM agent_invitations i JOIN users u ON u.id = i.invited_by
     WHERE i.accepted_at IS NULL AND datetime(i.expires_at) > CURRENT_TIMESTAMP
@@ -635,8 +635,23 @@ app.get("/api/tickets", requireAuth, async (req, res) => {
 });
 
 app.get("/api/reports", requireAuth, async (req, res) => {
-  if (req.user.role !== "agent" && !req.user.is_company_admin) {
-    return res.status(403).json({ error: "Reports are available to support agents and company administrators." });
+  const access = reportAccess(req.user);
+  const isWorkspaceAdmin = access.workspaceWide;
+  if (!access.allowed) {
+    return res.status(403).json({ error: "Reports are available to the Super Admin and company administrators." });
+  }
+  let scopeCompanyId = access.companyId;
+  let scopeCompanyName = null;
+  if (req.query.companyId !== undefined) {
+    if (!isWorkspaceAdmin) return res.status(403).json({ error: "Only the Super Admin can select a client company." });
+    const requestedCompanyId = Number(req.query.companyId);
+    if (!Number.isInteger(requestedCompanyId) || requestedCompanyId < 1) {
+      return res.status(400).json({ error: "Choose a valid client company." });
+    }
+    const company = await db.prepare("SELECT id, name FROM companies WHERE id = ?").get(requestedCompanyId);
+    if (!company) return res.status(404).json({ error: "Client company not found." });
+    scopeCompanyId = Number(company.id);
+    scopeCompanyName = company.name;
   }
   const days = Number(req.query.days ?? 30);
   if (![7, 30, 90].includes(days)) return res.status(400).json({ error: "Choose a report period of 7, 30, or 90 days." });
@@ -645,11 +660,14 @@ app.get("/api/reports", requireAuth, async (req, res) => {
   const end = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
   const startAt = new Date(end - (days - 1) * 24 * 60 * 60 * 1000).toISOString().slice(0, 10) + " 00:00:00";
   const endAt = new Date(end + 24 * 60 * 60 * 1000).toISOString().slice(0, 10) + " 00:00:00";
-  const scopeClause = req.user.role === "agent" ? "1 = 1" : "company_id = ?";
-  const scopeParams = req.user.role === "agent" ? [] : [req.user.company_id];
+  const isAllCompaniesScope = scopeCompanyId === null;
+  const scopeClause = isAllCompaniesScope ? "1 = 1" : "company_id = ?";
+  const scopeParams = isAllCompaniesScope ? [] : [scopeCompanyId];
   const createdRangeClause = `${scopeClause} AND created_at >= ? AND created_at < ?`;
   const createdRangeParams = [...scopeParams, startAt, endAt];
   const activeBacklog = (await db.prepare(`SELECT COUNT(*) AS count FROM tickets WHERE ${scopeClause} AND status != 'resolved'`)
+    .get(...scopeParams)).count;
+  const waitingTickets = (await db.prepare(`SELECT COUNT(*) AS count FROM tickets WHERE ${scopeClause} AND status = 'waiting'`)
     .get(...scopeParams)).count;
   const totals = await db.prepare(`
     SELECT COUNT(*) AS created,
@@ -721,14 +739,14 @@ app.get("/api/reports", requireAuth, async (req, res) => {
            COUNT(DISTINCT CASE WHEN t.resolved_by = u.id AND t.resolved_at >= ? AND t.resolved_at < ? THEN t.id END) AS resolvedInPeriod
     FROM users u
     LEFT JOIN tickets t ON t.assignee_id = u.id
-      AND ${req.user.role === "agent" ? "1 = 1" : "t.company_id = ?"}
+      AND ${isAllCompaniesScope ? "1 = 1" : "t.company_id = ?"}
     LEFT JOIN ticket_assignment_history h ON h.agent_id = u.id
-      AND ${req.user.role === "agent" ? "1 = 1" : "EXISTS (SELECT 1 FROM tickets scoped WHERE scoped.id = h.ticket_id AND scoped.company_id = ?)"}
+      AND ${isAllCompaniesScope ? "1 = 1" : "EXISTS (SELECT 1 FROM tickets scoped WHERE scoped.id = h.ticket_id AND scoped.company_id = ?)"}
     WHERE u.role = 'agent' AND u.disabled_at IS NULL
     GROUP BY u.id ORDER BY u.routing_priority, active, u.id
   `).all(
     startAt, endAt, startAt, endAt,
-    ...(req.user.role === "agent" ? [] : [req.user.company_id, req.user.company_id]),
+    ...(isAllCompaniesScope ? [] : [scopeCompanyId, scopeCompanyId]),
   );
   const customerActivity = req.user.role === "customer" || req.user.is_admin
     ? await db.prepare(`
@@ -740,27 +758,31 @@ app.get("/api/reports", requireAuth, async (req, res) => {
         FROM users u
         LEFT JOIN companies c ON c.id = u.company_id
         LEFT JOIN tickets t ON t.customer_id = u.id
-          AND ${req.user.role === "agent" ? "1 = 1" : "t.company_id = ?"}
+          AND ${isAllCompaniesScope ? "1 = 1" : "t.company_id = ?"}
         WHERE u.role = 'customer' AND u.approval_status = 'approved'
-          AND ${req.user.role === "agent" ? "1 = 1" : "u.company_id = ?"}
+          AND ${isAllCompaniesScope ? "1 = 1" : "u.company_id = ?"}
         GROUP BY u.id, c.name ORDER BY 5 DESC, u.name
       `).all(
         startAt, endAt, startAt, endAt,
-        ...(req.user.role === "agent" ? [] : [req.user.company_id, req.user.company_id]),
+        ...(isAllCompaniesScope ? [] : [scopeCompanyId, scopeCompanyId]),
       )
     : [];
-  const companyVolume = req.user.role === "agent" ? await db.prepare(`
+  const companyVolume = isWorkspaceAdmin && isAllCompaniesScope ? await db.prepare(`
     SELECT c.name, COUNT(t.id) AS count FROM tickets t
     JOIN companies c ON c.id = t.company_id
     WHERE t.created_at >= ? AND t.created_at < ?
     GROUP BY c.id ORDER BY count DESC, c.name LIMIT 8
   `).all(startAt, endAt) : [];
+  const scopeCompany = scopeCompanyId === null
+    ? null
+    : { id: scopeCompanyId, name: scopeCompanyName || (await db.prepare("SELECT name FROM companies WHERE id = ?").get(scopeCompanyId))?.name || "Company" };
 
   res.json({
     days,
     startDate: startAt.slice(0, 10),
     endDate: new Date(end).toISOString().slice(0, 10),
-    summary: { created: totals.created || 0, activeInPeriod: totals.active || 0, activeBacklog },
+    scopeCompany,
+    summary: { created: totals.created || 0, activeInPeriod: totals.active || 0, activeBacklog, waiting: waitingTickets || 0 },
     statuses: ["open", "in_progress", "waiting", "resolved"].map((status) => ({
       status, count: statusRows.find((row) => row.status === status)?.count || 0,
     })),
@@ -781,6 +803,97 @@ app.get("/api/reports", requireAuth, async (req, res) => {
   });
 });
 
+app.get("/api/report-tickets", requireAuth, async (req, res) => {
+  const access = reportAccess(req.user);
+  if (!access.allowed) return res.status(403).json({ error: "Reports are available to the Super Admin and company administrators." });
+  let scopeCompanyId = access.companyId;
+  if (req.query.companyId !== undefined) {
+    if (!access.workspaceWide) return res.status(403).json({ error: "Only the Super Admin can select a client company." });
+    const requestedCompanyId = Number(req.query.companyId);
+    if (!Number.isInteger(requestedCompanyId) || requestedCompanyId < 1) return res.status(400).json({ error: "Choose a valid client company." });
+    const company = await db.prepare("SELECT id FROM companies WHERE id = ?").get(requestedCompanyId);
+    if (!company) return res.status(404).json({ error: "Client company not found." });
+    scopeCompanyId = Number(company.id);
+  }
+
+  const filters = [];
+  const params = [];
+  if (scopeCompanyId !== null) {
+    filters.push("t.company_id = ?");
+    params.push(scopeCompanyId);
+  }
+  const customerId = req.query.customerId === undefined || req.query.customerId === "" ? null : Number(req.query.customerId);
+  const consultantId = req.query.consultantId === undefined || req.query.consultantId === "" ? null : Number(req.query.consultantId);
+  if (customerId !== null) {
+    if (!Number.isInteger(customerId) || customerId < 1) return res.status(400).json({ error: "Choose a valid client user." });
+    filters.push("t.customer_id = ?");
+    params.push(customerId);
+  }
+  if (consultantId !== null) {
+    if (!Number.isInteger(consultantId) || consultantId < 1) return res.status(400).json({ error: "Choose a valid Consultant." });
+    filters.push("t.assignee_id = ?");
+    params.push(consultantId);
+  }
+  const dateFrom = typeof req.query.dateFrom === "string" && req.query.dateFrom ? req.query.dateFrom : null;
+  const dateTo = typeof req.query.dateTo === "string" && req.query.dateTo ? req.query.dateTo : null;
+  const month = typeof req.query.month === "string" && req.query.month ? req.query.month : null;
+  const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+  if (month) {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return res.status(400).json({ error: "Choose a valid month." });
+    const [year, monthNumber] = month.split("-").map(Number);
+    const from = `${month}-01 00:00:00`;
+    const next = new Date(Date.UTC(year, monthNumber, 1)).toISOString().slice(0, 10) + " 00:00:00";
+    filters.push("t.created_at >= ? AND t.created_at < ?");
+    params.push(from, next);
+  } else {
+    if (dateFrom && !validDate(dateFrom)) return res.status(400).json({ error: "Choose a valid start date." });
+    if (dateTo && !validDate(dateTo)) return res.status(400).json({ error: "Choose a valid end date." });
+    if (dateFrom && dateTo && dateFrom > dateTo) return res.status(400).json({ error: "Start date must be before or equal to end date." });
+    if (dateFrom) {
+      filters.push("t.created_at >= ?");
+      params.push(`${dateFrom} 00:00:00`);
+    }
+    if (dateTo) {
+      const nextDay = new Date(Date.parse(`${dateTo}T00:00:00Z`) + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      filters.push("t.created_at < ?");
+      params.push(`${nextDay} 00:00:00`);
+    }
+  }
+  const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const requestedPage = Number(req.query.page ?? 1);
+  if (!Number.isInteger(requestedPage) || requestedPage < 1) return res.status(400).json({ error: "Choose a valid ticket page." });
+  const pageSize = 50;
+  const total = Number((await db.prepare(`SELECT COUNT(*) AS count FROM tickets t ${where}`).get(...params)).count);
+  const page = Math.min(requestedPage, Math.max(1, Math.ceil(total / pageSize)));
+  const tickets = await db.prepare(`
+    SELECT t.id, t.subject, t.status, t.priority, t.updated_at AS updatedAt,
+           t.company_id AS companyId, t.customer_id AS customerId, t.assignee_id AS consultantId,
+           co.name AS companyName, customer.name AS customerName,
+           consultant.name AS consultantName
+    FROM tickets t
+    JOIN users customer ON customer.id = t.customer_id
+    LEFT JOIN companies co ON co.id = t.company_id
+    LEFT JOIN users consultant ON consultant.id = t.assignee_id
+    ${where}
+    ORDER BY t.updated_at DESC, t.id DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, pageSize, (page - 1) * pageSize);
+  const [companies, customers, consultants] = await Promise.all([
+    access.workspaceWide
+      ? db.prepare("SELECT id, name FROM companies ORDER BY name").all()
+      : Promise.resolve([]),
+    db.prepare(`
+      SELECT u.id, u.name, u.email, c.name AS companyName
+      FROM users u LEFT JOIN companies c ON c.id = u.company_id
+      WHERE u.role = 'customer' AND u.approval_status = 'approved'
+        ${scopeCompanyId === null ? "" : "AND u.company_id = ?"}
+      ORDER BY c.name, u.name
+    `).all(...(scopeCompanyId === null ? [] : [scopeCompanyId])),
+    db.prepare("SELECT id, name FROM users WHERE role = 'agent' ORDER BY name, id").all(),
+  ]);
+  res.json({ tickets, total, page, pageSize, companies, customers, consultants });
+});
+
 app.get("/api/customers", requireAuth, requireAgent, async (_req, res) => {
   const customers = await db.prepare(`
     SELECT u.id, u.name, u.email, u.company_id AS companyId, c.name AS companyName
@@ -791,29 +904,70 @@ app.get("/api/customers", requireAuth, requireAgent, async (_req, res) => {
   res.json({ customers });
 });
 
+app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
+  const page = Number(req.query.page ?? 1);
+  const pageSize = 50;
+  const search = typeof req.query.search === "string" ? req.query.search.trim().slice(0, 120) : "";
+  if (!Number.isInteger(page) || page < 1 || page > 100000) {
+    return res.status(400).json({ error: "Choose a valid Knowledge Base page." });
+  }
+
+  const searchClause = search
+    ? `AND (LOWER(t.subject) LIKE LOWER(?) OR LOWER(t.description) LIKE LOWER(?) OR LOWER(COALESCE(t.category, '')) LIKE LOWER(?) OR LOWER(customer.name) LIKE LOWER(?) OR LOWER(COALESCE(consultant.name, '')) LIKE LOWER(?) OR LOWER(COALESCE(solution.body, '')) LIKE LOWER(?))`
+    : "";
+  const searchParams = search ? Array(6).fill(`%${search}%`) : [];
+  const knowledgeFrom = `
+    FROM tickets t
+    JOIN users customer ON customer.id = t.customer_id
+    LEFT JOIN users consultant ON consultant.id = COALESCE(
+      t.resolved_by, t.assignee_id,
+      (SELECT h.agent_id FROM ticket_assignment_history h
+       WHERE h.ticket_id = t.id AND h.agent_id IS NOT NULL ORDER BY h.id DESC LIMIT 1)
+    )
+    LEFT JOIN messages solution ON solution.id = (
+      SELECT m.id FROM messages m JOIN users author ON author.id = m.author_id
+      WHERE m.ticket_id = t.id AND m.is_internal = 0 AND author.role = 'agent'
+      ORDER BY m.id DESC LIMIT 1
+    )
+    WHERE t.status = 'resolved' ${searchClause}
+  `;
+  const [{ count }] = await db.prepare(`SELECT COUNT(*) AS count ${knowledgeFrom}`).all(...searchParams);
+  const tickets = await db.prepare(`
+    SELECT t.id, t.subject AS issue, t.description,
+           t.created_at AS reportedAt, COALESCE(t.resolved_at, t.updated_at) AS closedAt,
+           COALESCE(solution.body, 'No consultant solution recorded.') AS solution,
+           COALESCE(t.category, 'Unspecified') AS solutionType,
+           customer.name AS clientName, COALESCE(consultant.name, 'Unassigned') AS consultantName
+    ${knowledgeFrom}
+    ORDER BY COALESCE(t.resolved_at, t.updated_at) DESC, t.id DESC
+    LIMIT ? OFFSET ?
+  `).all(...searchParams, pageSize, (page - 1) * pageSize);
+  res.json({ tickets, total: Number(count), page, pageSize });
+});
+
 app.get("/api/agents", requireAuth, async (_req, res) => {
   const agents = await db.prepare(`
-    SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority
+    SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty
     FROM users WHERE role = 'agent' AND disabled_at IS NULL ORDER BY routing_priority, id
   `).all();
   res.json({ agents: agents.map((agent, index) => ({
     ...agent,
-    priorityLabel: index === 0 ? "Primary" : index === 1 ? "Secondary" : `Agent ${index + 1}`,
+    priorityLabel: index === 0 ? "Primary" : index === 1 ? "Secondary" : `Consultant ${index + 1}`,
   })) });
 });
 
 app.patch("/api/agents/:id", requireAuth, requireAdmin, async (req, res) => {
   const agentId = Number(req.params.id);
-  if (!Number.isInteger(agentId) || agentId < 1) return res.status(400).json({ error: "Invalid agent id." });
+  if (!Number.isInteger(agentId) || agentId < 1) return res.status(400).json({ error: "Invalid Consultant id." });
   const hasDisabled = req.body.disabled !== undefined;
   const hasRoutingPriority = req.body.routingPriority !== undefined;
   if ((!hasDisabled && !hasRoutingPriority)
     || (hasDisabled && typeof req.body.disabled !== "boolean")
     || (hasRoutingPriority && (!Number.isInteger(req.body.routingPriority) || req.body.routingPriority < 1))) {
-    return res.status(400).json({ error: "Choose a valid agent access or routing-priority update." });
+    return res.status(400).json({ error: "Choose a valid Consultant access or routing-priority update." });
   }
   const agent = await db.prepare("SELECT id, is_admin, disabled_at, routing_priority FROM users WHERE id = ? AND role = 'agent'").get(agentId);
-  if (!agent) return res.status(404).json({ error: "Agent not found." });
+  if (!agent) return res.status(404).json({ error: "Consultant not found." });
   if (hasDisabled && req.body.disabled && agentId === req.user.id) {
     return res.status(400).json({ error: "You cannot disable your own account." });
   }
@@ -822,12 +976,12 @@ app.patch("/api/agents/:id", requireAuth, requireAdmin, async (req, res) => {
     if (adminCount <= 1) return res.status(400).json({ error: "The last active administrator cannot be disabled." });
   }
   if (hasRoutingPriority) {
-    if (agent.disabled_at) return res.status(400).json({ error: "Enable this agent before changing their routing priority." });
+    if (agent.disabled_at) return res.status(400).json({ error: "Enable this Consultant before changing their routing priority." });
     const orderedAgents = await db.prepare(`
       SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL
       ORDER BY routing_priority, id
     `).all();
-    if (req.body.routingPriority > orderedAgents.length) return res.status(400).json({ error: "Choose a priority within the active agent list." });
+    if (req.body.routingPriority > orderedAgents.length) return res.status(400).json({ error: "Choose a priority within the active Consultant list." });
     const currentIndex = orderedAgents.findIndex((entry) => entry.id === agentId);
     orderedAgents.splice(req.body.routingPriority - 1, 0, orderedAgents.splice(currentIndex, 1)[0]);
     const updatePriority = db.prepare("UPDATE users SET routing_priority = ? WHERE id = ?");
@@ -892,12 +1046,12 @@ app.get("/api/admin/email-status", requireAuth, requireAdmin, async (_req, res) 
 
 app.get("/api/admin/agents", requireAuth, requireAdmin, async (_req, res) => {
   const agents = await db.prepare(`
-    SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority,
+    SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty,
            disabled_at AS disabledAt
     FROM users WHERE role = 'agent' ORDER BY disabled_at IS NOT NULL, routing_priority, id
   `).all();
   const invitations = await db.prepare(`
-    SELECT i.id, i.email, i.expires_at AS expiresAt, i.created_at AS createdAt, u.name AS invitedBy
+    SELECT i.id, i.email, i.specialty, i.expires_at AS expiresAt, i.created_at AS createdAt, u.name AS invitedBy
     FROM agent_invitations i JOIN users u ON u.id = i.invited_by
     WHERE i.accepted_at IS NULL AND datetime(i.expires_at) > CURRENT_TIMESTAMP
     ORDER BY i.created_at DESC
@@ -905,9 +1059,38 @@ app.get("/api/admin/agents", requireAuth, requireAdmin, async (_req, res) => {
   res.json({ agents, invitations });
 });
 
+app.post("/api/admin/agents", requireAuth, requireAdmin, async (req, res) => {
+  const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+  const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
+  const contactNumber = validContactNumber(req.body.contactNumber);
+  const password = typeof req.body.password === "string" ? req.body.password : "";
+  const isAdmin = req.body.isAdmin === true;
+  const specialty = req.body.specialty;
+  if (name.length < 2 || name.length > 120) return res.status(400).json({ error: "Enter a name between 2 and 120 characters." });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: "Enter a valid Consultant email address." });
+  if (!contactNumber) return res.status(400).json({ error: "Enter a valid contact number (7 to 15 digits)." });
+  if (password.length < 12 || password.length > 128) return res.status(400).json({ error: "Set an initial password between 12 and 128 characters." });
+  if (!["functional", "technical", "both"].includes(specialty)) return res.status(400).json({ error: "Choose Functional, Technical, or Both for the Consultant specialty." });
+  try {
+    const routingPriority = Number((await db.prepare("SELECT COALESCE(MAX(routing_priority), 0) AS priority FROM users WHERE role = 'agent'").get()).priority) + 1;
+    const created = await db.prepare(`
+      INSERT INTO users (name, email, contact_number, password_hash, role, is_admin, routing_priority, specialty)
+      VALUES (?, ?, ?, ?, 'agent', ?, ?, ?) RETURNING id, name, email, contact_number AS contactNumber, is_admin AS isAdmin, routing_priority AS routingPriority, specialty
+    `).run(name, email, contactNumber, bcrypt.hashSync(password, 12), Number(isAdmin), routingPriority, specialty);
+    const agent = await db.prepare(`
+      SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty, disabled_at AS disabledAt
+      FROM users WHERE id = ?
+    `).get(created.lastInsertRowid);
+    return res.status(201).json({ agent });
+  } catch (error) {
+    if (error.code === "23505") return res.status(409).json({ error: "An account with this email already exists." });
+    throw error;
+  }
+});
+
 app.get("/api/admin/companies", requireAuth, requireAdmin, async (_req, res) => {
   const companies = await db.prepare(`
-    SELECT c.id, c.name, c.domain, c.is_active AS isActive,
+    SELECT c.id, c.name, c.domain, c.support_valid_until AS supportValidUntil, c.is_active AS isActive,
            COUNT(DISTINCT u.id) AS userCount,
            COUNT(DISTINCT CASE WHEN u.approval_status = 'pending' THEN u.id END) AS pendingCount
     FROM companies c
@@ -920,9 +1103,11 @@ app.get("/api/admin/companies", requireAuth, requireAdmin, async (_req, res) => 
 app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => {
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
   const adminEmail = typeof req.body.adminEmail === "string" ? req.body.adminEmail.trim().toLowerCase() : "";
+  const supportValidUntil = req.body.supportValidUntil;
   const domainInput = typeof req.body.domain === "string" ? req.body.domain.trim().toLowerCase().replace(/^@/, "") : "";
   if (name.length < 2 || name.length > 120) return res.status(400).json({ error: "Company name must be between 2 and 120 characters." });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail) || adminEmail.length > 254) return res.status(400).json({ error: "Enter a valid first company administrator email." });
+  if (!validDateOnly(supportValidUntil)) return res.status(400).json({ error: "Enter a valid Support valid until date." });
   if (domainInput && (!/^(?=.{1,253}$)(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(domainInput))) {
     return res.status(400).json({ error: "Enter a valid company email domain, or leave it blank." });
   }
@@ -938,8 +1123,8 @@ app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => 
   let invitationId;
   try {
     const created = db.transaction(async () => {
-      const company = await db.prepare("INSERT INTO companies (name, slug, domain) VALUES (?, ?, ?)")
-        .run(name, slug, domainInput || null);
+      const company = await db.prepare("INSERT INTO companies (name, slug, domain, support_valid_until) VALUES (?, ?, ?, ?)")
+        .run(name, slug, domainInput || null, supportValidUntil);
       const companyIdValue = Number(company.lastInsertRowid);
       const invitation = await db.prepare(`
         INSERT INTO client_invitations (company_id, email, is_company_admin, token_hash, invited_by, expires_at)
@@ -972,7 +1157,7 @@ app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => 
     return res.status(503).json({ error: "Could not send the company administrator invitation. Check SMTP settings and try again." });
   }
   res.status(201).json({
-    company: await db.prepare("SELECT id, name, domain FROM companies WHERE id = ?").get(companyId),
+    company: await db.prepare("SELECT id, name, domain, support_valid_until AS supportValidUntil FROM companies WHERE id = ?").get(companyId),
     invitation: {
       email: adminEmail,
       emailSent: emailIsConfigured(),
@@ -980,6 +1165,16 @@ app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => 
       ...(!isProduction && !emailIsConfigured() ? { invitationUrl } : {}),
     },
   });
+});
+
+app.patch("/api/admin/companies/:id/support-valid-until", requireAuth, requireAdmin, async (req, res) => {
+  const companyId = Number(req.params.id);
+  const supportValidUntil = req.body.supportValidUntil;
+  if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose a valid company." });
+  if (!validDateOnly(supportValidUntil)) return res.status(400).json({ error: "Enter a valid Support valid until date." });
+  const updated = await db.prepare("UPDATE companies SET support_valid_until = ? WHERE id = ?").run(supportValidUntil, companyId);
+  if (updated.changes !== 1) return res.status(404).json({ error: "Company not found." });
+  res.json({ company: await db.prepare("SELECT id, name, support_valid_until AS supportValidUntil FROM companies WHERE id = ?").get(companyId) });
 });
 
 app.get("/api/company/users", requireAuth, requireCompanyAdmin, async (req, res) => {
@@ -1243,9 +1438,9 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
     return res.status(400).json({ error: "Description must be between 10 and 5,000 characters." });
   }
   const metadata = normalizedTicketMetadata(req.body);
-  if (metadata.error) {
+  if (metadata.error || !["Functional", "Technical"].includes(metadata.category)) {
     discardUploadedFiles(req.files);
-    return res.status(400).json({ error: metadata.error });
+    return res.status(400).json({ error: metadata.error || "Choose Functional or Technical as the ticket category." });
   }
 
   let customerId = req.user.id;
@@ -1263,20 +1458,36 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
     }
     companyId = customer.company_id;
   }
+  if (req.user.role === "customer") {
+    const company = await db.prepare("SELECT support_valid_until AS supportValidUntil FROM companies WHERE id = ? AND is_active = 1").get(companyId);
+    if (supportContractExpired(company?.supportValidUntil)) {
+      discardUploadedFiles(req.files);
+      return res.status(403).json({
+        error: "Please Renewal Your Support Contract",
+        code: "SUPPORT_CONTRACT_EXPIRED",
+      });
+    }
+  }
   const requestedAssignee = req.body.assigneeId === "" || req.body.assigneeId === undefined ? null : Number(req.body.assigneeId);
   if (requestedAssignee !== null && (!Number.isInteger(requestedAssignee) || requestedAssignee < 1)) {
     discardUploadedFiles(req.files);
-    return res.status(400).json({ error: "Choose a valid support agent." });
+    return res.status(400).json({ error: "Choose a valid Consultant." });
   }
-  if (requestedAssignee !== null && !await db.prepare("SELECT id FROM users WHERE id = ? AND role = 'agent' AND disabled_at IS NULL").get(requestedAssignee)) {
+  const requestedAgent = requestedAssignee === null ? null : await db.prepare("SELECT id, specialty FROM users WHERE id = ? AND role = 'agent' AND disabled_at IS NULL").get(requestedAssignee);
+  if (requestedAssignee !== null && !requestedAgent) {
     discardUploadedFiles(req.files);
-    return res.status(400).json({ error: "Choose an active support agent." });
+    return res.status(400).json({ error: "Choose an active Consultant." });
+  }
+  const ticketSpecialty = metadata.category.toLowerCase();
+  if (req.user.role === "customer" && requestedAgent && requestedAgent.specialty !== "both" && requestedAgent.specialty !== ticketSpecialty) {
+    discardUploadedFiles(req.files);
+    return res.status(400).json({ error: "Choose a Consultant who supports the selected ticket category." });
   }
   const agent = req.user.role === "agent"
     ? { id: req.user.id }
     : requestedAssignee
       ? { id: requestedAssignee }
-      : await selectRoutingAgent();
+      : await selectRoutingAgent(metadata.category);
   const assignmentSource = req.user.role === "agent" ? "agent_created"
     : requestedAssignee ? "client_selected" : "automatic";
   const files = req.files || [];
@@ -1338,7 +1549,7 @@ app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
   const isInternal = req.body.internal === true;
   if (!Number.isInteger(ticketId) || ticketId < 1) return res.status(400).json({ error: "Invalid ticket id." });
   if (!await canAccessTicket(req.user, ticketId)) return res.status(404).json({ error: "Ticket not found." });
-  if (isInternal && req.user.role !== "agent") return res.status(403).json({ error: "Internal notes are only available to support agents." });
+  if (isInternal && req.user.role !== "agent") return res.status(403).json({ error: "Internal notes are only available to Consultants." });
   if (body.length < 1 || body.length > 5000) return res.status(400).json({ error: "Reply must be between 1 and 5,000 characters." });
   const ticket = await db.prepare(`
     SELECT t.status, t.first_response_at, t.email_thread_id, t.subject, t.customer_id, c.email AS customer_email
@@ -1384,13 +1595,24 @@ app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
   res.status(201).json({ message, emailQueued: !isInternal && req.user.role !== "customer" && emailIsConfigured() });
 });
 
-app.patch("/api/tickets/:id", requireAuth, requireAgent, async (req, res) => {
+app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
   const ticketId = Number(req.params.id);
   const status = req.body.status;
   const priority = req.body.priority;
   const assigneeId = req.body.assigneeId;
   const metadataRequested = ["category", "tags", "customFields"].some((key) => req.body[key] !== undefined);
   if (!Number.isInteger(ticketId) || ticketId < 1) return res.status(400).json({ error: "Invalid ticket id." });
+  const existing = await db.prepare("SELECT * FROM tickets WHERE id = ?").get(ticketId);
+  if (!existing || !await canAccessTicket(req.user, ticketId)) return res.status(404).json({ error: "Ticket not found." });
+  if (req.user.role === "customer") {
+    const assignmentOnly = assigneeId !== undefined && status === undefined && priority === undefined && !metadataRequested
+      && Object.keys(req.body).every((key) => key === "assigneeId");
+    if (!assignmentOnly || existing.customer_id !== req.user.id) {
+      return res.status(403).json({ error: "Only the client linked to this ticket can change its Consultant assignment." });
+    }
+  } else if (!req.user.is_admin && assigneeId !== undefined && existing.assignee_id !== req.user.id) {
+    return res.status(403).json({ error: "Only a Super Admin or the Consultant assigned to this ticket can change its assignment." });
+  }
   if (status !== undefined && !["open", "in_progress", "waiting", "resolved"].includes(status)) {
     return res.status(400).json({ error: "Invalid ticket status." });
   }
@@ -1398,12 +1620,20 @@ app.patch("/api/tickets/:id", requireAuth, requireAgent, async (req, res) => {
     return res.status(400).json({ error: "Invalid ticket priority." });
   }
   if (assigneeId !== undefined && assigneeId !== null) {
-    if (!Number.isInteger(assigneeId) || assigneeId < 1) return res.status(400).json({ error: "Invalid agent assignment." });
-    const agent = await db.prepare("SELECT id FROM users WHERE id = ? AND role = 'agent' AND disabled_at IS NULL").get(assigneeId);
-    if (!agent) return res.status(400).json({ error: "Choose a valid support agent." });
+    if (!Number.isInteger(assigneeId) || assigneeId < 1) return res.status(400).json({ error: "Invalid Consultant assignment." });
+    const agent = await db.prepare("SELECT id, specialty FROM users WHERE id = ? AND role = 'agent' AND disabled_at IS NULL").get(assigneeId);
+    if (!agent) return res.status(400).json({ error: "Choose a valid Consultant." });
+    const ticketSpecialty = ["Functional", "Technical"].includes(existing.category) ? existing.category.toLowerCase() : null;
+    if (ticketSpecialty && agent.specialty !== "both" && agent.specialty !== ticketSpecialty) {
+      return res.status(400).json({ error: "Choose a Consultant who supports this ticket category." });
+    }
   }
-  const existing = await db.prepare("SELECT * FROM tickets WHERE id = ?").get(ticketId);
-  if (!existing) return res.status(404).json({ error: "Ticket not found." });
+  if (req.user.role === "customer" && (status !== undefined || priority !== undefined || metadataRequested)) {
+    return res.status(403).json({ error: "Clients can only change the Consultant assignment on this ticket." });
+  }
+  if (req.user.role === "customer" && assigneeId === undefined) {
+    return res.status(403).json({ error: "Clients can only change the Consultant assignment on this ticket." });
+  }
   const metadata = metadataRequested ? normalizedTicketMetadata(req.body, {
     category: existing.category,
     tags: parseJsonArray(existing.tags_json),

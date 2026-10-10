@@ -11,7 +11,9 @@
     "dev:api": "node --watch server/index.js",
     "dev:web": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "test": "node --test",
     "start": "node server/index.js",
+    "db:reset-local": "node scripts/reset-local-database.js",
     "db:import-sqlite": "node scripts/import-sqlite-to-postgres.js"
   },
   "dependencies": {
