@@ -26,7 +26,7 @@ To clear a local development database, run `npm run db:reset-local -- --confirm`
 
 Set `NODE_ENV=production`, `DATABASE_URL` to your PostgreSQL connection string, a unique random `JWT_SECRET` of at least 32 bytes, and the three Super Admin bootstrap values from `.env.example` before first startup. Set `APP_BASE_URL` to the public HTTPS URL. The first start of an empty database creates only this Super Admin. Build the frontend with `npm run build`, then run `npm start`; the Node server serves the built UI and API together.
 
-The bootstrap values are only used when the PostgreSQL database has no users. The Super Admin password must be at least 12 characters. After confirming the Super Admin can sign in, remove the `SEED_*` values from the hosting environment. Do not expose an unconfigured instance to the public internet.
+The bootstrap values are only used when the PostgreSQL database has no users. Passwords must be 8 to 128 characters. After confirming the Super Admin can sign in, remove the `SEED_*` values from the hosting environment. Do not expose an unconfigured instance to the public internet.
 
 Run `npm test` to execute the local unit tests. The app records applied PostgreSQL schema versions in `schema_migrations`; the initial schema baseline is applied before the server starts. Back up production data before deploying a schema upgrade and confirm the hosting provider's backup and restore process.
 

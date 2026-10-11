@@ -85,8 +85,20 @@ function publicUser(user) {
   };
 }
 
-function createToken(user) {
-  return jwt.sign({ sub: user.id }, tokenSecret, { expiresIn: "8h" });
+async function companyMemberships(userId) {
+  return db.prepare(`
+    SELECT c.id, c.name, c.support_valid_until AS supportValidUntil,
+           m.is_company_admin AS isCompanyAdmin
+    FROM company_memberships m JOIN companies c ON c.id = m.company_id
+    WHERE m.user_id = ? AND c.is_active = 1
+    ORDER BY c.name
+  `).all(userId);
+}
+
+function createToken(user, activeCompanyId = user.company_id) {
+  const payload = { sub: user.id };
+  if (user.role === "customer" && activeCompanyId) payload.companyId = Number(activeCompanyId);
+  return jwt.sign(payload, tokenSecret, { expiresIn: "8h" });
 }
 
 function hashToken(token) {
@@ -134,6 +146,20 @@ async function requireAuth(req, res, next) {
   if (!user) return res.status(401).json({ error: "Your session is no longer valid." });
   if (user.role === "customer" && user.approval_status !== "approved") {
     return res.status(403).json({ error: "Your company account is awaiting administrator approval." });
+  }
+  if (user.role === "customer") {
+    const activeCompanyId = Number(payload.companyId) || Number(user.company_id);
+    const membership = await db.prepare(`
+      SELECT c.id, c.name, c.support_valid_until AS supportValidUntil,
+             m.is_company_admin AS isCompanyAdmin
+      FROM company_memberships m JOIN companies c ON c.id = m.company_id
+      WHERE m.user_id = ? AND m.company_id = ? AND c.is_active = 1
+    `).get(user.id, activeCompanyId);
+    if (!membership) return res.status(403).json({ error: "This account no longer has access to the selected company." });
+    user.company_id = membership.id;
+    user.company_name = membership.name;
+    user.company_support_valid_until = membership.supportValidUntil;
+    user.is_company_admin = membership.isCompanyAdmin;
   }
   req.user = user;
   next();
@@ -223,7 +249,8 @@ async function ticketSummary(row) {
     status: row.status,
     priority: row.priority,
     source: row.source,
-    category: row.category || "Other",
+    isHistoricalImport: Boolean(row.import_key),
+    category: row.import_key ? "" : row.category || "Other",
     tags: parseJsonArray(row.tags_json),
     customFields: parseJsonObject(row.custom_fields_json),
     rating: row.rating ? {
@@ -235,7 +262,12 @@ async function ticketSummary(row) {
     company: row.company_name ? { id: row.company_id, name: row.company_name } : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    customer: { id: row.customer_id, name: row.customer_name, email: row.customer_email, contactNumber: row.customer_contact_number || null },
+    customer: row.customer_id || row.reported_client_name || row.reported_client_contact ? {
+      id: row.customer_id || null,
+      name: row.customer_name || row.reported_client_name || "",
+      email: row.customer_email || "",
+      contactNumber: row.customer_contact_number || row.reported_client_contact || null,
+    } : { id: null, name: "", email: "", contactNumber: null },
     assignee: row.assignee_id ? { id: row.assignee_id, name: row.assignee_name, email: row.assignee_email, contactNumber: row.assignee_contact_number || null } : null,
     messageCount: row.message_count,
     lastMessage: row.last_message || row.description,
@@ -258,7 +290,7 @@ const ticketSelect = `
          r.rating, r.comment AS rating_comment, r.created_at AS rating_created_at,
          r.customer_id AS rating_customer_id
   FROM tickets t
-  JOIN users c ON c.id = t.customer_id
+  LEFT JOIN users c ON c.id = t.customer_id
   LEFT JOIN companies co ON co.id = t.company_id
   LEFT JOIN users a ON a.id = t.assignee_id
   LEFT JOIN ticket_ratings r ON r.ticket_id = t.id
@@ -297,8 +329,10 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
   if (!email || !password) return res.status(400).json({ error: "Enter your email and password." });
 
   const user = await db.prepare(`
-    SELECT u.*, c.name AS company_name, c.support_valid_until AS company_support_valid_until
+    SELECT u.*, c.name AS company_name, c.support_valid_until AS company_support_valid_until,
+           COALESCE(m.is_company_admin, u.is_company_admin) AS current_company_admin
     FROM users u LEFT JOIN companies c ON c.id = u.company_id
+    LEFT JOIN company_memberships m ON m.user_id = u.id AND m.company_id = u.company_id
     WHERE u.email = ? COLLATE NOCASE AND u.disabled_at IS NULL
   `).get(email);
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
@@ -307,14 +341,19 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
   if (user.role === "customer" && user.approval_status !== "approved") {
     return res.status(403).json({ error: "Your company account is awaiting administrator approval." });
   }
+  if (user.role === "customer") user.is_company_admin = user.current_company_admin;
 
-  res.cookie("relay_session", createToken(user), {
+  const companies = user.role === "customer" ? await companyMemberships(user.id) : [];
+  if (user.role === "customer" && !companies.some((company) => company.id === user.company_id)) {
+    return res.status(403).json({ error: "This client account is not linked to an active company." });
+  }
+  res.cookie("relay_session", createToken(user, user.company_id), {
     httpOnly: true,
     secure: isProduction,
     sameSite: "lax",
     maxAge: 8 * 60 * 60 * 1000,
   });
-  res.json({ user: publicUser(user) });
+  res.json({ user: publicUser(user), companies });
 });
 
 app.get("/api/companies/available", async (_req, res) => {
@@ -332,7 +371,7 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: "Enter a valid email address." });
   if (!contactNumber) return res.status(400).json({ error: "Enter a valid contact number (7 to 15 digits)." });
-  if (password.length < 12 || password.length > 128) return res.status(400).json({ error: "Password must be between 12 and 128 characters." });
+  if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Password must be between 8 and 128 characters." });
 
   let company;
   let approvalStatus = "pending";
@@ -358,11 +397,14 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
       INSERT INTO users (name, email, contact_number, password_hash, role, company_id, approval_status)
       VALUES (?, ?, ?, ?, 'customer', ?, ?)
     `).run(name, email, contactNumber, bcrypt.hashSync(password, 12), company.id, approvalStatus)).lastInsertRowid);
+    await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin) VALUES (?, ?, 0) ON CONFLICT DO NOTHING")
+      .run(id, company.id);
     if (approvalStatus === "pending") {
       await db.prepare(`
         INSERT INTO notifications (user_id, ticket_id, kind, message)
-        SELECT id, NULL, ?, ? FROM users
-        WHERE role = 'customer' AND is_company_admin = 1 AND company_id = ? AND approval_status = 'approved'
+        SELECT u.id, NULL, ?, ? FROM users u
+        JOIN company_memberships m ON m.user_id = u.id
+        WHERE u.role = 'customer' AND m.is_company_admin = 1 AND m.company_id = ? AND u.approval_status = 'approved'
       `).run(`company_join_request:${id}`, `${name} (${email}) requested access to ${company.name}.`, company.id);
       return res.status(202).json({
         pendingApproval: true,
@@ -374,13 +416,13 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
              u.approval_status, c.name AS company_name, c.support_valid_until AS company_support_valid_until
       FROM users u JOIN companies c ON c.id = u.company_id WHERE u.id = ?
     `).get(id);
-    res.cookie("relay_session", createToken(user), {
+    res.cookie("relay_session", createToken(user, user.company_id), {
       httpOnly: true,
       secure: isProduction,
       sameSite: "lax",
       maxAge: 8 * 60 * 60 * 1000,
     });
-    return res.status(201).json({ user: publicUser(user) });
+    return res.status(201).json({ user: publicUser(user), companies: await companyMemberships(user.id) });
   } catch (error) {
     if (error.code === "23505") return res.status(409).json({ error: "An account with this email already exists." });
     throw error;
@@ -426,8 +468,8 @@ app.post("/api/auth/password-reset", authLimiter, async (req, res) => {
 app.post("/api/auth/password-reset/complete", authLimiter, async (req, res) => {
   const token = typeof req.body.token === "string" ? req.body.token : "";
   const password = typeof req.body.password === "string" ? req.body.password : "";
-  if (password.length < 12 || password.length > 128) {
-    return res.status(400).json({ error: "Password must be between 12 and 128 characters." });
+  if (password.length < 8 || password.length > 128) {
+    return res.status(400).json({ error: "Password must be between 8 and 128 characters." });
   }
   const tokenHash = hashToken(token);
   const reset = await db.prepare(`
@@ -461,7 +503,7 @@ app.post("/api/auth/agent-invitations/accept", async (req, res) => {
   const password = typeof req.body.password === "string" ? req.body.password : "";
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
   if (!contactNumber) return res.status(400).json({ error: "Enter a valid contact number (7 to 15 digits)." });
-  if (password.length < 12 || password.length > 128) return res.status(400).json({ error: "Password must be between 12 and 128 characters." });
+  if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Password must be between 8 and 128 characters." });
   const tokenHash = hashToken(token);
   const invitation = await db.prepare(`
     SELECT id, email, specialty FROM agent_invitations
@@ -515,7 +557,7 @@ app.post("/api/auth/client-invitations/accept", authLimiter, async (req, res) =>
   const password = typeof req.body.password === "string" ? req.body.password : "";
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
   if (!contactNumber) return res.status(400).json({ error: "Enter a valid contact number (7 to 15 digits)." });
-  if (password.length < 12 || password.length > 128) return res.status(400).json({ error: "Password must be between 12 and 128 characters." });
+  if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Password must be between 8 and 128 characters." });
   const tokenHash = hashToken(token);
   const invitation = await db.prepare(`
     SELECT i.id, i.email, i.company_id, i.is_company_admin
@@ -530,6 +572,8 @@ app.post("/api/auth/client-invitations/accept", authLimiter, async (req, res) =>
         INSERT INTO users (name, email, contact_number, password_hash, role, company_id, is_company_admin)
         VALUES (?, ?, ?, ?, 'customer', ?, ?)
       `).run(name, invitation.email, contactNumber, bcrypt.hashSync(password, 12), invitation.company_id, invitation.is_company_admin);
+      await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin) VALUES (?, ?, ?) ON CONFLICT DO NOTHING")
+        .run(user.lastInsertRowid, invitation.company_id, invitation.is_company_admin);
       const updated = await db.prepare("UPDATE client_invitations SET accepted_at = CURRENT_TIMESTAMP WHERE id = ? AND accepted_at IS NULL")
         .run(invitation.id);
       if (updated.changes !== 1) throw new Error("Company invitation has already been accepted.");
@@ -541,13 +585,13 @@ app.post("/api/auth/client-invitations/accept", authLimiter, async (req, res) =>
              u.approval_status, c.name AS company_name, c.support_valid_until AS company_support_valid_until
       FROM users u JOIN companies c ON c.id = u.company_id WHERE u.id = ?
     `).get(userId);
-    res.cookie("relay_session", createToken(user), {
+    res.cookie("relay_session", createToken(user, user.company_id), {
       httpOnly: true,
       secure: isProduction,
       sameSite: "lax",
       maxAge: 8 * 60 * 60 * 1000,
     });
-    return res.status(201).json({ user: publicUser(user) });
+    return res.status(201).json({ user: publicUser(user), companies: await companyMemberships(user.id) });
   } catch (error) {
     if (error.code === "23505") return res.status(409).json({ error: "An account with this email already exists." });
     if (error.message === "Company invitation has already been accepted.") return res.status(400).json({ error: "This company invitation has already been used." });
@@ -615,7 +659,37 @@ app.get("/api/agent-invitations", requireAuth, requireAdmin, async (_req, res) =
   res.json({ invitations });
 });
 
-app.get("/api/auth/me", requireAuth, (req, res) => res.json({ user: publicUser(req.user) }));
+app.get("/api/auth/me", requireAuth, async (req, res) => res.json({
+  user: publicUser(req.user),
+  companies: req.user.role === "customer" ? await companyMemberships(req.user.id) : [],
+}));
+
+app.post("/api/auth/select-company", requireAuth, async (req, res) => {
+  if (req.user.role !== "customer") return res.status(403).json({ error: "Company selection is only available to client accounts." });
+  const companyId = Number(req.body.companyId);
+  if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose a valid company." });
+  const membership = await db.prepare(`
+    SELECT c.id, c.name, c.support_valid_until AS supportValidUntil,
+           m.is_company_admin AS isCompanyAdmin
+    FROM company_memberships m JOIN companies c ON c.id = m.company_id
+    WHERE m.user_id = ? AND m.company_id = ? AND c.is_active = 1
+  `).get(req.user.id, companyId);
+  if (!membership) return res.status(403).json({ error: "This account does not have access to that company." });
+  const activeUser = {
+    ...req.user,
+    company_id: membership.id,
+    company_name: membership.name,
+    company_support_valid_until: membership.supportValidUntil,
+    is_company_admin: membership.isCompanyAdmin,
+  };
+  res.cookie("relay_session", createToken(activeUser, membership.id), {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: "lax",
+    maxAge: 8 * 60 * 60 * 1000,
+  });
+  res.json({ user: publicUser(activeUser), companies: await companyMemberships(req.user.id) });
+});
 
 app.post("/api/auth/logout", (_req, res) => {
   res.clearCookie("relay_session", { httpOnly: true, secure: isProduction, sameSite: "lax" });
@@ -756,11 +830,13 @@ app.get("/api/reports", requireAuth, async (req, res) => {
                COUNT(DISTINCT CASE WHEN t.status = 'in_progress' THEN t.id END) AS inProgress,
                COUNT(DISTINCT CASE WHEN t.resolved_at >= ? AND t.resolved_at < ? THEN t.id END) AS resolvedInPeriod
         FROM users u
-        LEFT JOIN companies c ON c.id = u.company_id
-        LEFT JOIN tickets t ON t.customer_id = u.id
+        JOIN company_memberships m ON m.user_id = u.id
+        JOIN companies c ON c.id = m.company_id
+        LEFT JOIN tickets t ON t.customer_id = u.id AND t.company_id = m.company_id
           AND ${isAllCompaniesScope ? "1 = 1" : "t.company_id = ?"}
         WHERE u.role = 'customer' AND u.approval_status = 'approved'
-          AND ${isAllCompaniesScope ? "1 = 1" : "u.company_id = ?"}
+          AND c.is_active = 1
+          AND ${isAllCompaniesScope ? "1 = 1" : "m.company_id = ?"}
         GROUP BY u.id, c.name ORDER BY 5 DESC, u.name
       `).all(
         startAt, endAt, startAt, endAt,
@@ -868,10 +944,10 @@ app.get("/api/report-tickets", requireAuth, async (req, res) => {
   const tickets = await db.prepare(`
     SELECT t.id, t.subject, t.status, t.priority, t.updated_at AS updatedAt,
            t.company_id AS companyId, t.customer_id AS customerId, t.assignee_id AS consultantId,
-           co.name AS companyName, customer.name AS customerName,
+           co.name AS companyName, COALESCE(NULLIF(t.reported_client_name, ''), customer.name, '') AS customerName,
            consultant.name AS consultantName
     FROM tickets t
-    JOIN users customer ON customer.id = t.customer_id
+    LEFT JOIN users customer ON customer.id = t.customer_id
     LEFT JOIN companies co ON co.id = t.company_id
     LEFT JOIN users consultant ON consultant.id = t.assignee_id
     ${where}
@@ -884,9 +960,9 @@ app.get("/api/report-tickets", requireAuth, async (req, res) => {
       : Promise.resolve([]),
     db.prepare(`
       SELECT u.id, u.name, u.email, c.name AS companyName
-      FROM users u LEFT JOIN companies c ON c.id = u.company_id
+      FROM users u JOIN company_memberships m ON m.user_id = u.id JOIN companies c ON c.id = m.company_id
       WHERE u.role = 'customer' AND u.approval_status = 'approved'
-        ${scopeCompanyId === null ? "" : "AND u.company_id = ?"}
+        ${scopeCompanyId === null ? "" : "AND m.company_id = ?"}
       ORDER BY c.name, u.name
     `).all(...(scopeCompanyId === null ? [] : [scopeCompanyId])),
     db.prepare("SELECT id, name FROM users WHERE role = 'agent' ORDER BY name, id").all(),
@@ -896,8 +972,8 @@ app.get("/api/report-tickets", requireAuth, async (req, res) => {
 
 app.get("/api/customers", requireAuth, requireAgent, async (_req, res) => {
   const customers = await db.prepare(`
-    SELECT u.id, u.name, u.email, u.company_id AS companyId, c.name AS companyName
-    FROM users u LEFT JOIN companies c ON c.id = u.company_id
+    SELECT u.id, u.name, u.email, m.company_id AS companyId, c.name AS companyName
+    FROM users u JOIN company_memberships m ON m.user_id = u.id JOIN companies c ON c.id = m.company_id
     WHERE u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL
     ORDER BY c.name, u.name
   `).all();
@@ -913,12 +989,12 @@ app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
   }
 
   const searchClause = search
-    ? `AND (LOWER(t.subject) LIKE LOWER(?) OR LOWER(t.description) LIKE LOWER(?) OR LOWER(COALESCE(t.category, '')) LIKE LOWER(?) OR LOWER(customer.name) LIKE LOWER(?) OR LOWER(COALESCE(consultant.name, '')) LIKE LOWER(?) OR LOWER(COALESCE(solution.body, '')) LIKE LOWER(?))`
+    ? `AND (LOWER(t.subject) LIKE LOWER(?) OR LOWER(t.description) LIKE LOWER(?) OR LOWER(COALESCE(t.category, '')) LIKE LOWER(?) OR LOWER(COALESCE(t.reported_client_name, customer.name, '')) LIKE LOWER(?) OR LOWER(COALESCE(t.historical_consultant_name, consultant.name, '')) LIKE LOWER(?) OR LOWER(COALESCE(t.historical_solution, solution.body, '')) LIKE LOWER(?))`
     : "";
   const searchParams = search ? Array(6).fill(`%${search}%`) : [];
   const knowledgeFrom = `
     FROM tickets t
-    JOIN users customer ON customer.id = t.customer_id
+    LEFT JOIN users customer ON customer.id = t.customer_id
     LEFT JOIN users consultant ON consultant.id = COALESCE(
       t.resolved_by, t.assignee_id,
       (SELECT h.agent_id FROM ticket_assignment_history h
@@ -935,9 +1011,10 @@ app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
   const tickets = await db.prepare(`
     SELECT t.id, t.subject AS issue, t.description,
            t.created_at AS reportedAt, COALESCE(t.resolved_at, t.updated_at) AS closedAt,
-           COALESCE(solution.body, 'No consultant solution recorded.') AS solution,
-           COALESCE(t.category, 'Unspecified') AS solutionType,
-           customer.name AS clientName, COALESCE(consultant.name, 'Unassigned') AS consultantName
+           COALESCE(t.historical_solution, solution.body, 'No consultant solution recorded.') AS solution,
+           CASE WHEN t.import_key IS NOT NULL THEN '' ELSE COALESCE(t.category, 'Unspecified') END AS solutionType,
+           COALESCE(NULLIF(t.reported_client_name, ''), customer.name, '') AS clientName,
+           COALESCE(NULLIF(t.historical_consultant_name, ''), consultant.name, '') AS consultantName
     ${knowledgeFrom}
     ORDER BY COALESCE(t.resolved_at, t.updated_at) DESC, t.id DESC
     LIMIT ? OFFSET ?
@@ -961,9 +1038,11 @@ app.patch("/api/agents/:id", requireAuth, requireAdmin, async (req, res) => {
   if (!Number.isInteger(agentId) || agentId < 1) return res.status(400).json({ error: "Invalid Consultant id." });
   const hasDisabled = req.body.disabled !== undefined;
   const hasRoutingPriority = req.body.routingPriority !== undefined;
-  if ((!hasDisabled && !hasRoutingPriority)
+  const hasSpecialty = req.body.specialty !== undefined;
+  if ((!hasDisabled && !hasRoutingPriority && !hasSpecialty)
     || (hasDisabled && typeof req.body.disabled !== "boolean")
-    || (hasRoutingPriority && (!Number.isInteger(req.body.routingPriority) || req.body.routingPriority < 1))) {
+    || (hasRoutingPriority && (!Number.isInteger(req.body.routingPriority) || req.body.routingPriority < 1))
+    || (hasSpecialty && !["functional", "technical", "both"].includes(req.body.specialty))) {
     return res.status(400).json({ error: "Choose a valid Consultant access or routing-priority update." });
   }
   const agent = await db.prepare("SELECT id, is_admin, disabled_at, routing_priority FROM users WHERE id = ? AND role = 'agent'").get(agentId);
@@ -1004,7 +1083,8 @@ app.patch("/api/agents/:id", requireAuth, requireAdmin, async (req, res) => {
       await normalizeActiveAgentPriorities();
     })();
   }
-  res.json({ agent: await db.prepare("SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority, disabled_at AS disabledAt FROM users WHERE id = ?").get(agentId) });
+  if (hasSpecialty) await db.prepare("UPDATE users SET specialty = ? WHERE id = ?").run(req.body.specialty, agentId);
+  res.json({ agent: await db.prepare("SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty, disabled_at AS disabledAt FROM users WHERE id = ?").get(agentId) });
 });
 
 app.get("/api/admin/sla-settings", requireAuth, requireAdmin, async (_req, res) => {
@@ -1069,7 +1149,7 @@ app.post("/api/admin/agents", requireAuth, requireAdmin, async (req, res) => {
   if (name.length < 2 || name.length > 120) return res.status(400).json({ error: "Enter a name between 2 and 120 characters." });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: "Enter a valid Consultant email address." });
   if (!contactNumber) return res.status(400).json({ error: "Enter a valid contact number (7 to 15 digits)." });
-  if (password.length < 12 || password.length > 128) return res.status(400).json({ error: "Set an initial password between 12 and 128 characters." });
+  if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Set an initial password between 8 and 128 characters." });
   if (!["functional", "technical", "both"].includes(specialty)) return res.status(400).json({ error: "Choose Functional, Technical, or Both for the Consultant specialty." });
   try {
     const routingPriority = Number((await db.prepare("SELECT COALESCE(MAX(routing_priority), 0) AS priority FROM users WHERE role = 'agent'").get()).priority) + 1;
@@ -1094,10 +1174,43 @@ app.get("/api/admin/companies", requireAuth, requireAdmin, async (_req, res) => 
            COUNT(DISTINCT u.id) AS userCount,
            COUNT(DISTINCT CASE WHEN u.approval_status = 'pending' THEN u.id END) AS pendingCount
     FROM companies c
-    LEFT JOIN users u ON u.company_id = c.id AND u.role = 'customer'
+    LEFT JOIN company_memberships m ON m.company_id = c.id
+    LEFT JOIN users u ON u.id = m.user_id AND u.role = 'customer'
     GROUP BY c.id ORDER BY c.name
   `).all();
   res.json({ companies });
+});
+
+app.get("/api/admin/client-accounts", requireAuth, requireAdmin, async (_req, res) => {
+  const clients = await db.prepare(`
+    SELECT u.id, u.name, u.email, u.contact_number AS contactNumber,
+           COALESCE(json_agg(json_build_object('id', c.id, 'name', c.name)) FILTER (WHERE c.id IS NOT NULL), '[]') AS companies
+    FROM users u
+    LEFT JOIN company_memberships m ON m.user_id = u.id
+    LEFT JOIN companies c ON c.id = m.company_id AND c.is_active = 1
+    WHERE u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL
+    GROUP BY u.id ORDER BY u.name, u.email
+  `).all();
+  res.json({ clients });
+});
+
+app.post("/api/admin/companies/:id/clients", requireAuth, requireAdmin, async (req, res) => {
+  const companyId = Number(req.params.id);
+  const userId = Number(req.body.userId);
+  if (!Number.isInteger(companyId) || companyId < 1 || !Number.isInteger(userId) || userId < 1) {
+    return res.status(400).json({ error: "Choose a valid company and client account." });
+  }
+  const company = await db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(companyId);
+  if (!company) return res.status(404).json({ error: "Company not found or inactive." });
+  const client = await db.prepare("SELECT id, name FROM users WHERE id = ? AND role = 'customer' AND approval_status = 'approved' AND disabled_at IS NULL").get(userId);
+  if (!client) return res.status(404).json({ error: "Active client account not found." });
+  try {
+    await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin) VALUES (?, ?, 0)").run(userId, companyId);
+  } catch (error) {
+    if (error.code === "23505") return res.status(409).json({ error: "This client already belongs to that company." });
+    throw error;
+  }
+  res.status(201).json({ message: `${client.name} can now access ${company.name}.` });
 });
 
 app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => {
@@ -1177,6 +1290,39 @@ app.patch("/api/admin/companies/:id/support-valid-until", requireAuth, requireAd
   res.json({ company: await db.prepare("SELECT id, name, support_valid_until AS supportValidUntil FROM companies WHERE id = ?").get(companyId) });
 });
 
+app.post("/api/company/users", requireAuth, requireCompanyAdmin, async (req, res) => {
+  if (req.user.role !== "customer") return res.status(403).json({ error: "Client accounts must be created by a company administrator in the client portal." });
+  const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+  const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
+  const contactNumber = validContactNumber(req.body.contactNumber);
+  const password = typeof req.body.password === "string" ? req.body.password : "";
+  if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: "Enter a valid client email address." });
+  if (!contactNumber) return res.status(400).json({ error: "Enter a valid contact number (7 to 15 digits)." });
+  if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Password must be between 8 and 128 characters." });
+  const company = await db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(req.user.company_id);
+  if (!company) return res.status(404).json({ error: "Company not found or inactive." });
+  if (await db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(email)) {
+    return res.status(409).json({ error: "An account with this email already exists." });
+  }
+  try {
+    const created = await db.prepare(`
+      INSERT INTO users (name, email, contact_number, password_hash, role, company_id, approval_status)
+      VALUES (?, ?, ?, ?, 'customer', ?, 'approved') RETURNING id
+    `).run(name, email, contactNumber, bcrypt.hashSync(password, 12), company.id);
+    await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin) VALUES (?, ?, 0)").run(created.lastInsertRowid, company.id);
+    const user = await db.prepare(`
+      SELECT id, name, email, contact_number AS contactNumber, is_company_admin AS isCompanyAdmin,
+             approval_status AS approvalStatus, disabled_at AS disabledAt, created_at AS createdAt
+      FROM users WHERE id = ?
+    `).get(created.lastInsertRowid);
+    return res.status(201).json({ user, companyName: company.name });
+  } catch (error) {
+    if (error.code === "23505") return res.status(409).json({ error: "An account with this email already exists." });
+    throw error;
+  }
+});
+
 app.get("/api/company/users", requireAuth, requireCompanyAdmin, async (req, res) => {
   const requestedCompanyId = Number(req.query.companyId);
   const companyId = req.user.role === "agent" && req.user.is_admin ? requestedCompanyId : req.user.company_id;
@@ -1184,9 +1330,10 @@ app.get("/api/company/users", requireAuth, requireCompanyAdmin, async (req, res)
   const company = await db.prepare("SELECT id, name FROM companies WHERE id = ?").get(companyId);
   if (!company) return res.status(404).json({ error: "Company not found." });
   const users = await db.prepare(`
-    SELECT id, name, email, is_company_admin AS isCompanyAdmin,
-           approval_status AS approvalStatus, disabled_at AS disabledAt, created_at AS createdAt
-    FROM users WHERE company_id = ? AND role = 'customer' ORDER BY approval_status = 'pending' DESC, name
+    SELECT u.id, u.name, u.email, u.contact_number AS contactNumber, m.is_company_admin AS isCompanyAdmin,
+           u.approval_status AS approvalStatus, u.disabled_at AS disabledAt, u.created_at AS createdAt
+    FROM users u JOIN company_memberships m ON m.user_id = u.id
+    WHERE m.company_id = ? AND u.role = 'customer' ORDER BY u.approval_status = 'pending' DESC, u.name
   `).all(companyId);
   const invitations = await db.prepare(`
     SELECT id, email, is_company_admin AS isCompanyAdmin, expires_at AS expiresAt, created_at AS createdAt
@@ -1265,12 +1412,18 @@ app.delete("/api/company/join-codes/:id", requireAuth, requireCompanyAdmin, asyn
 
 app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, async (req, res) => {
   const userId = Number(req.params.id);
-  const user = await db.prepare("SELECT id, company_id, is_company_admin, approval_status, disabled_at FROM users WHERE id = ? AND role = 'customer'").get(userId);
+  const companyId = req.user.role === "customer" ? req.user.company_id : Number(req.body.companyId);
+  const user = await db.prepare(`
+    SELECT u.id, u.approval_status, u.disabled_at, m.is_company_admin
+    FROM users u JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ?
+    WHERE u.id = ? AND u.role = 'customer'
+  `).get(companyId, userId);
   if (!user) return res.status(404).json({ error: "Client user not found." });
   const isWorkspaceAdmin = req.user.role === "agent" && req.user.is_admin;
-  if (!isWorkspaceAdmin && user.company_id !== req.user.company_id) return res.status(404).json({ error: "Client user not found." });
+  if (!isWorkspaceAdmin && companyId !== req.user.company_id) return res.status(404).json({ error: "Client user not found." });
   const updates = [];
   const values = [];
+  let membershipChanged = false;
   if (req.body.approvalStatus !== undefined) {
     if (!["approved", "rejected"].includes(req.body.approvalStatus)) return res.status(400).json({ error: "Choose approved or rejected enrollment status." });
     updates.push("approval_status = ?");
@@ -1279,31 +1432,35 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, async (req
   if (req.body.isCompanyAdmin !== undefined) {
     if (typeof req.body.isCompanyAdmin !== "boolean") return res.status(400).json({ error: "Company administrator setting must be true or false." });
     if (req.body.isCompanyAdmin !== Boolean(user.is_company_admin) && req.body.isCompanyAdmin === false) {
-      const adminCount = (await db.prepare("SELECT COUNT(*) AS count FROM users WHERE company_id = ? AND is_company_admin = 1 AND approval_status = 'approved' AND disabled_at IS NULL").get(user.company_id)).count;
+      const adminCount = (await db.prepare("SELECT COUNT(*) AS count FROM company_memberships m JOIN users u ON u.id = m.user_id WHERE m.company_id = ? AND m.is_company_admin = 1 AND u.approval_status = 'approved' AND u.disabled_at IS NULL").get(companyId)).count;
       if (user.is_company_admin && adminCount <= 1) return res.status(400).json({ error: "The last active company administrator cannot be removed." });
+      await db.prepare("UPDATE company_memberships SET is_company_admin = 0 WHERE user_id = ? AND company_id = ?").run(userId, companyId);
+      membershipChanged = true;
     }
-    updates.push("is_company_admin = ?");
-    values.push(req.body.isCompanyAdmin ? 1 : 0);
+    if (req.body.isCompanyAdmin && !user.is_company_admin) {
+      await db.prepare("UPDATE company_memberships SET is_company_admin = 1 WHERE user_id = ? AND company_id = ?").run(userId, companyId);
+      membershipChanged = true;
+    }
   }
   if (req.body.disabled !== undefined) {
     if (typeof req.body.disabled !== "boolean") return res.status(400).json({ error: "Disabled setting must be true or false." });
     if (req.body.disabled && user.is_company_admin) {
-      const adminCount = (await db.prepare("SELECT COUNT(*) AS count FROM users WHERE company_id = ? AND is_company_admin = 1 AND approval_status = 'approved' AND disabled_at IS NULL").get(user.company_id)).count;
+      const adminCount = (await db.prepare("SELECT COUNT(*) AS count FROM company_memberships m JOIN users u ON u.id = m.user_id WHERE m.company_id = ? AND m.is_company_admin = 1 AND u.approval_status = 'approved' AND u.disabled_at IS NULL").get(companyId)).count;
       if (adminCount <= 1) return res.status(400).json({ error: "The last active company administrator cannot be disabled." });
     }
     updates.push("disabled_at = ?");
     values.push(req.body.disabled ? new Date().toISOString() : null);
   }
-  if (updates.length === 0) return res.status(400).json({ error: "Choose an account setting to update." });
+  if (updates.length === 0 && !membershipChanged) return res.status(400).json({ error: "Choose an account setting to update." });
   values.push(userId);
-  await db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  if (updates.length) await db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
   await db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND kind = ?")
     .run(req.user.id, `company_join_request:${userId}`);
   const updatedUser = await db.prepare(`
-    SELECT id, name, email, is_company_admin AS isCompanyAdmin,
-           approval_status AS approvalStatus, disabled_at AS disabledAt
-    FROM users WHERE id = ?
-  `).get(userId);
+    SELECT u.id, u.name, u.email, m.is_company_admin AS isCompanyAdmin,
+           u.approval_status AS approvalStatus, u.disabled_at AS disabledAt
+    FROM users u JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ? WHERE u.id = ?
+  `).get(companyId, userId);
   res.json({ user: updatedUser });
 });
 
@@ -1335,6 +1492,20 @@ app.get("/api/tickets/:id", requireAuth, async (req, res) => {
     WHERE m.ticket_id = ? AND (? = 1 OR m.is_internal = 0) ORDER BY m.id
   `).all(ticketId, req.user.role === "agent" ? 1 : 0)
   ).map((message) => ({ ...message, isInternal: Boolean(message.isInternal) }));
+  if (ticket.import_key) {
+    const consultantRaised = Boolean(ticket.historical_consultant_name);
+    messages.unshift({
+      id: 0,
+      body: ticket.description,
+      isInternal: false,
+      createdAt: ticket.created_at,
+      authorId: consultantRaised ? ticket.assignee_id || null : null,
+      authorName: consultantRaised
+        ? ticket.assignee_name || ticket.historical_consultant_name
+        : ticket.reported_client_name || "Client",
+      authorRole: consultantRaised ? "agent" : "customer",
+    });
+  }
   const attachments = await db.prepare(`
     SELECT id, original_name AS name, mime_type AS mimeType, size_bytes AS sizeBytes,
            created_at AS createdAt, uploaded_by AS uploadedBy
@@ -1451,7 +1622,13 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
       discardUploadedFiles(req.files);
       return res.status(400).json({ error: "Choose a customer for this ticket." });
     }
-    const customer = await db.prepare("SELECT id, company_id FROM users WHERE id = ? AND role = 'customer' AND approval_status = 'approved' AND disabled_at IS NULL").get(customerId);
+    const requestedCompanyId = Number(req.body.companyId);
+    const customer = Number.isInteger(requestedCompanyId) && requestedCompanyId > 0
+      ? await db.prepare(`
+        SELECT u.id, m.company_id FROM users u JOIN company_memberships m ON m.user_id = u.id
+        WHERE u.id = ? AND m.company_id = ? AND u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL
+      `).get(customerId, requestedCompanyId)
+      : null;
     if (!customer) {
       discardUploadedFiles(req.files);
       return res.status(400).json({ error: "Choose a valid customer." });
@@ -1553,7 +1730,7 @@ app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
   if (body.length < 1 || body.length > 5000) return res.status(400).json({ error: "Reply must be between 1 and 5,000 characters." });
   const ticket = await db.prepare(`
     SELECT t.status, t.first_response_at, t.email_thread_id, t.subject, t.customer_id, c.email AS customer_email
-    FROM tickets t JOIN users c ON c.id = t.customer_id WHERE t.id = ?
+    FROM tickets t LEFT JOIN users c ON c.id = t.customer_id WHERE t.id = ?
   `).get(ticketId);
   if (!ticket) return res.status(404).json({ error: "Ticket not found." });
 
@@ -1605,11 +1782,7 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
   const existing = await db.prepare("SELECT * FROM tickets WHERE id = ?").get(ticketId);
   if (!existing || !await canAccessTicket(req.user, ticketId)) return res.status(404).json({ error: "Ticket not found." });
   if (req.user.role === "customer") {
-    const assignmentOnly = assigneeId !== undefined && status === undefined && priority === undefined && !metadataRequested
-      && Object.keys(req.body).every((key) => key === "assigneeId");
-    if (!assignmentOnly || existing.customer_id !== req.user.id) {
-      return res.status(403).json({ error: "Only the client linked to this ticket can change its Consultant assignment." });
-    }
+    return res.status(403).json({ error: "Clients can view ticket assignment but cannot change the Consultant." });
   } else if (!req.user.is_admin && assigneeId !== undefined && existing.assignee_id !== req.user.id) {
     return res.status(403).json({ error: "Only a Super Admin or the Consultant assigned to this ticket can change its assignment." });
   }
@@ -1627,12 +1800,6 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
     if (ticketSpecialty && agent.specialty !== "both" && agent.specialty !== ticketSpecialty) {
       return res.status(400).json({ error: "Choose a Consultant who supports this ticket category." });
     }
-  }
-  if (req.user.role === "customer" && (status !== undefined || priority !== undefined || metadataRequested)) {
-    return res.status(403).json({ error: "Clients can only change the Consultant assignment on this ticket." });
-  }
-  if (req.user.role === "customer" && assigneeId === undefined) {
-    return res.status(403).json({ error: "Clients can only change the Consultant assignment on this ticket." });
   }
   const metadata = metadataRequested ? normalizedTicketMetadata(req.body, {
     category: existing.category,
@@ -1774,9 +1941,14 @@ async function pollSupportMailbox() {
                   `).get(...references, ...references, senderCompany.id)
                 : null;
 
-              const inboundId = senderUser?.id || Number((await db.prepare(
-                "INSERT INTO users (name, email, password_hash, role, company_id, approval_status) VALUES (?, ?, ?, 'customer', ?, 'approved')",
-              ).run(parsed.from.value[0].name?.trim().slice(0, 100) || sender, sender, bcrypt.hashSync(secureToken(), 12), senderCompany.id)).lastInsertRowid);
+              let inboundId = senderUser?.id;
+              if (!inboundId) {
+                inboundId = Number((await db.prepare(
+                  "INSERT INTO users (name, email, password_hash, role, company_id, approval_status) VALUES (?, ?, ?, 'customer', ?, 'approved') RETURNING id",
+                ).run(parsed.from.value[0].name?.trim().slice(0, 100) || sender, sender, bcrypt.hashSync(secureToken(), 12), senderCompany.id)).lastInsertRowid);
+                await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin) VALUES (?, ?, 0) ON CONFLICT DO NOTHING")
+                  .run(inboundId, senderCompany.id);
+              }
               const insertInbound = db.transaction(async () => {
                 let ticketId = referencedTicket?.id;
                 if (!ticketId) {

@@ -15,12 +15,13 @@ type User = {
   id: number; name: string; email: string; role: Role; isAdmin?: boolean;
   isCompanyAdmin?: boolean; companyId?: number | null; companyName?: string | null; companySupportValidUntil?: string | null;
 };
+type CompanyMembership = { id: number; name: string; supportValidUntil?: string | null; isCompanyAdmin?: boolean };
 type Company = { id: number; name: string; domain?: string | null; supportValidUntil?: string | null };
 type Ticket = {
   id: number; subject: string; description: string; status: Status; priority: Priority;
   category: TicketCategory; tags: string[]; customFields: Record<string, string>;
-  source: "portal" | "email"; createdAt: string; updatedAt: string;
-  customer: { id: number; name: string; email: string; contactNumber: string | null };
+  source: "portal" | "email"; isHistoricalImport?: boolean; createdAt: string; updatedAt: string;
+  customer: { id: number | null; name: string; email: string; contactNumber: string | null };
   company: Company | null;
   assignee: { id: number; name: string; email: string; contactNumber: string | null } | null;
   messageCount: number; lastMessage: string;
@@ -28,7 +29,7 @@ type Ticket = {
   firstResponseAt: string | null; isFirstResponseOverdue: boolean; isResolutionOverdue: boolean;
   rating: { rating: number; comment: string; createdAt: string; customerId: number } | null;
 };
-type Message = { id: number; body: string; isInternal: boolean; createdAt: string; authorId: number; authorName: string; authorRole: Role };
+type Message = { id: number; body: string; isInternal: boolean; createdAt: string; authorId: number | null; authorName: string; authorRole: Role };
 type TicketAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string; uploadedBy: number };
 type TicketDetail = { ticket: Ticket; messages: Message[]; attachments: TicketAttachment[]; assignmentHistory: AssignmentEvent[]; categories: TicketCategory[]; canRate: boolean };
 type Customer = {
@@ -56,7 +57,7 @@ type AnalyticsReport = {
   customerActivity: Array<{ id: number; name: string; email: string; companyName: string | null; raisedInPeriod: number; active: number; inProgress: number; resolvedInPeriod: number }>;
   scopeCompany: { id: number; name: string } | null;
 };
-type ReportTicket = { id: number; subject: string; status: Status; priority: Priority; updatedAt: string; companyId: number | null; customerId: number; consultantId: number | null; companyName: string | null; customerName: string; consultantName: string | null };
+type ReportTicket = { id: number; subject: string; status: Status; priority: Priority; updatedAt: string; companyId: number | null; customerId: number | null; consultantId: number | null; companyName: string | null; customerName: string; consultantName: string | null };
 type ReportTicketDirectory = { companies: Array<{ id: number; name: string }>; customers: Array<{ id: number; name: string; email: string; companyName: string | null }>; consultants: Array<{ id: number; name: string }> };
 type KnowledgeBaseTicket = { id: number; issue: string; description: string; reportedAt: string; solution: string; closedAt: string; solutionType: string; clientName: string; consultantName: string };
 type PortalMode = "login" | "register";
@@ -182,12 +183,33 @@ function PriorityIcon({ priority }: { priority: Priority }) {
   return <span className="priority-icon normal"><ArrowDownUp size={14} /> Normal</span>;
 }
 
+function CompanySelectionScreen({ user, companies, error, onSelect, onSignOut }: {
+  user: User; companies: CompanyMembership[]; error: string;
+  onSelect: (companyId: number) => void; onSignOut: () => void;
+}) {
+  return <main className="company-picker-screen">
+    <section className="company-picker-card">
+      <CompanyLogo className="company-picker-logo" />
+      <div className="eyebrow"><span className="eyebrow-live" />CLIENT WORKSPACES</div>
+      <h1>Select a Company</h1>
+      <p>Welcome, {displayClientName(user.name)}. Choose the company you want to access.</p>
+      {error && <div className="inline-error" role="alert">{error}</div>}
+      <div className="company-picker-list">{companies.map((company) => <button key={company.id} type="button" className="company-picker-option" onClick={() => onSelect(company.id)}>
+        <span className="company-picker-icon"><Building2 size={18} /></span><span><strong>{company.name}</strong><small>Open company workspace</small></span><ArrowRight size={17} />
+      </button>)}</div>
+      <button type="button" className="button button-quiet company-picker-signout" onClick={onSignOut}><LogOut size={15} /> Sign out</button>
+    </section>
+  </main>;
+}
+
 function App() {
   const [authFlow, setAuthFlow] = useState<AuthFlow>(() => window.location.pathname === "/invite" ? "invite"
     : window.location.pathname === "/client-invite" ? "client-invite"
     : window.location.pathname === "/reset-password" ? "reset" : "portal");
   const authToken = useMemo(() => new URLSearchParams(window.location.search).get("token") || "", []);
   const [user, setUser] = useState<User | null>(null);
+  const [availableCompanies, setAvailableCompanies] = useState<CompanyMembership[]>([]);
+  const [showCompanySelection, setShowCompanySelection] = useState(false);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [agents, setAgents] = useState<Customer[]>([]);
@@ -196,6 +218,7 @@ function App() {
   const [activeView, setActiveView] = useState("inbox");
   const [filter, setFilter] = useState<Status | "all">("all");
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
+  const [companyFilter, setCompanyFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [renewalPopup, setRenewalPopup] = useState(false);
@@ -205,6 +228,7 @@ function App() {
   const [feedbackSubmittedId, setFeedbackSubmittedId] = useState<number | null>(null);
   const [dismissedFeedbackIds, setDismissedFeedbackIds] = useState<Set<number>>(() => new Set());
   const [prefillCustomerId, setPrefillCustomerId] = useState<number | null>(null);
+  const [prefillCompanyId, setPrefillCompanyId] = useState<number | null>(null);
   const [loginError, setLoginError] = useState("");
   const [loginNotice, setLoginNotice] = useState("");
   const [loading, setLoading] = useState(true);
@@ -234,8 +258,8 @@ function App() {
   }, [user]);
 
   useEffect(() => {
-    api<{ user: User }>("/auth/me")
-      .then(({ user: currentUser }) => { setUser(currentUser); return api<{ tickets: Ticket[] }>("/tickets"); })
+    api<{ user: User; companies?: CompanyMembership[] }>("/auth/me")
+      .then(({ user: currentUser, companies = [] }) => { setUser(currentUser); setAvailableCompanies(companies); return api<{ tickets: Ticket[] }>("/tickets"); })
       .then(({ tickets: loaded }) => { knownTicketIds.current = new Set(loaded.map((ticket) => ticket.id)); setTickets(loaded); setSelectedId(null); })
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
@@ -325,14 +349,21 @@ function App() {
     return () => window.clearInterval(intervalId);
   }, [refreshTickets, user]);
 
+  const inboxCompanies = useMemo(() => [...new Map(tickets
+    .filter((ticket) => ticket.company)
+    .map((ticket) => [ticket.company!.id, { id: ticket.company!.id, name: ticket.company!.name }])).values()]
+    .sort((a, b) => a.name.localeCompare(b.name)), [tickets]);
+
   const filteredTickets = useMemo(() => tickets.filter((ticket) => {
     const matchStatus = filter === "all" || ticket.status === filter;
-    const matchPriority = priorityFilter === "all" || ticket.priority === priorityFilter;
+    const consultantInbox = user?.role === "agent" && activeView === "inbox";
+    const matchPriority = consultantInbox || priorityFilter === "all" || ticket.priority === priorityFilter;
+    const matchCompany = !consultantInbox || companyFilter === "all" || ticket.company?.id === Number(companyFilter);
     const query = search.trim().toLowerCase();
     const matchSearch = !query || `${ticket.subject} ${ticket.customer.name} ${ticket.lastMessage}`.toLowerCase().includes(query);
     const matchView = activeView !== "assigned" || ticket.assignee?.id === user?.id;
-    return matchStatus && matchPriority && matchSearch && matchView;
-  }), [activeView, filter, priorityFilter, search, tickets, user]);
+    return matchStatus && matchPriority && matchCompany && matchSearch && matchView;
+  }), [activeView, companyFilter, filter, priorityFilter, search, tickets, user]);
 
   const counts = useMemo(() => ({
     all: tickets.length,
@@ -347,7 +378,7 @@ function App() {
     setLoginError("");
     const form = new FormData(event.currentTarget);
     try {
-      const result = await api<{ user: User }>("/auth/login", {
+      const result = await api<{ user: User; companies?: CompanyMembership[] }>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),
       });
@@ -356,7 +387,15 @@ function App() {
         throw new Error(`This account is for the ${result.user.role === "agent" ? "Consultant" : "client"} portal. Choose the matching portal and try again.`);
       }
       setUser(result.user);
+      const companies = result.companies || [];
+      setAvailableCompanies(companies);
       setActiveView("inbox");
+      if (result.user.role === "customer" && companies.length > 1) {
+        setShowCompanySelection(true);
+        setTickets([]);
+        setSelectedId(null);
+        return;
+      }
       const loaded = await api<{ tickets: Ticket[] }>("/tickets");
       knownTicketIds.current = new Set(loaded.tickets.map((ticket) => ticket.id));
       setTickets(loaded.tickets);
@@ -400,12 +439,34 @@ function App() {
   async function signOut() {
     await api("/auth/logout", { method: "POST" });
     setUser(null);
+    setAvailableCompanies([]);
+    setShowCompanySelection(false);
     setActiveView("inbox");
     knownTicketIds.current = null;
     setNewTicketAlert(null);
     setTickets([]);
     setSelectedId(null);
     setDetail(null);
+  }
+
+  async function selectCompany(companyId: number) {
+    setActionError("");
+    try {
+      const result = await api<{ user: User; companies: CompanyMembership[] }>("/auth/select-company", {
+        method: "POST", body: JSON.stringify({ companyId }),
+      });
+      setUser(result.user);
+      setAvailableCompanies(result.companies);
+      setShowCompanySelection(false);
+      setActiveView("inbox");
+      setFilter("all");
+      setSelectedId(null);
+      const loaded = await api<{ tickets: Ticket[] }>("/tickets");
+      knownTicketIds.current = new Set(loaded.tickets.map((ticket) => ticket.id));
+      setTickets(loaded.tickets);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not open this company workspace.");
+    }
   }
 
   async function updateTicket(values: {
@@ -453,6 +514,7 @@ function App() {
       setActiveView("inbox");
       setFilter("all");
       setPrefillCustomerId(null);
+      setPrefillCompanyId(null);
     } catch (error) {
       if (error instanceof Error && error.message === "Please Renewal Your Support Contract") {
         setShowCreate(false);
@@ -498,13 +560,16 @@ function App() {
     onRegister={registerClient}
   />;
 
+  if (user.role === "customer" && showCompanySelection && availableCompanies.length > 1) return <CompanySelectionScreen
+    user={user} companies={availableCompanies} error={actionError} onSelect={selectCompany} onSignOut={signOut}
+  />;
+
   const isAgent = user.role === "agent";
   const isSuperAdmin = isAgent && Boolean(user.isAdmin);
   const isCompanyAdmin = user.role === "customer" && Boolean(user.isCompanyAdmin);
   const selectedTicket = detail?.ticket;
   const canChangeAssignment = Boolean(selectedTicket && (
-    (isAgent && (isSuperAdmin || selectedTicket.assignee?.id === user.id))
-    || (!isAgent && selectedTicket.customer.id === user.id)
+    isAgent && (isSuperAdmin || selectedTicket.assignee?.id === user.id)
   ));
   const heading = isAgent ? "Support inbox" : "My requests";
   async function openNewTicketForm() {
@@ -523,6 +588,7 @@ function App() {
       }
     }
     setPrefillCustomerId(null);
+    setPrefillCompanyId(null);
     setNewTicketCategory("");
     setActionError("");
     setShowCreate(true);
@@ -584,6 +650,7 @@ function App() {
         <header className="topbar">
           <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
           <div className="topbar-actions">
+            {user.role === "customer" && availableCompanies.length > 1 && <button type="button" className="company-switcher" onClick={() => setShowCompanySelection(true)}><Building2 size={14} /><span>{user.companyName || "Select a company"}</span><ArrowDown size={13} /></button>}
             <div className="search-box"><Search size={15} /><input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tickets…" /><kbd>Ctrl K</kbd></div>
             <div className="topbar-avatar">{initials(user.name)}</div>
           </div>
@@ -617,7 +684,9 @@ function App() {
                     </button>
                   ))}
                 </div>
-                <label className="priority-filter"><span>Priority</span><select aria-label="Filter by priority" value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as Priority | "all")}><option value="all">All</option><option value="urgent">Urgent</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option></select></label>
+                {user.role === "agent" && activeView === "inbox"
+                  ? <label className="priority-filter"><span>Customer</span><select aria-label="Filter by customer" value={companyFilter} onChange={(event) => setCompanyFilter(event.target.value)}><option value="all">All customers</option>{inboxCompanies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></label>
+                  : <label className="priority-filter"><span>Priority</span><select aria-label="Filter by priority" value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as Priority | "all")}><option value="all">All</option><option value="urgent">Urgent</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option></select></label>}
               </div>
 
               <div className="ticket-list">
@@ -670,10 +739,10 @@ function App() {
                     ? <div className="detail-person"><div className="avatar customer-avatar">{initials(selectedTicket.customer.name)}</div><div><strong>Client · {displayClientName(selectedTicket.customer.name)}</strong><span>{selectedTicket.customer.email}</span><span className="detail-contact-number">Contact: {selectedTicket.customer.contactNumber || "Unavailable"}</span></div></div>
                     : selectedTicket.assignee
                       ? <div className="detail-person"><div className="avatar avatar-agent">{initials(selectedTicket.assignee.name)}</div><div><strong>Consultant · {selectedTicket.assignee.name}</strong><span>{selectedTicket.assignee.email}</span><span className="detail-contact-number">Contact: {selectedTicket.assignee.contactNumber || "Unavailable"}</span></div></div>
-                      : <div className="detail-person"><div className="avatar avatar-agent"><UserRound size={14} /></div><div><strong>Consultant</strong><span>Not assigned yet</span></div></div>}
+                      : <div className="detail-person"><div className="avatar avatar-agent"><UserRound size={14} /></div><div><strong>Consultant</strong><span>Unassigned</span></div></div>}
                   <div className="detail-info-item"><span>Created</span><strong>{timeAgo(selectedTicket.createdAt)}</strong></div>
                   {selectedTicket.company && <div className="detail-info-item"><span>Company</span><strong>{selectedTicket.company.name}</strong></div>}
-                  <div className="detail-info-item"><span>Source</span><strong><span className={`source-icon ${selectedTicket.source}`} />{selectedTicket.source === "email" ? "Email" : "Portal"}</strong></div>
+                  <div className="detail-info-item"><span>Source</span><strong><span className={`source-icon ${selectedTicket.source}`} />{selectedTicket.isHistoricalImport ? "Imported record" : selectedTicket.source === "email" ? "Email" : "Portal"}</strong></div>
                   {canChangeAssignment ? <label className="detail-assignee"><div className="assignee-avatar">{selectedTicket.assignee ? initials(selectedTicket.assignee.name) : <UserRound size={14} />}</div><select aria-label="Assign ticket to consultant" value={selectedTicket.assignee?.id ?? ""} onChange={(event) => updateTicket({ assigneeId: event.target.value ? Number(event.target.value) : null })}><option value="">Unassigned</option>{agents.filter((agent) => consultantSupportsCategory(agent, selectedTicket.category)).map((agent) => <option key={agent.id} value={agent.id}>{agent.priorityLabel} · {agent.name}</option>)}</select></label>
                     : <div className="detail-assignee"><div className="assignee-avatar">{selectedTicket.assignee ? initials(selectedTicket.assignee.name) : <UserRound size={14} />}</div><span>{selectedTicket.assignee?.name || "Unassigned"}</span></div>}
                 </div>
@@ -731,7 +800,7 @@ function App() {
             ? <CustomerDirectory
               customers={customers}
               tickets={tickets}
-              onCreateTicket={(customerId) => { setPrefillCustomerId(customerId); setNewTicketCategory(""); setShowCreate(true); setActionError(""); }}
+              onCreateTicket={(customerId, companyId) => { setPrefillCustomerId(customerId); setPrefillCompanyId(companyId); setNewTicketCategory(""); setShowCreate(true); setActionError(""); }}
               onViewTickets={(customerName) => { setSearch(customerName); setActiveView("inbox"); setFilter("all"); }}
             />
             : activeView === "notifications" && isAgent
@@ -778,7 +847,7 @@ function App() {
         <form className="create-modal" onSubmit={createTicket}>
           <div className="modal-heading"><div><div className="eyebrow">SUPPORT REQUEST</div><h2>Create a ticket</h2></div><button type="button" className="icon-button" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); setNewTicketCategory(""); }} aria-label="Close"><X size={18} /></button></div>
           <label>Category<select name="category" required value={newTicketCategory} onChange={(event) => setNewTicketCategory(event.target.value as TicketCategory | "")}><option value="" disabled>Select Functional or Technical</option><option value="Functional">Functional</option><option value="Technical">Technical</option></select></label>
-          {isAgent && <label>Customer<select name="customerId" required value={prefillCustomerId ?? ""} onChange={(event) => setPrefillCustomerId(event.target.value ? Number(event.target.value) : null)}><option value="" disabled>Select a customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.companyName ? `${customer.companyName} · ` : ""}{customer.name} · {customer.email}</option>)}</select></label>}
+          {isAgent && <label>Customer<select name="customerId" required value={prefillCustomerId && prefillCompanyId ? `${prefillCompanyId}:${prefillCustomerId}` : ""} onChange={(event) => { const [companyId, customerId] = event.target.value.split(":").map(Number); setPrefillCompanyId(companyId || null); setPrefillCustomerId(customerId || null); }}><option value="" disabled>Select a customer</option>{customers.map((customer) => <option key={`${customer.companyId}:${customer.id}`} value={`${customer.companyId}:${customer.id}`}>{customer.companyName ? `${customer.companyName} · ` : ""}{customer.name} · {customer.email}</option>)}</select><input type="hidden" name="companyId" value={prefillCompanyId ?? ""} /></label>}
           <label>Subject<input name="subject" required minLength={4} maxLength={160} placeholder="What do you need help with?" autoFocus /></label>
           <label>Description<textarea name="description" required minLength={10} maxLength={5000} placeholder="Share a few details so we can help…" rows={5} /></label>
           <label>Priority<select name="priority" defaultValue="normal"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
@@ -1142,7 +1211,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   onChanged: () => Promise<void>;
 }) {
   type CompanyUser = {
-    id: number; name: string; email: string; isCompanyAdmin: boolean;
+    id: number; name: string; email: string; contactNumber: string | null; isCompanyAdmin: boolean;
     approvalStatus: "approved" | "pending" | "rejected"; disabledAt: string | null;
   };
   type JoinCode = { id: number; expiresAt: string | null; revokedAt: string | null; createdAt: string };
@@ -1153,6 +1222,8 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   const [newCompanySupportValidUntil, setNewCompanySupportValidUntil] = useState("");
   const [editSupportValidUntil, setEditSupportValidUntil] = useState("");
   const [companyUsers, setCompanyUsers] = useState<CompanyUser[]>([]);
+  const [linkableClients, setLinkableClients] = useState<Array<{ id: number; name: string; email: string; companies: Array<{ id: number; name: string }> }>>([]);
+  const [linkClientId, setLinkClientId] = useState("");
   const [invitations, setInvitations] = useState<Array<{ id: number; email: string; isCompanyAdmin: boolean; expiresAt: string }>>([]);
   const [joinCodes, setJoinCodes] = useState<JoinCode[]>([]);
   const [inviteEmail, setInviteEmail] = useState("");
@@ -1184,6 +1255,26 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
 
   useEffect(() => { loadCompanies().catch((reason: Error) => setError(reason.message)); }, [loadCompanies]);
   useEffect(() => { loadCompanyUsers().catch((reason: Error) => setError(reason.message)); }, [loadCompanyUsers]);
+  const loadLinkableClients = useCallback(async () => {
+    if (!workspaceAdmin) return;
+    const result = await api<{ clients: typeof linkableClients }>("/admin/client-accounts");
+    setLinkableClients(result.clients);
+  }, [workspaceAdmin]);
+  useEffect(() => { loadLinkableClients().catch((reason: Error) => setError(reason.message)); }, [loadLinkableClients]);
+
+  async function linkClientToCompany(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedCompanyId || !linkClientId) return;
+    setError(""); setMessage("");
+    try {
+      const result = await api<{ message: string }>(`/admin/companies/${selectedCompanyId}/clients`, {
+        method: "POST", body: JSON.stringify({ userId: Number(linkClientId) }),
+      });
+      setMessage(result.message);
+      setLinkClientId("");
+      await Promise.all([loadLinkableClients(), loadCompanyUsers(), loadCompanies()]);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not link this client."); }
+  }
 
   async function createCompany(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1222,6 +1313,26 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not invite this user."); }
   }
 
+  async function createCompanyUser(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    setError("");
+    setMessage("");
+    try {
+      const form = new FormData(formElement);
+      const result = await api<{ user: CompanyUser; companyName: string }>("/company/users", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.get("name"), email: form.get("email"),
+          contactNumber: form.get("contactNumber"), password: form.get("password"),
+        }),
+      });
+      formElement.reset();
+      await Promise.all([loadCompanyUsers(), loadCompanies(), onChanged()]);
+      setMessage(`${result.user.name} has been added to ${result.companyName} and can sign in now.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not add this client."); }
+  }
+
   async function createJoinCode() {
     setError("");
     setMessage("");
@@ -1239,7 +1350,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     setError("");
     setMessage("");
     try {
-      await api(`/company/users/${user.id}`, { method: "PATCH", body: JSON.stringify(changes) });
+      await api(`/company/users/${user.id}`, { method: "PATCH", body: JSON.stringify({ ...changes, companyId: selectedCompanyId }) });
       await Promise.all([loadCompanyUsers(), loadCompanies(), onChanged()]);
       setMessage(changes.approvalStatus === "approved" ? `${user.name} approved to join the company.`
         : changes.approvalStatus === "rejected" ? `${user.name}'s request was declined.`
@@ -1282,18 +1393,23 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     {message && <div className="inline-success" role="status">{message}<button onClick={() => setMessage("")}><X size={13} /></button></div>}
     {invitationUrl && <p className="development-link">Development invitation link: <a href={invitationUrl}>{invitationUrl}</a></p>}
 
-    {workspaceAdmin && <section className="settings-card">
-      <div className="settings-card-heading"><div><h2>Create a client company</h2><p>Each company has isolated client accounts and tickets. Its first administrator receives an invitation.</p></div><Plus size={18} /></div>
+    {workspaceAdmin && <section className="settings-card company-create-section">
+      <div className="settings-card-heading"><div><h2>Create a company</h2><p>Set up a separate client workspace and invite its first administrator.</p></div><Plus size={18} /></div>
       <form className="company-create-form" onSubmit={createCompany}>
         <label>Company name<input value={companyName} onChange={(event) => setCompanyName(event.target.value)} minLength={2} maxLength={120} required /></label>
         <label>Company admin email<input type="email" value={firstAdminEmail} onChange={(event) => setFirstAdminEmail(event.target.value)} required /></label>
         <label>Support valid until<input type="date" value={newCompanySupportValidUntil} onChange={(event) => setNewCompanySupportValidUntil(event.target.value)} required /></label>
         <button className="button button-primary" type="submit"><Plus size={15} /> Create company</button>
       </form>
+    </section>}
+
+    {workspaceAdmin && <section className="settings-card company-directory-section">
+      <div className="settings-card-heading"><div><h2>Companies</h2><p>Select a company to manage its users, invitations, and support contract.</p></div><Building2 size={18} /></div>
       <div className="company-list">
         {companies.map((company) => <button type="button" className={`company-select-row ${company.id === selectedCompanyId ? "selected" : ""}`} key={company.id} onClick={() => setSelectedCompanyId(company.id)}>
           <span><strong>{company.name}</strong><small>{company.domain || "No email domain mapped"} · {company.userCount} users · {company.pendingCount} pending · Support valid until {company.supportValidUntil ? dateLabel(company.supportValidUntil) : "Not set"}</small></span><ArrowRight size={15} />
         </button>)}
+        {companies.length === 0 && <p className="settings-hint">No companies yet. Create a company above to get started.</p>}
       </div>
     </section>}
 
@@ -1304,14 +1420,28 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
         <span>Clients can raise tickets through this date. Only the Super Admin can change it.</span>
         <button className="button button-primary" type="submit" disabled={!editSupportValidUntil}>Save date</button>
       </form>}
-      <form className="invite-form" onSubmit={inviteUser}>
-        <label htmlFor="company-user-email">Invite a user</label>
-        <div><input id="company-user-email" type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="colleague@company.com" required />
-          {workspaceAdmin && <label className="checkbox-label"><input type="checkbox" checked={inviteAsAdmin} onChange={(event) => setInviteAsAdmin(event.target.checked)} /> Company admin</label>}
-          <button className="button button-primary" type="submit"><Plus size={15} /> Invite</button>
-        </div>
-      </form>
-
+      {!workspaceAdmin && <div className="client-access-method">
+        <h3>Add a client manually</h3>
+        <p className="settings-hint">Create an active client login for your company. Share the initial password with the client securely.</p>
+        <form className="manual-client-form" onSubmit={createCompanyUser}>
+          <label>Full name<input name="name" autoComplete="name" minLength={2} maxLength={100} required /></label>
+          <label>Email address<input name="email" type="email" autoComplete="email" maxLength={254} required /></label>
+          <label>Contact number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} required /></label>
+          <label>Initial password<input name="password" type="password" autoComplete="new-password" minLength={8} maxLength={128} required /></label>
+          <button className="button button-primary" type="submit"><Plus size={15} /> Add client</button>
+        </form>
+      </div>}
+      {workspaceAdmin && <div className="client-access-method multi-company-link">
+        <h3>Link an existing client account</h3>
+        <p className="settings-hint">Give an existing client login access to this company. They will choose a company after signing in if they belong to more than one.</p>
+        <form className="link-client-form" onSubmit={linkClientToCompany}>
+          <label>Client account<select value={linkClientId} onChange={(event) => setLinkClientId(event.target.value)} required>
+            <option value="">Select a client</option>
+            {linkableClients.filter((client) => !client.companies.some((company) => company.id === selectedCompanyId)).map((client) => <option key={client.id} value={client.id}>{client.name} · {client.email}{client.companies.length ? ` · Also in ${client.companies.map((company) => company.name).join(", ")}` : ""}</option>)}
+          </select></label>
+          <button className="button button-primary" type="submit" disabled={!linkClientId}><Plus size={15} /> Link client</button>
+        </form>
+      </div>}
       {companyUsers.some((user) => user.approvalStatus === "pending") && <div className="company-users-section">
         <h3>Requests awaiting approval</h3>
         {companyUsers.filter((user) => user.approvalStatus === "pending").map((user) => <div className="admin-team-row" key={user.id}>
@@ -1324,7 +1454,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       <div className="company-users-section"><h3>Company members</h3>
         {companyUsers.filter((user) => user.approvalStatus !== "pending").map((user) => <div className="admin-team-row" key={user.id}>
           <div className="avatar customer-avatar">{initials(user.name)}</div>
-          <div className="directory-customer"><strong>{user.name}{user.isCompanyAdmin && <span className="admin-badge">COMPANY ADMIN</span>}</strong><span>{user.email}</span></div>
+          <div className="directory-customer"><strong>{user.name}{user.isCompanyAdmin && <span className="admin-badge">COMPANY ADMIN</span>}</strong><span>{user.email}{user.contactNumber ? ` · ${user.contactNumber}` : ""}</span></div>
           <span className={`team-state ${user.disabledAt || user.approvalStatus === "rejected" ? "team-disabled" : ""}`}>{user.approvalStatus === "rejected" ? "Declined" : user.disabledAt ? "Disabled" : "Active"}</span>
           {(workspaceAdmin || !user.isCompanyAdmin) && user.approvalStatus === "approved" && <button className="button button-quiet" onClick={() => updateUser(user, { isCompanyAdmin: !user.isCompanyAdmin })}>{user.isCompanyAdmin ? "Remove admin" : "Make admin"}</button>}
           <button className="button button-quiet" onClick={() => updateUser(user, { disabled: !user.disabledAt })}>{user.disabledAt ? "Enable" : "Disable"}</button>
@@ -1339,6 +1469,19 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       </div>
 
       {invitations.length > 0 && <div className="pending-invitations"><strong>Pending user invitations</strong>{invitations.map((invitation) => <div key={invitation.id}><span>{invitation.email}{invitation.isCompanyAdmin ? " · Company admin" : ""}</span><small>Expires {new Date(invitation.expiresAt).toLocaleString()}</small></div>)}</div>}
+    </section>}
+    {selectedCompanyId && <section className="settings-card company-mail-invite-card">
+      <div className="settings-card-heading"><div><h2>{workspaceAdmin ? "Invite a user by email" : "Invite a client by email"}</h2><p>Send an email invitation to join {selectedCompany?.name || "this company"}.</p></div><Mail size={18} /></div>
+      {workspaceAdmin ? <form className="invite-form" onSubmit={inviteUser}>
+        <label className="company-invite-label" htmlFor="company-user-email">Email address</label>
+        <div><input id="company-user-email" type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="colleague@company.com" required />
+          <label className="checkbox-label"><input type="checkbox" checked={inviteAsAdmin} onChange={(event) => setInviteAsAdmin(event.target.checked)} /> Company admin</label>
+          <button className="button button-primary" type="submit"><Plus size={15} /> Send invitation</button>
+        </div>
+      </form> : <form className="client-invite-form" onSubmit={inviteUser}>
+        <label>Email address<input id="company-user-email" type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="colleague@company.com" required /></label>
+        <button className="button button-primary" type="submit"><Plus size={15} /> Send invitation</button>
+      </form>}
     </section>}
   </section>;
 }
@@ -1370,6 +1513,8 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [invitationUrl, setInvitationUrl] = useState("");
+  const [editingSpecialty, setEditingSpecialty] = useState<number | null>(null);
+  const [specialtyDraft, setSpecialtyDraft] = useState<ConsultantSpecialty>("both");
 
   const load = useCallback(async () => {
     const [team, slaResult, emailResult] = await Promise.all([
@@ -1457,6 +1602,18 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update Consultant routing priority."); }
   }
 
+  async function saveSpecialty(agent: typeof agents[number]) {
+    setError("");
+    setMessage("");
+    try {
+      await api(`/agents/${agent.id}`, { method: "PATCH", body: JSON.stringify({ specialty: specialtyDraft }) });
+      await load();
+      await onChanged();
+      setEditingSpecialty(null);
+      setMessage(`${agent.name}'s specialty updated.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update Consultant specialty."); }
+  }
+
   return <section className="feature-page admin-settings">
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />WORKSPACE ADMINISTRATION</div><h1>Settings</h1><p>Manage your support team, service targets, and mail connections.</p></div></div>
     {error && <div className="inline-error" role="alert">{error}<button onClick={() => setError("")}><X size={13} /></button></div>}
@@ -1469,7 +1626,7 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
         <label>Work email<input name="email" type="email" autoComplete="email" maxLength={254} required placeholder="consultant@company.com" /></label>
         <label>Contact number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} required placeholder="+91 98765 43210" /></label>
         <label>Consultant type<select name="specialty" defaultValue="" required><option value="" disabled>Select specialty</option><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Both</option></select></label>
-        <label>Initial password<input name="password" type="password" autoComplete="new-password" minLength={12} maxLength={128} required placeholder="At least 12 characters" /><small>Share this password with the new user through a secure channel.</small></label>
+        <label>Initial password<input name="password" type="password" autoComplete="new-password" minLength={8} maxLength={128} required placeholder="At least 8 characters" /><small>Share this password with the new user through a secure channel.</small></label>
         <label className="team-admin-option"><input name="isAdmin" type="checkbox" /> Grant Super Admin permissions</label>
         <button className="button button-primary" type="submit"><Plus size={15} /> Create account</button>
       </form>
@@ -1477,7 +1634,7 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
       {invitationUrl && <p className="development-link">Development invitation link: <a href={invitationUrl}>{invitationUrl}</a></p>}
       <p className="settings-hint">Automatic tickets follow Primary-to-secondary priority; Consultants with the same priority are balanced by active unresolved workload. Use the arrows to change priority.</p>
       <div className="admin-team-list">
-        {agents.map((agent) => <div className="admin-team-row" key={agent.id}><div className="avatar avatar-agent">{initials(agent.name)}</div><div className="directory-customer"><strong>{agent.name}{Boolean(agent.isAdmin) && <span className="admin-badge">SUPER ADMIN</span>}</strong><span>{agent.email}</span></div><span className="consultant-specialty-label">{agent.specialty === "both" ? "Functional + Technical" : agent.specialty[0].toUpperCase() + agent.specialty.slice(1)}</span><span className="agent-routing-priority">{agent.routingPriority === 1 ? "Primary" : agent.routingPriority === 2 ? "Secondary" : `#${agent.routingPriority}`}</span><button className="button button-quiet" aria-label={`Move ${agent.name} up in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority <= 1} onClick={() => moveAgent(agent, -1)}><ArrowUp size={13} /></button><button className="button button-quiet" aria-label={`Move ${agent.name} down in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority >= agents.filter((item) => !item.disabledAt).length} onClick={() => moveAgent(agent, 1)}><ArrowDown size={13} /></button><span className={`team-state ${agent.disabledAt ? "team-disabled" : ""}`}>{agent.disabledAt ? "Disabled" : "Active"}</span><button className="button button-quiet" disabled={Boolean(agent.isAdmin) && !agent.disabledAt} onClick={() => toggleAgent(agent)}>{agent.disabledAt ? "Enable" : "Disable"}</button></div>)}
+        {agents.map((agent) => <div className="admin-team-row" key={agent.id}><div className="avatar avatar-agent">{initials(agent.name)}</div><div className="directory-customer"><strong>{agent.name}{Boolean(agent.isAdmin) && <span className="admin-badge">SUPER ADMIN</span>}</strong><span>{agent.email}</span></div>{editingSpecialty === agent.id ? <><select aria-label={`Specialty for ${agent.name}`} className="consultant-specialty-edit" value={specialtyDraft} onChange={(event) => setSpecialtyDraft(event.target.value as ConsultantSpecialty)}><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Functional + Technical</option></select><button className="button button-quiet" onClick={() => saveSpecialty(agent)}>Save</button><button className="button button-quiet" onClick={() => setEditingSpecialty(null)}>Cancel</button></> : <><span className="consultant-specialty-label">{agent.specialty === "both" ? "Functional + Technical" : agent.specialty[0].toUpperCase() + agent.specialty.slice(1)}</span><button className="button button-quiet" onClick={() => { setEditingSpecialty(agent.id); setSpecialtyDraft(agent.specialty); }}>Edit type</button></>}<span className="agent-routing-priority">{agent.routingPriority === 1 ? "Primary" : agent.routingPriority === 2 ? "Secondary" : `#${agent.routingPriority}`}</span><button className="button button-quiet" aria-label={`Move ${agent.name} up in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority <= 1} onClick={() => moveAgent(agent, -1)}><ArrowUp size={13} /></button><button className="button button-quiet" aria-label={`Move ${agent.name} down in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority >= agents.filter((item) => !item.disabledAt).length} onClick={() => moveAgent(agent, 1)}><ArrowDown size={13} /></button><span className={`team-state ${agent.disabledAt ? "team-disabled" : ""}`}>{agent.disabledAt ? "Disabled" : "Active"}</span><button className="button button-quiet" disabled={Boolean(agent.isAdmin) && !agent.disabledAt} onClick={() => toggleAgent(agent)}>{agent.disabledAt ? "Enable" : "Disable"}</button></div>)}
       </div>
       {invitations.length > 0 && <div className="pending-invitations"><strong>Pending invitations</strong>{invitations.map((invitation) => <div key={invitation.id}><span>{invitation.email} · {invitation.specialty === "both" ? "Both" : invitation.specialty[0].toUpperCase() + invitation.specialty.slice(1)}</span><small>Expires {new Date(invitation.expiresAt).toLocaleString()}</small></div>)}</div>}
     </section>
@@ -1564,7 +1721,7 @@ function InvitationOrResetScreen({ flow, token, notice, error, onComplete }: {
         <label>Your name<input name="name" autoComplete="name" minLength={2} maxLength={100} required /></label>
         <label>Contact number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
       </>}
-      <label>New password<input name="password" type="password" minLength={12} maxLength={128} autoComplete="new-password" placeholder="At least 12 characters" required /></label>
+      <label>New password<input name="password" type="password" minLength={8} maxLength={128} autoComplete="new-password" placeholder="At least 8 characters" required /></label>
       <button className="button button-primary login-button" type="submit" disabled={busy}>{busy ? "Please wait…" : flow === "reset" ? "Reset password" : "Accept invitation"} <ArrowRight size={16} /></button>
     </form> : null}
     <a className="auth-back-link" href="/">Return to sign in</a>
@@ -1632,7 +1789,7 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
           <label>Contact number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
         </>}
         <label>Email address<input name="email" type="email" autoComplete="username" placeholder="you@company.com" required /></label>
-        <label>Password<div className="password-field"><input name="password" type="password" autoComplete={mode === "register" ? "new-password" : "current-password"} minLength={mode === "register" ? 12 : undefined} placeholder={mode === "register" ? "At least 12 characters" : "Enter your password"} required /></div></label>
+        <label>Password<div className="password-field"><input name="password" type="password" autoComplete={mode === "register" ? "new-password" : "current-password"} minLength={mode === "register" ? 8 : undefined} maxLength={128} placeholder={mode === "register" ? "At least 8 characters" : "Enter your password"} required /></div></label>
         {error && <div className="inline-error">{error}</div>}
         <button className="button button-primary login-button" type="submit">{mode === "register" ? "Create account" : "Sign in"} <ArrowRight size={16} /></button>
       </form>}
@@ -1695,7 +1852,7 @@ function KnowledgeBase() {
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />CONSULTANT WORKSPACE</div><h1>Knowledge Base</h1><p>Resolved tickets and the solutions shared with clients.</p></div></div>
     <form className="directory-toolbar" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(query.trim()); }}>
       <div className="search-box"><Search size={15} /><input aria-label="Search resolved tickets" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tickets, clients, Consultants, or solutions…" /><button className="button button-quiet" type="submit">Search</button></div>
-      <span>{total} resolved {total === 1 ? "ticket" : "tickets"}</span>
+      <span className="knowledge-total-card">{total} Resolved {total === 1 ? "Ticket" : "Tickets"}</span>
     </form>
     {error && <div className="inline-error" role="alert">{error}</div>}
     {loading ? <div className="report-empty" role="status">Loading resolved tickets…</div> : tickets.length === 0
@@ -1737,7 +1894,7 @@ function KnowledgeBase() {
 function CustomerDirectory({ customers, tickets, onCreateTicket, onViewTickets }: {
   customers: Customer[];
   tickets: Ticket[];
-  onCreateTicket: (customerId: number) => void;
+  onCreateTicket: (customerId: number, companyId: number) => void;
   onViewTickets: (customerName: string) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -1749,20 +1906,22 @@ function CustomerDirectory({ customers, tickets, onCreateTicket, onViewTickets }
     customersByCompany.set(companyName, [...(customersByCompany.get(companyName) || []), customer]);
   }
   const companyGroups = [...customersByCompany.entries()].sort(([a], [b]) => a.localeCompare(b));
-  return <section className="feature-page">
+  return <section className="feature-page customer-directory-page">
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />CONSULTANT WORKSPACE</div><h1>Clients</h1><p>Review client accounts and their support history.</p></div></div>
     <div className="directory-toolbar"><div className="search-box"><Search size={15} /><input aria-label="Search clients" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients…" /></div><span>{filteredCustomers.length} clients · {companyGroups.length} companies</span></div>
       {filteredCustomers.length === 0
         ? <div className="empty-list"><Users size={27} /><strong>No clients found</strong><span>{customers.length ? "Try a different name or email." : "Client accounts will appear here when they register."}</span></div>
         : companyGroups.map(([companyName, companyCustomers]) => {
           const companyCustomerIds = new Set(companyCustomers.map((customer) => customer.id));
-          const companyTickets = tickets.filter((ticket) => companyCustomerIds.has(ticket.customer.id));
+          const companyTickets = tickets.filter((ticket) => ticket.company?.name === companyName
+            || (ticket.customer.id !== null && companyCustomerIds.has(ticket.customer.id)));
           const activeCompanyTickets = companyTickets.filter((ticket) => ticket.status !== "resolved").length;
           return <section className="directory-company-group" key={companyName}>
             <div className="directory-company-heading"><div><Building2 size={16} /><strong>{companyName}</strong></div><span>{companyCustomers.length} {companyCustomers.length === 1 ? "client" : "clients"} · {companyTickets.length} tickets · {activeCompanyTickets} active</span></div>
             <div className="directory-list">
               {companyCustomers.map((customer) => {
-                const customerTickets = tickets.filter((ticket) => ticket.customer.id === customer.id);
+                const customerTickets = tickets.filter((ticket) => ticket.customer.id === customer.id
+                  || (!ticket.customer.id && ticket.company?.name === companyName && ticket.customer.name === customer.name));
                 const activeCount = customerTickets.filter((ticket) => ticket.status !== "resolved").length;
                 return <article className="directory-row" key={customer.id}>
                   <div className="avatar customer-avatar">{initials(customer.name)}</div>
@@ -1770,7 +1929,7 @@ function CustomerDirectory({ customers, tickets, onCreateTicket, onViewTickets }
                   <div className="directory-stat"><strong>{customerTickets.length}</strong><span>Total tickets</span></div>
                   <div className="directory-stat"><strong>{activeCount}</strong><span>Active</span></div>
                   <button className="button button-quiet directory-action" onClick={() => onViewTickets(customer.name)}>View tickets</button>
-                  <button className="button button-primary directory-action" onClick={() => onCreateTicket(customer.id)}><Plus size={14} /> New ticket</button>
+                  <button className="button button-primary directory-action" onClick={() => onCreateTicket(customer.id, customer.companyId || 0)}><Plus size={14} /> New ticket</button>
                 </article>;
               })}
             </div>

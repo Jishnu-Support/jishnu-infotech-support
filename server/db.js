@@ -289,6 +289,30 @@ const schemaMigrations = [
   { version: 4, apply: () => db.exec(`
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS support_valid_until DATE;
   `) },
+  { version: 5, apply: () => db.exec(`
+    ALTER TABLE tickets ALTER COLUMN customer_id DROP NOT NULL;
+    ALTER TABLE tickets ADD COLUMN IF NOT EXISTS reported_client_name TEXT;
+    ALTER TABLE tickets ADD COLUMN IF NOT EXISTS reported_client_contact TEXT;
+    ALTER TABLE tickets ADD COLUMN IF NOT EXISTS historical_solution TEXT;
+    ALTER TABLE tickets ADD COLUMN IF NOT EXISTS import_key TEXT UNIQUE;
+  `) },
+  { version: 6, apply: () => db.exec(`
+    ALTER TABLE tickets ADD COLUMN IF NOT EXISTS historical_consultant_name TEXT;
+  `) },
+  { version: 7, apply: () => db.exec(`
+    CREATE TABLE IF NOT EXISTS company_memberships (
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      is_company_admin INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+      PRIMARY KEY (user_id, company_id)
+    );
+    INSERT INTO company_memberships (user_id, company_id, is_company_admin)
+    SELECT id, company_id, is_company_admin FROM users
+    WHERE role = 'customer' AND company_id IS NOT NULL
+    ON CONFLICT (user_id, company_id) DO NOTHING;
+    CREATE INDEX IF NOT EXISTS company_memberships_company_idx ON company_memberships (company_id, user_id);
+  `) },
 ];
 
 async function seedDatabase() {
@@ -305,8 +329,8 @@ async function seedDatabase() {
     console.warn(message);
     return;
   }
-  if (agentPassword.length < 12) {
-    throw new Error("The bootstrap Super Admin password must be at least 12 characters.");
+  if (agentPassword.length < 8) {
+    throw new Error("The bootstrap Super Admin password must be at least 8 characters.");
   }
 
   await db.transaction(async () => {
@@ -358,6 +382,11 @@ export async function initializeDatabase() {
       : await db.prepare("SELECT id FROM companies WHERE slug = 'existing-customers'").get();
     legacyCompanyId = existingCompany.id;
     await db.prepare("UPDATE users SET company_id = ? WHERE role = 'customer' AND company_id IS NULL").run(legacyCompanyId);
+    await db.prepare(`
+      INSERT INTO company_memberships (user_id, company_id, is_company_admin)
+      SELECT id, company_id, is_company_admin FROM users WHERE role = 'customer' AND company_id = ?
+      ON CONFLICT (user_id, company_id) DO NOTHING
+    `).run(legacyCompanyId);
   }
   await db.prepare(`
     UPDATE tickets SET company_id = (
@@ -390,10 +419,10 @@ export async function initializeDatabase() {
   }
 
   if (legacyCompanyId !== null) {
-    const companyAdminCount = Number((await db.prepare("SELECT COUNT(*) AS count FROM users WHERE company_id = ? AND is_company_admin = 1").get(legacyCompanyId)).count);
+    const companyAdminCount = Number((await db.prepare("SELECT COUNT(*) AS count FROM company_memberships WHERE company_id = ? AND is_company_admin = 1").get(legacyCompanyId)).count);
     if (companyAdminCount === 0) {
       const firstClient = await db.prepare("SELECT id FROM users WHERE role = 'customer' AND company_id = ? ORDER BY id LIMIT 1").get(legacyCompanyId);
-      if (firstClient) await db.prepare("UPDATE users SET is_company_admin = 1 WHERE id = ?").run(firstClient.id);
+      if (firstClient) await db.prepare("UPDATE company_memberships SET is_company_admin = 1 WHERE user_id = ? AND company_id = ?").run(firstClient.id, legacyCompanyId);
     }
   }
   const legacyAssignments = await db.prepare(`

@@ -257,13 +257,14 @@ h1, h2, p { margin-top: 0; }
 .custom-field-input-row .icon-button { width: 27px; height: 27px; }
 .custom-field-add { display: inline-flex; align-items: center; gap: 4px; padding: 4px 0; border: 0; color: #587bb8; background: transparent; font-size: 8px; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
-.directory-toolbar { display: flex; align-items: center; justify-content: space-between; margin: 0 0 12px; color: #909baa; font-size: 10px; }
-.directory-toolbar .search-box { width: min(320px, 100%); }
+.customer-directory-page .directory-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 16px; padding: 12px 14px; border: 1px solid #e8edf3; border-radius: 8px; background: #fff; color: #909baa; font-size: 10px; }
+.customer-directory-page .directory-toolbar .search-box { width: min(320px, 100%); }
 .knowledge-page .page-heading { margin-bottom: 20px; }
 .knowledge-page .directory-toolbar { gap: 14px; }
 .knowledge-page .directory-toolbar .search-box { width: min(620px, 100%); }
 .knowledge-page .search-box input { min-width: 0; flex: 1; }
 .knowledge-page .search-box .button { flex: 0 0 auto; height: 29px; font-size: 8px; }
+.knowledge-total-card { flex: none; padding: 7px 10px; border: 1px solid #e5ebf4; border-radius: 6px; color: #526f9e; background: #f5f8ff; font-size: 9px; font-weight: 600; white-space: nowrap; }
 .knowledge-list { display: grid; gap: 12px; }
 .knowledge-card { padding: 17px 19px; border: 1px solid #e7ebf0; border-radius: 8px; background: #fff; box-shadow: 0 3px 12px #25364b05; }
 .knowledge-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding-bottom: 13px; border-bottom: 1px solid #edf0f3; }
@@ -291,16 +292,16 @@ h1, h2, p { margin-top: 0; }
 .knowledge-conversation-modal .attachment-list { padding: 12px 20px; border-bottom: 1px solid #edf0f3; }
 .knowledge-no-messages { margin: 0; padding: 0 20px 12px; color: #8995a6; font-size: 9px; }
 .knowledge-conversation-modal .conversation { padding-right: 20px; padding-left: 20px; }
-.directory-company-group { margin-bottom: 14px; }
-.directory-company-heading { min-height: 47px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border: 1px solid #e5eaf0; border-radius: 8px 8px 0 0; background: #f7f9fc; color: #637187; }
-.directory-company-heading > div { min-width: 0; display: flex; align-items: center; gap: 8px; }
-.directory-company-heading svg { flex: 0 0 auto; color: #6784b7; }
-.directory-company-heading strong { overflow: hidden; color: #35445a; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.directory-company-heading > span { color: #8995a6; font-size: 9px; text-align: right; }
-.directory-company-group .directory-list { border-top: 0; border-radius: 0 0 8px 8px; }
-.directory-list { overflow: hidden; border: 1px solid #e9edf1; border-radius: 8px; background: #fff; }
-.directory-row { min-height: 69px; display: flex; align-items: center; gap: 13px; padding: 11px 14px; border-bottom: 1px solid #edf0f3; }
-.directory-row:last-child { border-bottom: 0; }
+.customer-directory-page .directory-company-group { margin-bottom: 18px; overflow: hidden; border: 1px solid #e1e7ef; border-radius: 10px; background: #f8fafc; box-shadow: 0 2px 8px #23375208; }
+.customer-directory-page .directory-company-heading { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 15px; border-bottom: 1px solid #e7ecf2; background: #f3f6fa; color: #637187; }
+.customer-directory-page .directory-company-heading > div { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.customer-directory-page .directory-company-heading svg { flex: 0 0 auto; color: #6784b7; }
+.customer-directory-page .directory-company-heading strong { overflow: hidden; color: #35445a; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.customer-directory-page .directory-company-heading > span { color: #8995a6; font-size: 9px; text-align: right; }
+.customer-directory-page .directory-company-group .directory-list { border: 0; border-radius: 0; background: transparent; }
+.customer-directory-page .directory-list { display: grid; gap: 8px; padding: 10px; background: #f8fafc; }
+.customer-directory-page .directory-row { min-height: 69px; display: flex; align-items: center; gap: 13px; padding: 11px 14px; border: 1px solid #e8edf3; border-radius: 8px; background: #fff; box-shadow: 0 1px 3px #23375205; }
+.customer-directory-page .directory-row:last-child { border-bottom: 1px solid #e8edf3; }
 .directory-customer { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }
 .directory-customer strong { overflow: hidden; color: #3c4b60; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .directory-customer span { overflow: hidden; color: #929daa; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
@@ -343,7 +344,17 @@ h1, h2, p { margin-top: 0; }
 .detail-sla-overdue svg { color: #c6635e; }
 .feature-page.admin-settings { display: flex; flex-direction: column; gap: 14px; }
 .feature-page.admin-settings .page-heading { margin-bottom: 5px; }
+.feature-page.company-management { display: flex; flex-direction: column; gap: 14px; }
+.feature-page.company-management .page-heading { margin-bottom: 5px; }
+.company-directory-section .company-list { margin-top: 2px; }
+.company-directory-section .company-select-row { min-height: 54px; padding: 11px 10px; }
+.company-directory-section .company-select-row:last-child { border-bottom: 0; }
 .settings-card { padding: 19px; border: 1px solid #e9edf1; border-radius: 8px; background: #fff; }
+.company-mail-invite-card { border-color: #dfe8f6; box-shadow: 0 3px 12px #25364b05; }
+.company-mail-invite-card .settings-card-heading { align-items: center; }
+.company-mail-invite-card .company-invite-label { color: #667386; font-size: 9px; font-weight: 600; }
+.company-mail-invite-card .invite-form { margin: 0; }
+.company-mail-invite-card .client-invite-form { margin-top: 0; }
 .settings-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 15px; color: #7890b5; }
 .settings-card-heading h2 { margin: 0 0 5px; color: #334258; font: 700 14px "Manrope", sans-serif; }
 .settings-card-heading p { margin: 0; color: #8994a2; font-size: 9px; line-height: 1.6; }
@@ -370,6 +381,7 @@ h1, h2, p { margin-top: 0; }
 .admin-team-row .button:disabled { opacity: .5; }
 .admin-team-row .agent-routing-priority { min-width: 58px; color: #60789f; font-size: 8px; font-weight: 700; }
 .admin-team-row .consultant-specialty-label { min-width: 96px; color: #78869a; font-size: 8px; }
+.admin-team-row .consultant-specialty-edit { min-width: 118px; height: 27px; padding: 0 5px; border: 1px solid #dfe5ed; border-radius: 6px; color: #34435b; background: #fff; font-size: 8px; }
 .admin-team-row .button[aria-label^="Move "] { width: 27px; min-width: 27px; padding: 0; }
 .report-wide-card { grid-column: 1 / -1; }
 .report-table-wrap { width: 100%; overflow-x: auto; }
@@ -442,6 +454,17 @@ h1, h2, p { margin-top: 0; }
 .company-select-row strong { color: #405067; font-size: 10px; }
 .company-select-row small { color: #929daa; font-size: 8px; }
 .company-users-section { padding-top: 16px; margin-top: 14px; border-top: 1px solid #edf0f3; }
+.client-access-method { margin-top: 16px; padding: 14px; border: 1px solid #e9edf1; border-radius: 6px; background: #fafbfd; }
+.client-access-method h3 { margin: 0 0 8px; color: #435166; font: 700 11px "Manrope", sans-serif; }
+.client-access-method > .settings-hint { margin: 0; }
+.client-invite-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-top: 12px; }
+.client-invite-form label { min-width: 0; display: flex; flex-direction: column; gap: 6px; color: #667386; font-size: 9px; font-weight: 600; }
+.client-invite-form input { width: 100%; min-width: 0; height: 34px; padding: 8px 10px; border: 1px solid #e3e8ee; border-radius: 5px; color: #425064; background: #fff; font-size: 10px; font-weight: 400; }
+.client-invite-form .button { min-height: 34px; white-space: nowrap; }
+.manual-client-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; padding: 12px; border: 1px solid #e9edf1; border-radius: 6px; background: #fafbfd; }
+.manual-client-form label { min-width: 0; display: flex; flex-direction: column; gap: 6px; color: #667386; font-size: 9px; font-weight: 600; }
+.manual-client-form input { min-width: 0; padding: 9px 10px; border: 1px solid #e3e8ee; border-radius: 5px; color: #425064; background: #fff; font-size: 10px; font-weight: 400; }
+.manual-client-form .button { justify-self: start; align-self: end; }
 .company-users-section > h3 { margin: 0 0 10px; color: #435166; font: 700 11px "Manrope", sans-serif; }
 .company-users-section .settings-card-heading { align-items: center; }
 .company-users-section .settings-card-heading h3 { margin: 0 0 5px; color: #435166; font: 700 11px "Manrope", sans-serif; }
@@ -598,10 +621,23 @@ h1, h2, p { margin-top: 0; }
   .filter-tabs button { font-size: 8px; }
   .ticket-row-meta { gap: 5px; }
   .detail-info-item:first-of-type { display: none; }
-  .directory-row { flex-wrap: wrap; }
-  .directory-company-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
-  .directory-company-heading > span { text-align: left; }
-  .directory-stat { min-width: 50px; }
+  .customer-directory-page .directory-toolbar { align-items: stretch; flex-direction: column; gap: 8px; padding: 11px; }
+  .customer-directory-page .directory-toolbar .search-box { width: 100%; }
+  .customer-directory-page .directory-toolbar > span { font-size: 9px; }
+  .customer-directory-page .directory-company-heading { align-items: flex-start; flex-direction: column; gap: 6px; padding: 12px; }
+  .customer-directory-page .directory-company-heading > div { width: 100%; }
+  .customer-directory-page .directory-company-heading strong { white-space: normal; overflow-wrap: anywhere; }
+  .customer-directory-page .directory-company-heading > span { text-align: left; line-height: 1.5; }
+  .customer-directory-page .directory-list { gap: 8px; padding: 8px; }
+  .customer-directory-page .directory-row { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 8px 10px; padding: 11px; }
+  .customer-directory-page .directory-row .customer-avatar { grid-column: 1; grid-row: 1; }
+  .customer-directory-page .directory-customer { grid-column: 2; grid-row: 1; }
+  .customer-directory-page .directory-stat { min-width: 0; }
+  .customer-directory-page .directory-stat:nth-of-type(3) { grid-column: 1; grid-row: 2; }
+  .customer-directory-page .directory-stat:nth-of-type(4) { grid-column: 2; grid-row: 2; }
+  .customer-directory-page .directory-action { width: 100%; min-width: 0; grid-row: 3; justify-content: center; }
+  .customer-directory-page .directory-action:nth-last-child(2) { grid-column: 1; }
+  .customer-directory-page .directory-action:last-child { grid-column: 2; }
   .detail-person span { max-width: 105px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .login-card { padding: 25px 23px 20px; }
   .login-footer { right: 15px; left: 15px; }
@@ -616,6 +652,9 @@ h1, h2, p { margin-top: 0; }
   .report-toolbar { align-items: flex-start; flex-direction: column; padding: 3px 0; }
   .settings-card { padding: 14px; }
   .team-create-form { grid-template-columns: minmax(0, 1fr); }
+  .manual-client-form { grid-template-columns: minmax(0, 1fr); }
+  .client-invite-form { grid-template-columns: minmax(0, 1fr); }
+  .client-invite-form .button { justify-self: start; }
   .invite-form, .sla-form { align-items: stretch; flex-direction: column; }
   .invite-form > div { width: 100%; }
   .email-connection-list > div { grid-template-columns: 8px 98px minmax(0, 1fr); }
@@ -637,4 +676,30 @@ h1, h2, p { margin-top: 0; }
   .support-contract-form { align-items: stretch; flex-direction: column; }
   .support-contract-form label { min-width: 0; }
   .company-users-section .admin-team-row { flex-wrap: wrap; }
+}
+
+.company-picker-screen { min-height: 100vh; display: grid; place-items: center; padding: 28px 16px; background: #f5f7fa; }
+.company-picker-card { width: min(100%, 510px); padding: 30px; border: 1px solid #e8edf1; border-radius: 18px; background: #fff; box-shadow: 0 18px 55px rgba(26, 42, 58, .08); }
+.company-picker-logo { display: block; width: 170px; max-height: 48px; object-fit: contain; object-position: left center; margin-bottom: 28px; }
+.company-picker-card .eyebrow { margin-bottom: 10px; }
+.company-picker-card h1 { margin: 0; color: #172b3a; font-size: 28px; }
+.company-picker-card > p { margin: 8px 0 22px; color: #71808b; font-size: 14px; }
+.company-picker-list { display: grid; gap: 10px; }
+.company-picker-option { width: 100%; display: flex; align-items: center; gap: 13px; padding: 14px; border: 1px solid #e8edf1; border-radius: 12px; background: #fff; color: #314454; text-align: left; cursor: pointer; }
+.company-picker-option:hover { border-color: #9ab8cf; background: #f8fbfd; }
+.company-picker-option > span:nth-child(2) { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.company-picker-option strong { font-size: 14px; }
+.company-picker-option small { color: #83919b; font-size: 12px; }
+.company-picker-icon { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 10px; background: #edf5fa; color: #39799f; }
+.company-picker-signout { margin-top: 18px; }
+.company-switcher { max-width: 210px; height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid #e6ebef; border-radius: 8px; background: #fff; color: #536672; cursor: pointer; }
+.company-switcher span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.link-client-form { display: flex; align-items: end; gap: 12px; }
+.link-client-form label { min-width: 0; flex: 1; display: grid; gap: 6px; color: #536672; font-size: 12px; font-weight: 600; }
+.link-client-form select { width: 100%; min-height: 39px; padding: 0 10px; border: 1px solid #dfe6eb; border-radius: 8px; background: #fff; color: #354957; }
+@media (max-width: 650px) {
+  .company-picker-card { padding: 22px 18px; }
+  .company-switcher { max-width: 135px; gap: 4px; padding: 0 6px; }
+  .company-switcher span { max-width: 90px; font-size: 10px; }
+  .link-client-form { align-items: stretch; flex-direction: column; }
 }
