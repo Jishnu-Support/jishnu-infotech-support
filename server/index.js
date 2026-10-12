@@ -984,14 +984,20 @@ app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
   const page = Number(req.query.page ?? 1);
   const pageSize = 50;
   const search = typeof req.query.search === "string" ? req.query.search.trim().slice(0, 120) : "";
+  const companyId = req.query.companyId === undefined ? null : Number(req.query.companyId);
   if (!Number.isInteger(page) || page < 1 || page > 100000) {
     return res.status(400).json({ error: "Choose a valid Knowledge Base page." });
+  }
+  if (companyId !== null && (!Number.isInteger(companyId) || companyId < 1)) {
+    return res.status(400).json({ error: "Choose a valid company." });
   }
 
   const searchClause = search
     ? `AND (LOWER(t.subject) LIKE LOWER(?) OR LOWER(t.description) LIKE LOWER(?) OR LOWER(COALESCE(t.category, '')) LIKE LOWER(?) OR LOWER(COALESCE(t.reported_client_name, customer.name, '')) LIKE LOWER(?) OR LOWER(COALESCE(t.historical_consultant_name, consultant.name, '')) LIKE LOWER(?) OR LOWER(COALESCE(t.historical_solution, solution.body, '')) LIKE LOWER(?))`
     : "";
   const searchParams = search ? Array(6).fill(`%${search}%`) : [];
+  const companyClause = companyId === null ? "" : "AND t.company_id = ?";
+  const companyParams = companyId === null ? [] : [companyId];
   const knowledgeFrom = `
     FROM tickets t
     LEFT JOIN users customer ON customer.id = t.customer_id
@@ -1005,9 +1011,9 @@ app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
       WHERE m.ticket_id = t.id AND m.is_internal = 0 AND author.role = 'agent'
       ORDER BY m.id DESC LIMIT 1
     )
-    WHERE t.status = 'resolved' ${searchClause}
+    WHERE t.status = 'resolved' ${searchClause} ${companyClause}
   `;
-  const [{ count }] = await db.prepare(`SELECT COUNT(*) AS count ${knowledgeFrom}`).all(...searchParams);
+  const [{ count }] = await db.prepare(`SELECT COUNT(*) AS count ${knowledgeFrom}`).all(...searchParams, ...companyParams);
   const tickets = await db.prepare(`
     SELECT t.id, t.subject AS issue, t.description,
            t.created_at AS reportedAt, COALESCE(t.resolved_at, t.updated_at) AS closedAt,
@@ -1018,7 +1024,7 @@ app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
     ${knowledgeFrom}
     ORDER BY COALESCE(t.resolved_at, t.updated_at) DESC, t.id DESC
     LIMIT ? OFFSET ?
-  `).all(...searchParams, pageSize, (page - 1) * pageSize);
+  `).all(...searchParams, ...companyParams, pageSize, (page - 1) * pageSize);
   res.json({ tickets, total: Number(count), page, pageSize });
 });
 

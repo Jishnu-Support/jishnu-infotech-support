@@ -373,6 +373,19 @@ function App() {
     resolved: tickets.filter((ticket) => ticket.status === "resolved").length,
   }), [tickets]);
 
+  const inboxCounts = useMemo(() => {
+    const scopedTickets = user?.role === "agent" && activeView === "inbox" && companyFilter !== "all"
+      ? tickets.filter((ticket) => ticket.company?.id === Number(companyFilter))
+      : tickets;
+    return {
+      all: scopedTickets.length,
+      open: scopedTickets.filter((ticket) => ticket.status === "open").length,
+      in_progress: scopedTickets.filter((ticket) => ticket.status === "in_progress").length,
+      waiting: scopedTickets.filter((ticket) => ticket.status === "waiting").length,
+      resolved: scopedTickets.filter((ticket) => ticket.status === "resolved").length,
+    };
+  }, [activeView, companyFilter, tickets, user]);
+
   async function signIn(event: FormEvent<HTMLFormElement>, portal: Role) {
     event.preventDefault();
     setLoginError("");
@@ -669,10 +682,10 @@ function App() {
               </div>
 
               {isAgent && <div className="metrics-row">
-                <Metric icon={<Inbox size={15} />} label="Open tickets" value={counts.open} tone="blue" />
-                <Metric icon={<Activity size={15} />} label="In progress" value={counts.in_progress} tone="violet" />
-                <Metric icon={<Clock3 size={15} />} label="Waiting" value={counts.waiting} tone="amber" />
-                <Metric icon={<CheckCheck size={15} />} label="Closed" value={counts.resolved} tone="green" />
+                <Metric icon={<Inbox size={15} />} label="Open tickets" value={inboxCounts.open} tone="blue" />
+                <Metric icon={<Activity size={15} />} label="In progress" value={inboxCounts.in_progress} tone="violet" />
+                <Metric icon={<Clock3 size={15} />} label="Waiting" value={inboxCounts.waiting} tone="amber" />
+                <Metric icon={<CheckCheck size={15} />} label="Closed" value={inboxCounts.resolved} tone="green" />
               </div>}
 
               <div className="list-toolbar">
@@ -680,7 +693,7 @@ function App() {
                   {(["all", "open", "in_progress", "waiting", "resolved"] as const).map((value) => (
                     <button key={value} className={filter === value ? "selected" : ""} onClick={() => setFilter(value)}>
                       {value === "all" ? "All tickets" : value === "in_progress" ? "In progress" : value === "resolved" ? "Closed" : value[0].toUpperCase() + value.slice(1)}
-                      {value === "all" && <span className="filter-count">{activeView === "assigned" ? counts.in_progress : tickets.length}</span>}
+                      {value === "all" && <span className="filter-count">{activeView === "assigned" ? counts.in_progress : inboxCounts.all}</span>}
                     </button>
                   ))}
                 </div>
@@ -711,7 +724,7 @@ function App() {
                   </button>
                 ))}
               </div>
-              <div className="list-footer"><span>Showing <strong>{filteredTickets.length}</strong> of {tickets.length} tickets</span><button className="footer-refresh" onClick={() => refreshTickets()}><ArrowDownUp size={13} /> Refresh</button></div>
+              <div className="list-footer"><span>Showing <strong>{filteredTickets.length}</strong> of {activeView === "inbox" && user.role === "agent" ? inboxCounts.all : tickets.length} tickets</span><button className="footer-refresh" onClick={() => refreshTickets()}><ArrowDownUp size={13} /> Refresh</button></div>
             </section>
 
             {selectedTicket ? (
@@ -795,7 +808,7 @@ function App() {
           </div>
         ) : (
           activeView === "knowledge" && isAgent
-            ? <KnowledgeBase />
+            ? <KnowledgeBase companies={inboxCompanies} />
             : activeView === "customers" && isAgent
             ? <CustomerDirectory
               customers={customers}
@@ -1800,13 +1813,14 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
   </main>;
 }
 
-function KnowledgeBase() {
+function KnowledgeBase({ companies }: { companies: Array<{ id: number; name: string }> }) {
   const [tickets, setTickets] = useState<KnowledgeBaseTicket[]>([]);
   const [openTicket, setOpenTicket] = useState<TicketDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState("");
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
+  const [companyFilter, setCompanyFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -1817,7 +1831,8 @@ function KnowledgeBase() {
     let active = true;
     setLoading(true);
     setError("");
-    api<{ tickets: KnowledgeBaseTicket[]; total: number }>(`/knowledge-base?page=${page}&search=${encodeURIComponent(search)}`)
+    const companyQuery = companyFilter === "all" ? "" : `&companyId=${encodeURIComponent(companyFilter)}`;
+    api<{ tickets: KnowledgeBaseTicket[]; total: number }>(`/knowledge-base?page=${page}&search=${encodeURIComponent(search)}${companyQuery}`)
       .then((result) => {
         if (!active) return;
         setTickets(result.tickets);
@@ -1826,7 +1841,7 @@ function KnowledgeBase() {
       .catch((reason: Error) => { if (active) setError(reason.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [page, search]);
+  }, [companyFilter, page, search]);
 
   const formatDate = (value: string) => {
     const date = new Date(value.replace(" ", "T") + (value.endsWith("Z") ? "" : "Z"));
@@ -1853,6 +1868,7 @@ function KnowledgeBase() {
     <form className="directory-toolbar" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(query.trim()); }}>
       <div className="search-box"><Search size={15} /><input aria-label="Search resolved tickets" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tickets, clients, Consultants, or solutions…" /><button className="button button-quiet" type="submit">Search</button></div>
       <span className="knowledge-total-card">{total} Resolved {total === 1 ? "Ticket" : "Tickets"}</span>
+      <label className="priority-filter"><span>Customer</span><select aria-label="Filter Knowledge Base by customer" value={companyFilter} onChange={(event) => { setCompanyFilter(event.target.value); setPage(1); }}><option value="all">All customers</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></label>
     </form>
     {error && <div className="inline-error" role="alert">{error}</div>}
     {loading ? <div className="report-empty" role="status">Loading resolved tickets…</div> : tickets.length === 0
