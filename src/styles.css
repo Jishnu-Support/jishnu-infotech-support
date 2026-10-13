@@ -130,7 +130,12 @@ h1, h2, p { margin-top: 0; }
 .status-resolved { color: #438c69; border-color: #dfefe6; background: #eff9f3; }
 .list-footer { height: 39px; flex: none; display: flex; align-items: center; justify-content: space-between; color: #9ba4af; font-size: 9px; }
 .list-footer strong { color: #677487; }
-.footer-refresh { display: flex; align-items: center; gap: 5px; border: 0; color: #7b8797; background: transparent; font-size: 9px; }
+.footer-refresh-wrap { display: flex; align-items: center; gap: 9px; }
+.footer-refresh { display: flex; align-items: center; gap: 5px; border: 0; color: #7b8797; background: transparent; font-size: 9px; cursor: pointer; }
+.footer-refresh:disabled { color: #aab2bc; cursor: wait; }
+.footer-refresh-error { color: #c34848; font-size: 9px; }
+.refresh-spinning { animation: refresh-spin 0.8s linear infinite; }
+@keyframes refresh-spin { to { transform: rotate(360deg); } }
 .empty-list { height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #a0aab6; }
 .empty-list strong { color: #627083; font-size: 11px; }
 .empty-list span { font-size: 10px; }

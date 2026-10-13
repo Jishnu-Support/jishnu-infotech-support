@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowUp, BarChart3, Bell, Check,
+  Activity, ArrowDown, ArrowRight, ArrowUp, BarChart3, Bell, Check,
   CheckCheck, CircleHelp, Clock3, Inbox, LogOut, Mail, MessageCircle, Building2,
-  Download, Paperclip, Plus, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen,
+  Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 
@@ -238,12 +238,14 @@ function App() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [actionMessage, setActionMessage] = useState("");
+  const [refreshingInbox, setRefreshingInbox] = useState(false);
+  const [inboxRefreshError, setInboxRefreshError] = useState("");
   const [replyInternal, setReplyInternal] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
   const knownTicketIds = useRef<Set<number> | null>(null);
 
   const refreshTickets = useCallback(async () => {
-    const result = await api<{ tickets: Ticket[] }>("/tickets");
+    const result = await api<{ tickets: Ticket[] }>("/tickets", { cache: "no-store" });
     if (user?.role === "customer") {
       const knownIds = knownTicketIds.current;
       if (knownIds) {
@@ -313,6 +315,20 @@ function App() {
     setNotifications(result.notifications);
     setUnreadCount(result.unreadCount);
   }, [user]);
+
+  async function refreshInboxNow() {
+    if (refreshingInbox) return;
+    setRefreshingInbox(true);
+    setInboxRefreshError("");
+    try {
+      await refreshTickets();
+      if (user?.role === "agent") await refreshNotifications();
+    } catch (error) {
+      setInboxRefreshError(error instanceof Error ? error.message : "Could not refresh the inbox.");
+    } finally {
+      setRefreshingInbox(false);
+    }
+  }
 
   useEffect(() => {
     if (!user || user.role !== "agent") return;
@@ -724,7 +740,7 @@ function App() {
                   </button>
                 ))}
               </div>
-              <div className="list-footer"><span>Showing <strong>{filteredTickets.length}</strong> of {activeView === "inbox" && user.role === "agent" ? inboxCounts.all : tickets.length} tickets</span><button className="footer-refresh" onClick={() => refreshTickets()}><ArrowDownUp size={13} /> Refresh</button></div>
+              <div className="list-footer"><span>Showing <strong>{filteredTickets.length}</strong> of {activeView === "inbox" && user.role === "agent" ? inboxCounts.all : tickets.length} tickets</span><span className="footer-refresh-wrap">{inboxRefreshError && <span className="footer-refresh-error" role="alert">{inboxRefreshError}</span>}<button type="button" className="footer-refresh" onClick={refreshInboxNow} disabled={refreshingInbox} aria-live="polite"><RefreshCw size={13} className={refreshingInbox ? "refresh-spinning" : ""} />{refreshingInbox ? "Refreshing…" : "Refresh"}</button></span></div>
             </section>
 
             {selectedTicket ? (
