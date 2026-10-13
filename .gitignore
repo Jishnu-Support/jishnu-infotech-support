@@ -6,3 +6,7 @@ data/
 !.env.example
 *.tsbuildinfo
 npm-debug.log*
+android-launcher/build/
+*.jks
+*.keystore
+*.idsig
