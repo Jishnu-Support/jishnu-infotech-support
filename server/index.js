@@ -1617,12 +1617,18 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
   let customerId = req.user.id;
   let companyId = req.user.company_id;
   if (req.user.role === "agent") {
-    customerId = Number(req.body.customerId);
+    // Older deployed forms submit the combined "companyId:customerId" value
+    // under customerId. Accept that format as well as the current separate fields.
+    const rawCustomerSelection = String(req.body.customerId ?? "");
+    const [selectedCompanyId, selectedCustomerId] = rawCustomerSelection.includes(":")
+      ? rawCustomerSelection.split(":", 2)
+      : ["", rawCustomerSelection];
+    customerId = Number(selectedCustomerId);
     if (!Number.isInteger(customerId) || customerId < 1) {
       discardUploadedFiles(req.files);
       return res.status(400).json({ error: "Choose a customer for this ticket." });
     }
-    const requestedCompanyId = Number(req.body.companyId);
+    const requestedCompanyId = Number(req.body.companyId || selectedCompanyId);
     const customer = Number.isInteger(requestedCompanyId) && requestedCompanyId > 0
       ? await db.prepare(`
         SELECT u.id, m.company_id FROM users u JOIN company_memberships m ON m.user_id = u.id
