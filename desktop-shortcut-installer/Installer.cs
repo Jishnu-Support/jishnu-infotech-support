@@ -1,7 +1,14 @@
 using System;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+
+[assembly: AssemblyTitle("Jishnu Infotech Support Installer")]
+[assembly: AssemblyDescription("Installs the Jishnu Infotech Support desktop shortcut")]
+[assembly: AssemblyCompany("Jishnu Infotech")]
+[assembly: AssemblyProduct("Jishnu Infotech Support")]
+[assembly: AssemblyVersion("1.0.0.0")]
 
 internal static class Installer
 {
@@ -22,6 +29,16 @@ internal static class Installer
             var shortcutPath = Path.Combine(desktop, "Jishnu Infotech Support.lnk");
             var systemDirectory = Environment.GetFolderPath(Environment.SpecialFolder.System);
             var browserLauncher = Path.Combine(systemDirectory, "rundll32.exe");
+            var appDataDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Jishnu Infotech Support");
+            Directory.CreateDirectory(appDataDirectory);
+            var iconPath = Path.Combine(appDataDirectory, "company-mark.ico");
+            using (var embeddedIcon = Assembly.GetExecutingAssembly().GetManifestResourceStream("CompanyMark.ico"))
+            {
+                if (embeddedIcon == null) throw new InvalidOperationException("The company logo icon is missing from the installer.");
+                using (var iconFile = File.Create(iconPath)) embeddedIcon.CopyTo(iconFile);
+            }
 
             shortcut = shellType.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod,
                 null, shell, new object[] { shortcutPath });
@@ -35,7 +52,7 @@ internal static class Installer
             shortcutType.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty,
                 null, shortcut, new object[] { "Open the Jishnu Infotech Support Portal" });
             shortcutType.InvokeMember("IconLocation", System.Reflection.BindingFlags.SetProperty,
-                null, shortcut, new object[] { Path.Combine(systemDirectory, "shell32.dll") + ",220" });
+                null, shortcut, new object[] { iconPath + ",0" });
             shortcutType.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod,
                 null, shortcut, null);
 
