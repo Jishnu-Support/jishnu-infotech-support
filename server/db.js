@@ -343,6 +343,47 @@ async function seedDatabase() {
   })();
 }
 
+async function recoverSuperAdminFromEnvironment() {
+  if (process.env.RECOVER_SUPER_ADMIN?.trim().toLowerCase() !== "true") return;
+
+  const email = process.env.SEED_CONSULTANT_EMAIL?.trim();
+  const password = process.env.SEED_CONSULTANT_PASSWORD;
+  const contactNumber = process.env.SEED_CONSULTANT_CONTACT_NUMBER?.trim();
+  if (!email || !password || !contactNumber) {
+    throw new Error("Super Admin recovery requires the consultant email, password, and contact number environment variables.");
+  }
+  if (password.length < 8) throw new Error("The Super Admin recovery password must be at least 8 characters.");
+
+  const completed = await db.prepare("SELECT value FROM workspace_settings WHERE key = ?").get("super_admin_recovery_completed");
+  if (completed) {
+    console.warn("Super Admin recovery has already run once. Remove RECOVER_SUPER_ADMIN from the app environment.");
+    return;
+  }
+
+  const target = await db.prepare("SELECT id, role, is_admin, disabled_at FROM users WHERE lower(email) = lower(?)").get(email);
+  let adminId = null;
+  if (target) {
+    if (target.role !== "agent" || !target.is_admin || target.disabled_at) {
+      throw new Error("The configured recovery email belongs to an account that is not an active Super Admin.");
+    }
+    adminId = target.id;
+  } else {
+    const admins = await db.prepare("SELECT id FROM users WHERE role = 'agent' AND is_admin = 1 AND disabled_at IS NULL ORDER BY id").all();
+    if (admins.length !== 1) {
+      throw new Error(`Super Admin recovery needs exactly one active Super Admin to update; found ${admins.length}.`);
+    }
+    adminId = admins[0].id;
+  }
+
+  await db.transaction(async () => {
+    await db.prepare("UPDATE users SET email = ?, contact_number = ?, password_hash = ? WHERE id = ?")
+      .run(email, contactNumber, bcrypt.hashSync(password, 12), adminId);
+    await db.prepare("INSERT INTO workspace_settings (key, value) VALUES (?, ?)")
+      .run("super_admin_recovery_completed", new Date().toISOString());
+  })();
+  console.log("Super Admin recovery completed. Remove RECOVER_SUPER_ADMIN from the app environment.");
+}
+
 export async function initializeSchema() {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -441,6 +482,7 @@ export async function initializeDatabase() {
     if (firstAgent) await db.prepare("UPDATE users SET is_admin = 1 WHERE id = ?").run(firstAgent.id);
   }
 
+  await recoverSuperAdminFromEnvironment();
   await seedDatabase();
 }
 
