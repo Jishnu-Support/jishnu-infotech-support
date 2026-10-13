@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, ArrowDown, ArrowRight, ArrowUp, BarChart3, Bell, Check,
+  Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowUp, BarChart3, Bell, Check,
   CheckCheck, CircleHelp, Clock3, Inbox, LogOut, Mail, MessageCircle, Building2,
   Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen,
 } from "lucide-react";
@@ -221,6 +221,7 @@ function App() {
   const [companyFilter, setCompanyFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [extensionTicketDraft, setExtensionTicketDraft] = useState<{ subject: string; description: string } | null>(null);
   const [renewalPopup, setRenewalPopup] = useState(false);
   const [newTicketCategory, setNewTicketCategory] = useState<TicketCategory | "">("");
   const [feedbackTicketId, setFeedbackTicketId] = useState<number | null>(null);
@@ -266,6 +267,28 @@ function App() {
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const launch = new URLSearchParams(window.location.hash.slice(1));
+    if (launch.get("createTicket") !== "1") return;
+    const title = (launch.get("title") || "").trim().slice(0, 180);
+    const sourceUrl = (launch.get("url") || "").trim().slice(0, 2000);
+    const selectedText = (launch.get("selection") || "").trim().slice(0, 2000);
+    const description = [
+      title ? `Page: ${title}` : "",
+      sourceUrl ? `URL: ${sourceUrl}` : "",
+      selectedText ? `Selected text:\n${selectedText}` : "",
+    ].filter(Boolean).join("\n\n");
+    setExtensionTicketDraft({
+      subject: title ? `Help with: ${title}`.slice(0, 160) : "",
+      description,
+    });
+    setNewTicketCategory("");
+    setShowCreate(true);
+    setActionError("");
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }, [user]);
 
   useEffect(() => {
     if (!selectedId || !user) { setDetail(null); return; }
@@ -537,6 +560,7 @@ function App() {
     try {
       const result = await api<{ ticket: Ticket }>("/tickets", { method: "POST", body: form });
       setShowCreate(false);
+      setExtensionTicketDraft(null);
       setNewTicketCategory("");
       await refreshTickets();
       setSelectedId(result.ticket.id);
@@ -618,6 +642,7 @@ function App() {
     }
     setPrefillCustomerId(null);
     setPrefillCompanyId(null);
+    setExtensionTicketDraft(null);
     setNewTicketCategory("");
     setActionError("");
     setShowCreate(true);
@@ -877,8 +902,8 @@ function App() {
           <div className="modal-heading"><div><div className="eyebrow">SUPPORT REQUEST</div><h2>Create a ticket</h2></div><button type="button" className="icon-button" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); setNewTicketCategory(""); }} aria-label="Close"><X size={18} /></button></div>
           <label>Category<select name="category" required value={newTicketCategory} onChange={(event) => setNewTicketCategory(event.target.value as TicketCategory | "")}><option value="" disabled>Select Functional or Technical</option><option value="Functional">Functional</option><option value="Technical">Technical</option></select></label>
           {isAgent && <label>Customer<select name="customerSelection" required value={prefillCustomerId && prefillCompanyId ? `${prefillCompanyId}:${prefillCustomerId}` : ""} onChange={(event) => { const [companyId, customerId] = event.target.value.split(":").map(Number); setPrefillCompanyId(companyId || null); setPrefillCustomerId(customerId || null); }}><option value="" disabled>Select a customer</option>{customers.map((customer) => <option key={`${customer.companyId}:${customer.id}`} value={`${customer.companyId}:${customer.id}`}>{customer.companyName ? `${customer.companyName} · ` : ""}{customer.name} · {customer.email}</option>)}</select><input type="hidden" name="customerId" value={prefillCustomerId ?? ""} /><input type="hidden" name="companyId" value={prefillCompanyId ?? ""} /></label>}
-          <label>Subject<input name="subject" required minLength={4} maxLength={160} placeholder="What do you need help with?" autoFocus /></label>
-          <label>Description<textarea name="description" required minLength={10} maxLength={5000} placeholder="Share a few details so we can help…" rows={5} /></label>
+          <label>Subject<input name="subject" required minLength={4} maxLength={160} placeholder="What do you need help with?" defaultValue={extensionTicketDraft?.subject || ""} autoFocus /></label>
+          <label>Description<textarea name="description" required minLength={10} maxLength={5000} placeholder="Share a few details so we can help…" defaultValue={extensionTicketDraft?.description || ""} rows={5} /></label>
           <label>Priority<select name="priority" defaultValue="normal"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
           <label>Attachments<input name="attachments" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" /><span className="form-hint">Up to 5 PDF or image files, 10 MB each.</span></label>
           {actionError && <div className="inline-error">{actionError}</div>}
