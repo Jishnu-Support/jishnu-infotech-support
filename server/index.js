@@ -614,10 +614,6 @@ app.post("/api/agent-invitations", requireAuth, requireAdmin, async (req, res) =
   if (await db.prepare("SELECT 1 FROM agent_invitations WHERE email = ? COLLATE NOCASE AND accepted_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP").get(email)) {
     return res.status(409).json({ error: "A valid invitation has already been sent to this email address." });
   }
-  if (isProduction && !emailIsConfigured()) {
-    return res.status(503).json({ error: "Consultant invitations require configured outbound SMTP email." });
-  }
-
   const token = secureToken();
   const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
   const result = await db.prepare(`
@@ -643,7 +639,7 @@ app.post("/api/agent-invitations", requireAuth, requireAdmin, async (req, res) =
       email,
       expiresAt,
       emailSent: emailIsConfigured(),
-      ...(!isProduction && !emailIsConfigured() ? { invitationUrl } : {}),
+      ...(!emailIsConfigured() ? { invitationUrl } : {}),
     },
   });
 });
@@ -1233,7 +1229,6 @@ app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => 
   if (await db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(adminEmail)) {
     return res.status(409).json({ error: "An account with this email already exists." });
   }
-  if (isProduction && !emailIsConfigured()) return res.status(503).json({ error: "Company creation requires SMTP to invite its first administrator." });
   const slug = name.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 100);
   if (!slug) return res.status(400).json({ error: "Company name must contain at least one letter or number." });
   const token = secureToken();
@@ -1281,7 +1276,7 @@ app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => 
       email: adminEmail,
       emailSent: emailIsConfigured(),
       expiresAt,
-      ...(!isProduction && !emailIsConfigured() ? { invitationUrl } : {}),
+      ...(!emailIsConfigured() ? { invitationUrl } : {}),
     },
   });
 });
@@ -1364,7 +1359,6 @@ app.post("/api/company/invitations", requireAuth, requireCompanyAdmin, async (re
   if (await db.prepare("SELECT 1 FROM client_invitations WHERE email = ? COLLATE NOCASE AND accepted_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP").get(email)) {
     return res.status(409).json({ error: "A valid client invitation has already been sent to this email." });
   }
-  if (isProduction && !emailIsConfigured()) return res.status(503).json({ error: "Client invitations require configured outbound SMTP email." });
   const company = await db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(companyId);
   if (!company) return res.status(404).json({ error: "Company not found." });
   const token = secureToken();
@@ -1388,7 +1382,7 @@ app.post("/api/company/invitations", requireAuth, requireCompanyAdmin, async (re
   res.status(201).json({
     invitation: {
       email, expiresAt, emailSent: emailIsConfigured(),
-      ...(!isProduction && !emailIsConfigured() ? { invitationUrl } : {}),
+      ...(!emailIsConfigured() ? { invitationUrl } : {}),
     },
   });
 });

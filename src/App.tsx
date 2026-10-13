@@ -1295,7 +1295,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     setMessage("");
     setInvitationUrl("");
     try {
-      const result = await api<{ company: Company; invitation: { email: string; invitationUrl?: string } }>("/admin/companies", {
+      const result = await api<{ company: Company; invitation: { email: string; emailSent: boolean; invitationUrl?: string } }>("/admin/companies", {
         method: "POST",
         body: JSON.stringify({ name: companyName, adminEmail: firstAdminEmail, supportValidUntil: newCompanySupportValidUntil }),
       });
@@ -1304,7 +1304,9 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       setFirstAdminEmail("");
       setNewCompanySupportValidUntil("");
       setInvitationUrl(result.invitation.invitationUrl || "");
-      setMessage(`Created ${result.company.name} and invited ${result.invitation.email} as company administrator.`);
+      setMessage(result.invitation.emailSent
+        ? `Created ${result.company.name} and emailed an administrator invitation to ${result.invitation.email}.`
+        : `Created ${result.company.name}. Share the invitation link below with ${result.invitation.email}.`);
       await loadCompanies();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create company."); }
   }
@@ -1314,14 +1316,16 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     setError("");
     setMessage("");
     try {
-      const result = await api<{ invitation: { email: string; invitationUrl?: string } }>("/company/invitations", {
+      const result = await api<{ invitation: { email: string; emailSent: boolean; invitationUrl?: string } }>("/company/invitations", {
         method: "POST",
         body: JSON.stringify({ email: inviteEmail, isCompanyAdmin: inviteAsAdmin, companyId: selectedCompanyId }),
       });
       setInviteEmail("");
       setInviteAsAdmin(false);
       setInvitationUrl(result.invitation.invitationUrl || "");
-      setMessage(`Invitation created for ${result.invitation.email}.`);
+      setMessage(result.invitation.emailSent
+        ? `Invitation email sent to ${result.invitation.email}.`
+        : `Invitation link created. Share it with ${result.invitation.email}.`);
       await loadCompanyUsers();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not invite this user."); }
   }
@@ -1404,10 +1408,10 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />{workspaceAdmin ? "JISHNU INFOTECH ADMINISTRATION" : "COMPANY ADMINISTRATION"}</div><h1>{workspaceAdmin ? "Client companies" : "Company users"}</h1><p>{workspaceAdmin ? "Create isolated client workspaces and manage their access." : `Manage users and enrollment for ${companies.find((company) => company.id === selectedCompanyId)?.name || "your company"}.`}</p></div></div>
     {error && <div className="inline-error" role="alert">{error}<button onClick={() => setError("")}><X size={13} /></button></div>}
     {message && <div className="inline-success" role="status">{message}<button onClick={() => setMessage("")}><X size={13} /></button></div>}
-    {invitationUrl && <p className="development-link">Development invitation link: <a href={invitationUrl}>{invitationUrl}</a></p>}
+    {invitationUrl && <p className="development-link">Invitation link (share with the invitee; expires in 48 hours): <a href={invitationUrl}>{invitationUrl}</a></p>}
 
     {workspaceAdmin && <section className="settings-card company-create-section">
-      <div className="settings-card-heading"><div><h2>Create a company</h2><p>Set up a separate client workspace and invite its first administrator.</p></div><Plus size={18} /></div>
+      <div className="settings-card-heading"><div><h2>Create a company</h2><p>Set up a separate client workspace and prepare an invitation for its first administrator.</p></div><Plus size={18} /></div>
       <form className="company-create-form" onSubmit={createCompany}>
         <label>Company name<input value={companyName} onChange={(event) => setCompanyName(event.target.value)} minLength={2} maxLength={120} required /></label>
         <label>Company admin email<input type="email" value={firstAdminEmail} onChange={(event) => setFirstAdminEmail(event.target.value)} required /></label>
@@ -1484,16 +1488,16 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       {invitations.length > 0 && <div className="pending-invitations"><strong>Pending user invitations</strong>{invitations.map((invitation) => <div key={invitation.id}><span>{invitation.email}{invitation.isCompanyAdmin ? " · Company admin" : ""}</span><small>Expires {new Date(invitation.expiresAt).toLocaleString()}</small></div>)}</div>}
     </section>}
     {selectedCompanyId && <section className="settings-card company-mail-invite-card">
-      <div className="settings-card-heading"><div><h2>{workspaceAdmin ? "Invite a user by email" : "Invite a client by email"}</h2><p>Send an email invitation to join {selectedCompany?.name || "this company"}.</p></div><Mail size={18} /></div>
+      <div className="settings-card-heading"><div><h2>{workspaceAdmin ? "Invite a user" : "Invite a client"}</h2><p>Create an invitation for {selectedCompany?.name || "this company"}; share the link manually when email is not configured.</p></div><Mail size={18} /></div>
       {workspaceAdmin ? <form className="invite-form" onSubmit={inviteUser}>
         <label className="company-invite-label" htmlFor="company-user-email">Email address</label>
         <div><input id="company-user-email" type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="colleague@company.com" required />
           <label className="checkbox-label"><input type="checkbox" checked={inviteAsAdmin} onChange={(event) => setInviteAsAdmin(event.target.checked)} /> Company admin</label>
-          <button className="button button-primary" type="submit"><Plus size={15} /> Send invitation</button>
+          <button className="button button-primary" type="submit"><Plus size={15} /> Create invitation</button>
         </div>
       </form> : <form className="client-invite-form" onSubmit={inviteUser}>
         <label>Email address<input id="company-user-email" type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="colleague@company.com" required /></label>
-        <button className="button button-primary" type="submit"><Plus size={15} /> Send invitation</button>
+        <button className="button button-primary" type="submit"><Plus size={15} /> Create invitation</button>
       </form>}
     </section>}
   </section>;
@@ -1552,7 +1556,9 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
       const result = await api<{ invitation: { email: string; emailSent: boolean; invitationUrl?: string } }>("/agent-invitations", {
         method: "POST", body: JSON.stringify({ email: form.get("email"), specialty: form.get("specialty") }),
       });
-      setMessage(result.invitation.emailSent ? `Invitation email sent to ${result.invitation.email}.` : `Invitation created for ${result.invitation.email}.`);
+      setMessage(result.invitation.emailSent
+        ? `Invitation email sent to ${result.invitation.email}.`
+        : `Invitation link created. Share it with ${result.invitation.email}.`);
       setInvitationUrl(result.invitation.invitationUrl || "");
       formElement.reset();
       await load();
@@ -1643,8 +1649,8 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
         <label className="team-admin-option"><input name="isAdmin" type="checkbox" /> Grant Super Admin permissions</label>
         <button className="button button-primary" type="submit"><Plus size={15} /> Create account</button>
       </form>
-      <form className="invite-form" onSubmit={invite}><label htmlFor="invite-email">Or send an email invitation (requires SMTP)</label><label className="invite-specialty">Consultant type<select name="specialty" defaultValue="" required><option value="" disabled>Select specialty</option><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Both</option></select></label><div><input id="invite-email" name="email" type="email" placeholder="consultant@jishnuinfotech.com" required disabled={!emailStatus?.smtpConfigured} /><button className="button button-primary" type="submit" disabled={!emailStatus?.smtpConfigured}><Plus size={15} /> Invite Consultant</button></div>{!emailStatus?.smtpConfigured && <small>SMTP is not configured. Use direct account creation above.</small>}</form>
-      {invitationUrl && <p className="development-link">Development invitation link: <a href={invitationUrl}>{invitationUrl}</a></p>}
+      <form className="invite-form" onSubmit={invite}><label htmlFor="invite-email">Or create a Consultant invitation link</label><label className="invite-specialty">Consultant type<select name="specialty" defaultValue="" required><option value="" disabled>Select specialty</option><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Both</option></select></label><div><input id="invite-email" name="email" type="email" placeholder="consultant@jishnuinfotech.com" required /><button className="button button-primary" type="submit"><Plus size={15} /> Create invitation</button></div>{!emailStatus?.smtpConfigured && <small>Email is not configured. Share the generated invitation link manually; it expires in 48 hours.</small>}</form>
+    {invitationUrl && <p className="development-link">Invitation link (share with the invitee; expires in 48 hours): <a href={invitationUrl}>{invitationUrl}</a></p>}
       <p className="settings-hint">Automatic tickets follow Primary-to-secondary priority; Consultants with the same priority are balanced by active unresolved workload. Use the arrows to change priority.</p>
       <div className="admin-team-list">
         {agents.map((agent) => <div className="admin-team-row" key={agent.id}><div className="avatar avatar-agent">{initials(agent.name)}</div><div className="directory-customer"><strong>{agent.name}{Boolean(agent.isAdmin) && <span className="admin-badge">SUPER ADMIN</span>}</strong><span>{agent.email}</span></div>{editingSpecialty === agent.id ? <><select aria-label={`Specialty for ${agent.name}`} className="consultant-specialty-edit" value={specialtyDraft} onChange={(event) => setSpecialtyDraft(event.target.value as ConsultantSpecialty)}><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Functional + Technical</option></select><button className="button button-quiet" onClick={() => saveSpecialty(agent)}>Save</button><button className="button button-quiet" onClick={() => setEditingSpecialty(null)}>Cancel</button></> : <><span className="consultant-specialty-label">{agent.specialty === "both" ? "Functional + Technical" : agent.specialty[0].toUpperCase() + agent.specialty.slice(1)}</span><button className="button button-quiet" onClick={() => { setEditingSpecialty(agent.id); setSpecialtyDraft(agent.specialty); }}>Edit type</button></>}<span className="agent-routing-priority">{agent.routingPriority === 1 ? "Primary" : agent.routingPriority === 2 ? "Secondary" : `#${agent.routingPriority}`}</span><button className="button button-quiet" aria-label={`Move ${agent.name} up in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority <= 1} onClick={() => moveAgent(agent, -1)}><ArrowUp size={13} /></button><button className="button button-quiet" aria-label={`Move ${agent.name} down in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority >= agents.filter((item) => !item.disabledAt).length} onClick={() => moveAgent(agent, 1)}><ArrowDown size={13} /></button><span className={`team-state ${agent.disabledAt ? "team-disabled" : ""}`}>{agent.disabledAt ? "Disabled" : "Active"}</span><button className="button button-quiet" disabled={Boolean(agent.isAdmin) && !agent.disabledAt} onClick={() => toggleAgent(agent)}>{agent.disabledAt ? "Enable" : "Disable"}</button></div>)}
