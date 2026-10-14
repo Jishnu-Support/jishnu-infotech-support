@@ -316,9 +316,19 @@ const schemaMigrations = [
   `) },
   { version: 8, apply: () => db.exec(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
-    UPDATE users
-    SET username = 'user' || id::text
-    WHERE username IS NULL OR trim(username) = '';
+    WITH candidates AS (
+      SELECT id,
+             COALESCE(NULLIF(regexp_replace(split_part(lower(email), '@', 1), '[^a-z0-9._-]', '', 'g'), ''), 'user') AS base
+      FROM users WHERE username IS NULL OR trim(username) = ''
+    ), ranked AS (
+      SELECT id, base, COUNT(*) OVER (PARTITION BY base) AS duplicates FROM candidates
+    )
+    UPDATE users AS u
+    SET username = CASE
+      WHEN ranked.duplicates = 1 AND length(ranked.base) BETWEEN 3 AND 32 AND ranked.base ~ '^[a-z0-9]' THEN ranked.base
+      ELSE left(CASE WHEN ranked.base ~ '^[a-z0-9]' THEN ranked.base ELSE 'user' END, greatest(1, 31 - length(ranked.id::text))) || '-' || ranked.id::text
+    END
+    FROM ranked WHERE u.id = ranked.id;
     ALTER TABLE users ALTER COLUMN username SET NOT NULL;
     ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (lower(username));

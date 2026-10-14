@@ -721,7 +721,7 @@ function App() {
           {isSuperAdmin && <button aria-label="Settings" title="Settings" className={`nav-item ${activeView === "settings" ? "active" : ""}`} onClick={() => setActiveView("settings")}><Settings2 size={17} /><span>Settings</span></button>}
           <div className="sidebar-profile">
             <div className={`avatar ${isAgent ? "avatar-agent" : ""}`}>{initials(user.name)}</div>
-            <div className="profile-copy"><strong>{isAgent ? user.name : displayClientName(user.name)}</strong><span>{isAgent ? (user.isAdmin ? "Super Admin" : "Consultant") : user.companyName || "Client"}{isCompanyAdmin ? " · Company Admin" : ""}</span></div>
+            <div className="profile-copy"><strong>{isAgent ? user.name : displayClientName(user.name)}</strong><span>@{user.username}</span><span>{isAgent ? (user.isAdmin ? "Super Admin" : "Consultant") : user.companyName || "Client"}{isCompanyAdmin ? " · Company Admin" : ""}</span></div>
             <button className="icon-button profile-menu" onClick={signOut} title="Sign out"><LogOut size={16} /></button>
           </div>
         </div>
@@ -1848,7 +1848,7 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
           <label>Company invitation code<input name="joinCode" autoComplete="off" placeholder="Enter a code from your company admin" required /><span className="form-hint">Your invitation code identifies your company and activates your account.</span></label>
           <label>Contact number (optional)<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" /></label>
         </>}
-        <label>Username<input name="username" autoComplete="username" minLength={mode === "register" ? 3 : undefined} maxLength={mode === "register" ? 32 : 254} pattern={mode === "register" ? "[A-Za-z0-9][A-Za-z0-9._-]{2,31}" : undefined} placeholder={mode === "register" ? "Choose a username" : "Username (existing accounts may use email)"} required /></label>
+        <label>Username<input name="username" autoComplete="username" minLength={mode === "register" ? 3 : undefined} maxLength={32} pattern={mode === "register" ? "[A-Za-z0-9][A-Za-z0-9._-]{2,31}" : undefined} placeholder={mode === "register" ? "Choose a username" : "Enter your username"} required /></label>
         {mode === "register" && portal === "customer" && <label>Email address (optional)<input name="email" type="email" autoComplete="email" placeholder="you@company.com" /></label>}
         <label>Password<div className="password-field"><input name="password" type="password" autoComplete={mode === "register" ? "new-password" : "current-password"} minLength={mode === "register" ? 8 : undefined} maxLength={128} placeholder={mode === "register" ? "At least 8 characters" : "Enter your password"} required /></div></label>
         {error && <div className="inline-error">{error}</div>}

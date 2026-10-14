@@ -350,7 +350,7 @@ app.get("/api/health", async (_req, res) => {
 });
 
 app.post("/api/auth/login", authLimiter, async (req, res) => {
-  const username = normalizeUsername(req.body.username || req.body.email);
+  const username = normalizeUsername(req.body.username);
   const password = typeof req.body.password === "string" ? req.body.password : "";
   if (!username || !password) return res.status(400).json({ error: "Enter your username and password." });
 
@@ -359,8 +359,8 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
            COALESCE(m.is_company_admin, u.is_company_admin) AS current_company_admin
     FROM users u LEFT JOIN companies c ON c.id = u.company_id
     LEFT JOIN company_memberships m ON m.user_id = u.id AND m.company_id = u.company_id
-    WHERE (lower(u.username) = ? OR lower(u.email) = ?) AND u.disabled_at IS NULL
-  `).get(username, username);
+    WHERE lower(u.username) = ? AND u.disabled_at IS NULL
+  `).get(username);
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: "Username or password is incorrect." });
   }
