@@ -69,11 +69,35 @@ type AuthFlow = "portal" | "invite" | "client-invite" | "reset";
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const isFormData = options.body instanceof FormData;
-  const response = await fetch(`/api${path}`, {
+  const requestOptions: RequestInit = {
     ...options,
     credentials: "include",
     headers: { ...(isFormData ? {} : { "Content-Type": "application/json" }), ...options.headers },
-  });
+  };
+  const method = (options.method || "GET").toUpperCase();
+  let response: Response;
+  try {
+    response = await fetch(`/api${path}`, requestOptions);
+  } catch {
+    if (method !== "GET" || options.signal?.aborted) {
+      throw new Error("The server could not be reached. Check your connection and try again.");
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 400));
+    try {
+      response = await fetch(`/api${path}`, requestOptions);
+    } catch {
+      throw new Error("The server is temporarily unreachable. Please check your connection and try again.");
+    }
+  }
+  if (method === "GET" && [500, 502, 503, 504].includes(response.status)) {
+    await response.body?.cancel();
+    await new Promise((resolve) => window.setTimeout(resolve, 400));
+    try {
+      response = await fetch(`/api${path}`, requestOptions);
+    } catch {
+      throw new Error("The server is temporarily unreachable. Please check your connection and try again.");
+    }
+  }
   if (response.status === 204) return undefined as T;
   const body = await response.text();
   if (!body.trim()) {

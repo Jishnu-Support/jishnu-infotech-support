@@ -2064,6 +2064,15 @@ if (isProduction) {
   app.get("/{*path}", (_req, res) => res.sendFile(resolve(webRoot, "index.html")));
 }
 
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  const status = Number(error.statusCode || error.status) || 500;
+  console.error(`Request failed (${req.method} ${req.originalUrl}, ${status}):`, error.stack || error.message || error);
+  res.status(status).json({
+    error: status >= 500 ? "The server could not complete this request. Please try again." : error.message || "The request could not be completed.",
+  });
+});
+
 await initializeDatabase();
 
 app.listen(port, () => {
