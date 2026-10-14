@@ -398,7 +398,7 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
   if (!validUsername(username)) return res.status(400).json({ error: "Username must be 3–32 characters and use letters, numbers, dots, underscores, or hyphens." });
   if (email === false) return res.status(400).json({ error: "Enter a valid email address or leave it blank." });
-  if (contactNumber === false) return res.status(400).json({ error: "Enter a valid contact number or leave it blank." });
+  if (!contactNumber) return res.status(400).json({ error: "Enter a valid mobile number (7 to 15 digits)." });
   if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Password must be between 8 and 128 characters." });
 
   let company;
@@ -1183,7 +1183,7 @@ app.post("/api/admin/agents", requireAuth, requireAdmin, async (req, res) => {
   if (name.length < 2 || name.length > 120) return res.status(400).json({ error: "Enter a name between 2 and 120 characters." });
   if (!validUsername(username)) return res.status(400).json({ error: "Username must be 3–32 characters and use letters, numbers, dots, underscores, or hyphens." });
   if (email === false) return res.status(400).json({ error: "Enter a valid email address or leave it blank." });
-  if (contactNumber === false) return res.status(400).json({ error: "Enter a valid contact number or leave it blank." });
+  if (!contactNumber) return res.status(400).json({ error: "Enter a valid mobile number (7 to 15 digits)." });
   if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Set an initial password between 8 and 128 characters." });
   if (!["functional", "technical", "both"].includes(specialty)) return res.status(400).json({ error: "Choose Functional, Technical, or Both for the Consultant specialty." });
   try {
@@ -1262,7 +1262,7 @@ app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => 
   if (!validUsername(adminUsername)) return res.status(400).json({ error: "Administrator username must be 3–32 characters and use letters, numbers, dots, underscores, or hyphens." });
   if (adminEmail === false) return res.status(400).json({ error: "Enter a valid email address or leave it blank." });
   if (adminPassword.length < 8 || adminPassword.length > 128) return res.status(400).json({ error: "Set an initial password between 8 and 128 characters." });
-  if (adminContactNumber === false) return res.status(400).json({ error: "Enter a valid contact number or leave it blank." });
+  if (!adminContactNumber) return res.status(400).json({ error: "Enter the first company administrator's valid mobile number (7 to 15 digits)." });
   if (!validDateOnly(supportValidUntil)) return res.status(400).json({ error: "Enter a valid Support valid until date." });
   if (domainInput && (!/^(?=.{1,253}$)(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(domainInput))) {
     return res.status(400).json({ error: "Enter a valid company email domain, or leave it blank." });
@@ -1321,7 +1321,7 @@ app.post("/api/company/users", requireAuth, requireCompanyAdmin, async (req, res
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
   if (!validUsername(username)) return res.status(400).json({ error: "Username must be 3–32 characters and use letters, numbers, dots, underscores, or hyphens." });
   if (email === false) return res.status(400).json({ error: "Enter a valid email address or leave it blank." });
-  if (contactNumber === false) return res.status(400).json({ error: "Enter a valid contact number or leave it blank." });
+  if (!contactNumber) return res.status(400).json({ error: "Enter a valid mobile number (7 to 15 digits)." });
   if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Password must be between 8 and 128 characters." });
   const company = await db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(req.user.company_id);
   if (!company) return res.status(404).json({ error: "Company not found or inactive." });

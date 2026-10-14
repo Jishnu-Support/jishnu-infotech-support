@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowUp, BarChart3, Bell, Check,
-  CheckCheck, CircleHelp, Clock3, Inbox, LogOut, Mail, MessageCircle, Building2,
+  CheckCheck, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2,
   Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
@@ -710,12 +710,6 @@ function App() {
             <BarChart3 size={17} /><span>Reports</span>
           </button>}
           <div className="nav-divider" />
-          {isAgent && <>
-            <div className="workspace-label">CHANNELS</div>
-            <button aria-label="Email" title="Email" className={`nav-item ${activeView === "email" ? "active" : ""}`} onClick={() => setActiveView("email")}>
-              <Mail size={17} /><span>Email</span><span className="connected-dot" title="Email integration status is available in administrator settings" />
-            </button>
-          </>}
         </nav>
         <div className="sidebar-bottom">
           {isSuperAdmin && <button aria-label="Settings" title="Settings" className={`nav-item ${activeView === "settings" ? "active" : ""}`} onClick={() => setActiveView("settings")}><Settings2 size={17} /><span>Settings</span></button>}
@@ -1489,7 +1483,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
         <label>Administrator username<input name="adminUsername" minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" autoComplete="username" required /></label>
         <label>Initial password<input name="adminPassword" type="password" minLength={8} maxLength={128} autoComplete="new-password" required /></label>
         <label>Administrator email (optional)<input name="adminEmail" type="email" maxLength={254} /></label>
-        <label>Contact number (optional)<input name="adminContactNumber" type="tel" maxLength={25} /></label>
+        <label>Mobile number<input name="adminContactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
         <label>Support valid until<input type="date" value={newCompanySupportValidUntil} onChange={(event) => setNewCompanySupportValidUntil(event.target.value)} required /></label>
         <button className="button button-primary" type="submit"><Plus size={15} /> Create company</button>
       </form>
@@ -1519,7 +1513,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
           <label>Full name<input name="name" autoComplete="name" minLength={2} maxLength={100} required /></label>
           <label>Username<input name="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" autoComplete="username" required /></label>
           <label>Email address (optional)<input name="email" type="email" autoComplete="email" maxLength={254} /></label>
-          <label>Contact number (optional)<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} /></label>
+          <label>Mobile number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
           <label>Initial password<input name="password" type="password" autoComplete="new-password" minLength={8} maxLength={128} required /></label>
           <button className="button button-primary" type="submit"><Plus size={15} /> Add client</button>
         </form>
@@ -1606,24 +1600,18 @@ function ConsultantNewTicketPopup({ notification, onDismiss, onOpen }: {
 function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
   const [agents, setAgents] = useState<Array<{ id: number; name: string; username: string; email: string | null; isAdmin: boolean; routingPriority: number; specialty: ConsultantSpecialty; disabledAt: string | null }>>([]);
   const [sla, setSla] = useState({ firstResponseHours: 4, resolutionHours: 48 });
-  const [emailStatus, setEmailStatus] = useState<{
-    smtpConfigured: boolean; imapConfigured: boolean; smtpHost: string | null; inboundMailbox: string | null;
-    outbox: Record<string, number>; recentFailures: Array<{ recipient: string; error: string; status: string; attempts: number; createdAt: string }>;
-  } | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [editingSpecialty, setEditingSpecialty] = useState<number | null>(null);
   const [specialtyDraft, setSpecialtyDraft] = useState<ConsultantSpecialty>("both");
 
   const load = useCallback(async () => {
-    const [team, slaResult, emailResult] = await Promise.all([
+    const [team, slaResult] = await Promise.all([
       api<{ agents: typeof agents }>("/admin/agents"),
       api<{ sla: typeof sla }>("/admin/sla-settings"),
-      api<typeof emailStatus>("/admin/email-status"),
     ]);
     setAgents(team.agents);
     setSla(slaResult.sla);
-    setEmailStatus(emailResult);
   }, []);
   useEffect(() => { load().catch((reason: Error) => setError(reason.message)); }, [load]);
 
@@ -1707,7 +1695,7 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
   }
 
   return <section className="feature-page admin-settings">
-    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />WORKSPACE ADMINISTRATION</div><h1>Settings</h1><p>Manage your support team, service targets, and mail connections.</p></div></div>
+    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />WORKSPACE ADMINISTRATION</div><h1>Settings</h1><p>Manage your support team and service targets.</p></div></div>
     {error && <div className="inline-error" role="alert">{error}<button onClick={() => setError("")}><X size={13} /></button></div>}
     {message && <div className="inline-success" role="status">{message}<button onClick={() => setMessage("")}><X size={13} /></button></div>}
 
@@ -1717,7 +1705,7 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
         <label>Full name<input name="name" autoComplete="name" minLength={2} maxLength={120} required placeholder="Consultant name" /></label>
         <label>Username<input name="username" autoComplete="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" required placeholder="consultant01" /></label>
         <label>Work email (optional)<input name="email" type="email" autoComplete="email" maxLength={254} placeholder="consultant@company.com" /></label>
-        <label>Contact number (optional)<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" /></label>
+        <label>Mobile number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
         <label>Consultant type<select name="specialty" defaultValue="" required><option value="" disabled>Select specialty</option><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Both</option></select></label>
         <label>Initial password<input name="password" type="password" autoComplete="new-password" minLength={8} maxLength={128} required placeholder="At least 8 characters" /><small>Share this password with the new user through a secure channel.</small></label>
         <label className="team-admin-option"><input name="isAdmin" type="checkbox" /> Grant Super Admin permissions</label>
@@ -1738,16 +1726,6 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
       </form>
     </section>
 
-    <section className="settings-card">
-      <div className="settings-card-heading"><div><h2>Email connections</h2><p>Outbound replies use SMTP; the inbound worker checks the configured IMAP mailbox every 30 seconds.</p></div><Mail size={18} /></div>
-      <div className="email-connection-list">
-        <div><span className={`connection-indicator ${emailStatus?.smtpConfigured ? "connection-ready" : ""}`} /><strong>Outbound SMTP</strong><span>{emailStatus?.smtpConfigured ? `Connected configuration · ${emailStatus.smtpHost}` : "Not configured"}</span></div>
-        <div><span className={`connection-indicator ${emailStatus?.imapConfigured ? "connection-ready" : ""}`} /><strong>Inbound IMAP</strong><span>{emailStatus?.imapConfigured ? emailStatus.inboundMailbox : "Not configured"}</span></div>
-        <p>Outbox · {emailStatus?.outbox?.pending || 0} pending · {emailStatus?.outbox?.sent || 0} sent · {emailStatus?.outbox?.failed || 0} failed</p>
-        {emailStatus?.recentFailures?.map((failure, index) => <div className="mail-failure" key={`${failure.recipient}-${index}`}><strong>{failure.status === "failed" ? "Delivery failed" : `Retrying delivery · attempt ${failure.attempts}/5`} · {failure.recipient}</strong><span>{failure.error}</span></div>)}
-      </div>
-      {!emailStatus?.smtpConfigured && <p className="settings-hint">Add SMTP settings to the server's local <code>.env</code> file; never commit mailbox credentials.</p>}
-    </section>
   </section>;
 }
 
@@ -1846,7 +1824,7 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
         {mode === "register" && portal === "customer" && <>
           <label>Your name<input name="name" autoComplete="name" minLength={2} maxLength={100} placeholder="Full name" required /></label>
           <label>Company invitation code<input name="joinCode" autoComplete="off" placeholder="Enter a code from your company admin" required /><span className="form-hint">Your invitation code identifies your company and activates your account.</span></label>
-          <label>Contact number (optional)<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" /></label>
+          <label>Mobile number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
         </>}
         <label>Username<input name="username" autoComplete="username" minLength={mode === "register" ? 3 : undefined} maxLength={32} pattern={mode === "register" ? "[A-Za-z0-9][A-Za-z0-9._-]{2,31}" : undefined} placeholder={mode === "register" ? "Choose a username" : "Enter your username"} required /></label>
         {mode === "register" && portal === "customer" && <label>Email address (optional)<input name="email" type="email" autoComplete="email" placeholder="you@company.com" /></label>}
@@ -2003,18 +1981,17 @@ function CustomerDirectory({ customers, tickets, onCreateTicket, onViewTickets }
 }
 
 function FeaturePlaceholder({ view }: { view: string }) {
-  const isEmail = view === "email";
   const isSettings = view === "settings";
-  const title = isEmail ? "Email channel" : isSettings ? "Workspace settings" : "Knowledge base";
+  const title = isSettings ? "Workspace settings" : "Knowledge base";
   return <section className="feature-page">
-    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />JISHNU INFOTECH WORKSPACE</div><h1>{title}</h1><p>{isEmail ? "Bring every customer conversation into one shared inbox." : "A calmer, more connected way to support your customers."}</p></div></div>
+    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />JISHNU INFOTECH WORKSPACE</div><h1>{title}</h1><p>A calmer, more connected way to support your customers.</p></div></div>
     <div className="integration-card">
-      <div className="integration-illustration">{isEmail ? <Mail size={27} /> : isSettings ? <Settings2 size={27} /> : <CircleHelp size={27} />}</div>
-      <span className="integration-status"><span />{isEmail ? "SMTP + IMAP" : "COMING SOON"}</span>
-      <h2>{isEmail ? "Email is part of your ticket workflow" : isSettings ? "Workspace settings are administrator-only" : "Help customers help themselves"}</h2>
-      <p>{isEmail ? "Consultant replies are queued for delivery over SMTP. Incoming messages are checked over IMAP and matched to ticket conversations. Configure both connections in the server environment." : isSettings ? "Ask your Super Admin to manage team access and service-level targets." : "The self-service knowledge base is planned for a later phase."}</p>
-      {isEmail ? <button className="button button-quiet" disabled><Mail size={15} /> Manage connection in administrator settings</button> : <button className="button button-quiet" disabled><Check size={15} /> Planned for a future release</button>}
-      <div className="integration-note"><ShieldCheck size={15} />{isEmail ? "SMTP delivery and IMAP intake remain inactive until valid mailbox credentials are configured." : "We are building this with your support workflow in mind."}</div>
+      <div className="integration-illustration">{isSettings ? <Settings2 size={27} /> : <CircleHelp size={27} />}</div>
+      <span className="integration-status"><span />COMING SOON</span>
+      <h2>{isSettings ? "Workspace settings are administrator-only" : "Help customers help themselves"}</h2>
+      <p>{isSettings ? "Ask your Super Admin to manage team access and service-level targets." : "The self-service knowledge base is planned for a later phase."}</p>
+      <button className="button button-quiet" disabled><Check size={15} /> Planned for a future release</button>
+      <div className="integration-note"><ShieldCheck size={15} />We are building this with your support workflow in mind.</div>
     </div>
   </section>;
 }
