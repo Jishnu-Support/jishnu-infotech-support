@@ -366,22 +366,25 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
   const username = normalizeUsername(req.body.username);
   const password = typeof req.body.password === "string" ? req.body.password : "";
   const portal = req.body.portal;
-  const companyId = Number(req.body.companyId);
   if (!username || !password) return res.status(400).json({ error: "Enter your username and password." });
   if (portal !== "agent" && portal !== "customer") return res.status(400).json({ error: "Choose the correct portal." });
 
   let user;
   if (portal === "customer") {
-    if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose your company to sign in." });
-    user = await db.prepare(`
+    const candidates = await db.prepare(`
       SELECT u.*, c.name AS company_name, c.support_valid_until AS company_support_valid_until,
-             m.is_company_admin AS current_company_admin
-      FROM users u
-      JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ?
-      JOIN companies c ON c.id = m.company_id AND c.is_active = 1
+             COALESCE(m.is_company_admin, u.is_company_admin) AS current_company_admin
+      FROM users u LEFT JOIN companies c ON c.id = u.company_id
+      LEFT JOIN company_memberships m ON m.user_id = u.id AND m.company_id = u.company_id
       WHERE u.username = ? AND u.role = 'customer' AND u.disabled_at IS NULL
-    `).get(companyId, username);
-    if (user) user.company_id = companyId;
+        AND c.is_active = 1
+      ORDER BY u.id
+    `).all(username);
+    const matchingUsers = candidates.filter((candidate) => bcrypt.compareSync(password, candidate.password_hash));
+    if (matchingUsers.length > 1) {
+      return res.status(409).json({ error: "This username and password match accounts in multiple companies. Ask an administrator to set a different password for one account." });
+    }
+    user = matchingUsers[0];
   } else {
     user = await db.prepare(`
       SELECT u.*, NULL AS company_name, NULL AS company_support_valid_until,
