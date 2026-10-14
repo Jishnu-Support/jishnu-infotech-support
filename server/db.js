@@ -376,12 +376,16 @@ async function recoverSuperAdminFromEnvironment() {
   const automaticSync = Boolean(username && password);
   if (!explicitlyRequested && !automaticSync) return;
   if ((!email && !username) || !password) {
-    if (explicitlyRequested) throw new Error("Super Admin recovery requires SEED_CONSULTANT_USERNAME or SEED_CONSULTANT_EMAIL, plus SEED_CONSULTANT_PASSWORD.");
+    console.warn("Super Admin environment login sync skipped because a username/email or password is missing.");
     return;
   }
-  if (password.length < 8) throw new Error("The Super Admin recovery password must be at least 8 characters.");
+  if (password.length < 8 || password.length > 128) {
+    console.warn("Super Admin environment login sync skipped because the configured password length is invalid.");
+    return;
+  }
   if (username && !/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) {
-    throw new Error("SEED_CONSULTANT_USERNAME must be 3 to 32 letters, numbers, dots, underscores, or hyphens.");
+    console.warn("Super Admin environment login sync skipped because SEED_CONSULTANT_USERNAME is invalid.");
+    return;
   }
 
   const markerKey = explicitlyRequested ? "super_admin_recovery_completed" : "super_admin_seed_sync_completed";
@@ -391,13 +395,12 @@ async function recoverSuperAdminFromEnvironment() {
     return;
   }
   const userCount = Number((await db.prepare("SELECT COUNT(*) AS count FROM users").get()).count);
-  if (userCount === 0 && !explicitlyRequested) return;
+  if (userCount === 0) return;
 
   const target = await db.prepare("SELECT id, role, is_admin, disabled_at FROM users WHERE (? IS NOT NULL AND lower(username) = ?) OR (? IS NOT NULL AND lower(email) = lower(?))").get(username || null, username || null, email || null, email || null);
   let adminId = null;
   if (target) {
     if (target.role !== "agent" || !target.is_admin || target.disabled_at) {
-      if (explicitlyRequested) throw new Error("The configured recovery login belongs to an account that is not an active Super Admin.");
       console.warn("Super Admin environment login sync skipped because the configured username/email belongs to another account.");
       return;
     }
@@ -405,19 +408,23 @@ async function recoverSuperAdminFromEnvironment() {
   } else {
     const admins = await db.prepare("SELECT id FROM users WHERE role = 'agent' AND is_admin = 1 AND disabled_at IS NULL ORDER BY id").all();
     if (admins.length !== 1) {
-      if (explicitlyRequested) throw new Error(`Super Admin recovery needs exactly one active Super Admin to update; found ${admins.length}.`);
       console.warn(`Super Admin environment login sync skipped; expected one active Super Admin, found ${admins.length}.`);
       return;
     }
     adminId = admins[0].id;
   }
 
-  await db.transaction(async () => {
-    await db.prepare("UPDATE users SET username = COALESCE(?, username), email = COALESCE(?, email), contact_number = COALESCE(?, contact_number), password_hash = ? WHERE id = ?")
-      .run(username || null, email || null, contactNumber, bcrypt.hashSync(password, 12), adminId);
-    await db.prepare("INSERT INTO workspace_settings (key, value) VALUES (?, ?)")
-      .run(markerKey, new Date().toISOString());
-  })();
+  try {
+    await db.transaction(async () => {
+      await db.prepare("UPDATE users SET username = COALESCE(?, username), email = COALESCE(?, email), contact_number = COALESCE(?, contact_number), password_hash = ? WHERE id = ?")
+        .run(username || null, email || null, contactNumber, bcrypt.hashSync(password, 12), adminId);
+      await db.prepare("INSERT INTO workspace_settings (key, value) VALUES (?, ?)")
+        .run(markerKey, new Date().toISOString());
+    })();
+  } catch (error) {
+    console.error("Super Admin environment login sync failed; the portal will continue starting:", error.message);
+    return;
+  }
   console.log(`Super Admin environment login synchronized for username: ${username || "unchanged"}.`);
 }
 
