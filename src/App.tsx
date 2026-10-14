@@ -433,9 +433,11 @@ function App() {
   );
 
   const inboxCounts = useMemo(() => {
-    const scopedTickets = user?.role === "agent" && activeView === "inbox" && companyFilter !== "all"
-      ? tickets.filter((ticket) => ticket.company?.id === Number(companyFilter))
-      : tickets;
+    const scopedTickets = user?.role === "agent" && activeView === "assigned"
+      ? tickets.filter((ticket) => ticket.assignee?.id === user.id)
+      : user?.role === "agent" && activeView === "inbox" && companyFilter !== "all"
+        ? tickets.filter((ticket) => ticket.company?.id === Number(companyFilter))
+        : tickets;
     return {
       all: scopedTickets.length,
       open: scopedTickets.filter((ticket) => ticket.status === "open").length,
@@ -758,7 +760,7 @@ function App() {
                   {(["all", "open", "in_progress", "waiting", "resolved"] as const).map((value) => (
                     <button key={value} className={filter === value ? "selected" : ""} onClick={() => setFilter(value)}>
                       {value === "all" ? "All tickets" : value === "in_progress" ? "In progress" : value === "resolved" ? "Closed" : value[0].toUpperCase() + value.slice(1)}
-                      {value === "all" && <span className="filter-count">{activeView === "assigned" ? (isAgent ? counts.in_progress : myTicketCount) : inboxCounts.all}</span>}
+                      {value === "all" && <span className="filter-count">{activeView === "assigned" ? (isAgent ? inboxCounts.all : myTicketCount) : inboxCounts.all}</span>}
                     </button>
                   ))}
                 </div>
@@ -789,7 +791,7 @@ function App() {
                   </button>
                 ))}
               </div>
-              <div className="list-footer"><span>Showing <strong>{filteredTickets.length}</strong> of {activeView === "assigned" && !isAgent ? myTicketCount : activeView === "inbox" && isAgent ? inboxCounts.all : tickets.length} tickets</span><span className="footer-refresh-wrap">{inboxRefreshError && <span className="footer-refresh-error" role="alert">{inboxRefreshError}</span>}<button type="button" className="footer-refresh" onClick={refreshInboxNow} disabled={refreshingInbox} aria-live="polite"><RefreshCw size={13} className={refreshingInbox ? "refresh-spinning" : ""} />{refreshingInbox ? "Refreshing…" : "Refresh"}</button></span></div>
+              <div className="list-footer"><span>Showing <strong>{filteredTickets.length}</strong> of {activeView === "assigned" ? (isAgent ? inboxCounts.all : myTicketCount) : activeView === "inbox" && isAgent ? inboxCounts.all : tickets.length} tickets</span><span className="footer-refresh-wrap">{inboxRefreshError && <span className="footer-refresh-error" role="alert">{inboxRefreshError}</span>}<button type="button" className="footer-refresh" onClick={refreshInboxNow} disabled={refreshingInbox} aria-live="polite"><RefreshCw size={13} className={refreshingInbox ? "refresh-spinning" : ""} />{refreshingInbox ? "Refreshing…" : "Refresh"}</button></span></div>
             </section>
 
             {selectedTicket ? (
