@@ -397,7 +397,19 @@ async function recoverSuperAdminFromEnvironment() {
   const userCount = Number((await db.prepare("SELECT COUNT(*) AS count FROM users").get()).count);
   if (userCount === 0) return;
 
-  const target = await db.prepare("SELECT id, role, is_admin, disabled_at FROM users WHERE (? IS NOT NULL AND lower(username) = ?) OR (? IS NOT NULL AND lower(email) = lower(?))").get(username || null, username || null, email || null, email || null);
+  // Avoid nullable `? IS NOT NULL` predicates here: PostgreSQL cannot infer
+  // the parameter type for those placeholders (SQLSTATE 42P18) during startup.
+  const identityPredicates = [];
+  const identityValues = [];
+  if (username) {
+    identityPredicates.push("lower(username) = ?");
+    identityValues.push(username);
+  }
+  if (email) {
+    identityPredicates.push("lower(email) = lower(?)");
+    identityValues.push(email);
+  }
+  const target = await db.prepare(`SELECT id, role, is_admin, disabled_at FROM users WHERE ${identityPredicates.join(" OR ")}`).get(...identityValues);
   let adminId = null;
   if (target) {
     if (target.role !== "agent" || !target.is_admin || target.disabled_at) {
