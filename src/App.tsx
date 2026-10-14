@@ -726,7 +726,7 @@ function App() {
           <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
           <div className="topbar-actions">
             {user.role === "customer" && availableCompanies.length > 1 && <button type="button" className="company-switcher" onClick={() => setShowCompanySelection(true)}><Building2 size={14} /><span>{user.companyName || "Select a company"}</span><ArrowDown size={13} /></button>}
-            <div className="search-box"><Search size={15} /><input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tickets…" /><kbd>Ctrl K</kbd></div>
+            {(activeView === "inbox" || activeView === "assigned") && <div className="search-box"><Search size={15} /><input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tickets…" /><kbd>Ctrl K</kbd></div>}
             <div className="topbar-avatar">{initials(user.name)}</div>
           </div>
         </header>
