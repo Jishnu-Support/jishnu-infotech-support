@@ -2,6 +2,8 @@
 
 Jishnu Infotech Support Portal is a support desk with two entry points: a **Client Portal** for creating an account, opening and tracking service requests, and replying to support; and a **Consultant Portal** for working the shared queue, assigning tickets, updating priorities/statuses, reviewing client profiles, and replying to clients. Tickets persist in PostgreSQL. The portal displays the final `resolved` ticket status as **Closed**.
 
+For role-by-role instructions, ticket workflows, administration, security, deployment, and troubleshooting, see the [Platform Guide](docs/PLATFORM_GUIDE.md).
+
 The portal branding uses the logo and favicon published on [Jishnu Infotech's official website](https://jishnuinfotech.com/).
 
 ## Run locally
@@ -78,15 +80,15 @@ Tickets include a category, optional comma-separated tags, and up to 10 custom n
 
 ## Scope and deployment notes
 
-- **Available:** company-scoped client accounts and tickets, Company Admins, email invitations, join codes, approval-gated self-registration, client-selected Consultant routing, Super Admin-configurable Primary/Secondary Consultant order, assignment history, private ticket attachments, ticket categories/tags/custom fields, Consultant-only internal notes, post-resolution customer ratings, responsive mobile portal, Consultant inbox/status/priority/assignment controls, client directory, ticket search/filters, periodic inbox refresh, Consultant invitation and team access controls, one-time client password recovery, SMTP outbox, IMAP email intake/threading, configurable elapsed-hour SLAs, Consultant notifications, and role-scoped workload reports with CSV export.
+- **Available:** company-scoped client accounts and tickets, Company Admins, join codes, approval-gated self-registration, client-selected Consultant routing, Super Admin-configurable Consultant order, assignment history, private ticket attachments, ticket categories/tags/custom fields, Consultant-only internal notes, post-closure customer ratings, responsive mobile portal, Consultant inbox/status/priority/assignment controls, client directory, ticket search/filters, periodic inbox refresh, Consultant team access controls, Knowledge Base of resolved tickets, configurable elapsed-hour SLAs, Consultant notifications, and role-scoped workload reports with CSV export. Optional legacy email integrations are described above and require SMTP/IMAP configuration.
 - **Storage:** PostgreSQL is the application database. Configure automated backups, TLS, least-privilege credentials, connection limits, and a managed PostgreSQL service for production. Ticket attachments remain on the configured filesystem path and need persistent shared storage in multi-instance deployments.
 - **Process model:** run one app replica while inbound IMAP polling and filesystem attachment storage are enabled. Multiple replicas require shared object storage and coordinated background processing.
 - **Email:** live delivery and inbox synchronization cannot be verified until valid SMTP/IMAP credentials and provider permissions are configured.
-- **Not included:** company SSO, business-hours SLA calendars, and knowledge base.
+- **Not included:** company SSO and business-hours SLA calendars.
 
 ### Deploying on Bluehost with EasyPanel
 
-In EasyPanel, create a native Postgres service and an App service from this repository using the root `Dockerfile`. Keep PostgreSQL private, copy its internal connection URL into the app's `DATABASE_URL`, and route the public HTTPS domain to the app on port `3001`. Configure a persistent App volume at `/app/data/attachments` and the environment variables listed in `deploy/easypanel/README.md`, including the initial Super Admin's email, password, and contact number. Set `APP_BASE_URL` to the same HTTPS domain. Configure remote database and attachment backups before using the portal with clients.
+In EasyPanel, create a native Postgres service and an App service from this repository using the root `Dockerfile`. Keep PostgreSQL private, copy its internal connection URL into the app's `DATABASE_URL`, and route the public HTTPS domain to the app on port `3001`. Configure a persistent App volume at `/app/data/attachments` and the environment variables listed in `deploy/easypanel/README.md`, including the initial Super Admin's username and password. Set `APP_BASE_URL` to the same HTTPS domain. Configure remote database and attachment backups before using the portal with clients.
 
 ## API overview
 
