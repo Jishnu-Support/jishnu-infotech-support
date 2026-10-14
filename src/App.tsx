@@ -1541,7 +1541,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       <div className="company-users-section"><h3>Company members</h3>
         {companyUsers.filter((user) => user.approvalStatus !== "pending").map((user) => <div className="admin-team-row" key={user.id}>
           <div className="avatar customer-avatar">{initials(user.name)}</div>
-          <div className="directory-customer"><strong>{user.name}{user.isCompanyAdmin && <span className="admin-badge">COMPANY ADMIN</span>}</strong><span>{user.username}{user.email ? ` · ${user.email}` : ""}{user.contactNumber ? ` · ${user.contactNumber}` : ""}</span></div>
+          <div className="directory-customer"><strong>{user.name}{Boolean(user.isCompanyAdmin) && <span className="admin-badge">COMPANY ADMIN</span>}</strong><span>{user.username}{user.email ? ` · ${user.email}` : ""}{user.contactNumber ? ` · ${user.contactNumber}` : ""}</span></div>
           {user.approvalStatus === "approved" && <button className="button button-quiet" onClick={() => resetClientPassword(user)}>Reset password</button>}
           <span className={`team-state ${user.disabledAt || user.approvalStatus === "rejected" ? "team-disabled" : ""}`}>{user.approvalStatus === "rejected" ? "Declined" : user.disabledAt ? "Disabled" : "Active"}</span>
           {(workspaceAdmin || !user.isCompanyAdmin) && user.approvalStatus === "approved" && <button className="button button-quiet" onClick={() => updateUser(user, { isCompanyAdmin: !user.isCompanyAdmin })}>{user.isCompanyAdmin ? "Remove admin" : "Make admin"}</button>}
