@@ -1480,7 +1480,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       <form className="company-create-form" onSubmit={createCompany}>
         <label>Company name<input value={companyName} onChange={(event) => setCompanyName(event.target.value)} minLength={2} maxLength={120} required /></label>
         <label>Administrator name<input name="adminName" minLength={2} maxLength={100} required /></label>
-        <label>Administrator username<input name="adminUsername" minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" autoComplete="username" required /></label>
+        <label>Administrator username<input name="adminUsername" minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" autoComplete="username" autoCapitalize="none" spellCheck={false} required /></label>
         <label>Initial password<input name="adminPassword" type="password" minLength={8} maxLength={128} autoComplete="new-password" required /></label>
         <label>Administrator email (optional)<input name="adminEmail" type="email" maxLength={254} /></label>
         <label>Mobile number<input name="adminContactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
@@ -1511,7 +1511,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
         <p className="settings-hint">Create an active login and share the username and initial password securely.</p>
         <form className="manual-client-form" onSubmit={createCompanyUser}>
           <label>Full name<input name="name" autoComplete="name" minLength={2} maxLength={100} required /></label>
-          <label>Username<input name="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" autoComplete="username" required /></label>
+          <label>Username<input name="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" autoComplete="username" autoCapitalize="none" spellCheck={false} required /></label>
           <label>Email address (optional)<input name="email" type="email" autoComplete="email" maxLength={254} /></label>
           <label>Mobile number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
           <label>Initial password<input name="password" type="password" autoComplete="new-password" minLength={8} maxLength={128} required /></label>
@@ -1703,7 +1703,7 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
       <div className="settings-card-heading"><div><h2>Consultant team</h2><p>Create username and password accounts directly, then control team access.</p></div><span>{agents.filter((agent) => !agent.disabledAt).length} active</span></div>
       <form className="team-create-form" onSubmit={createConsultant}>
         <label>Full name<input name="name" autoComplete="name" minLength={2} maxLength={120} required placeholder="Consultant name" /></label>
-        <label>Username<input name="username" autoComplete="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" required placeholder="consultant01" /></label>
+        <label>Username<input name="username" autoComplete="username" autoCapitalize="none" spellCheck={false} minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" required placeholder="consultant01" /></label>
         <label>Work email (optional)<input name="email" type="email" autoComplete="email" maxLength={254} placeholder="consultant@company.com" /></label>
         <label>Mobile number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
         <label>Consultant type<select name="specialty" defaultValue="" required><option value="" disabled>Select specialty</option><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Both</option></select></label>
@@ -1832,7 +1832,7 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
         {error && <div className="inline-error">{error}</div>}
         <button className="button button-primary login-button" type="submit">{mode === "register" ? "Create account" : "Sign in"} <ArrowRight size={16} /></button>
       </form>
-      {mode === "login" && <p className="form-hint">Need a password reset? Contact your account administrator.</p>}
+      {mode === "login" && <p className="form-hint">Usernames and passwords are case-sensitive. Need a password reset? Contact your account administrator.</p>}
       <div className="login-help"><ShieldCheck size={15} /> Your support workspace, securely connected</div>
     </div>
     <footer className="login-footer"><span>© 2026 Jishnu Infotech</span><span><CircleHelp size={13} /> Need help signing in?</span></footer>

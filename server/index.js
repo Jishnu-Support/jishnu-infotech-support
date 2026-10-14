@@ -120,11 +120,11 @@ function validContactNumber(value) {
 }
 
 function normalizeUsername(value) {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function validUsername(username) {
-  return /^[a-z0-9][a-z0-9._-]{2,31}$/.test(username);
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(username);
 }
 
 function usernameFromEmail(email) {
@@ -359,7 +359,7 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
            COALESCE(m.is_company_admin, u.is_company_admin) AS current_company_admin
     FROM users u LEFT JOIN companies c ON c.id = u.company_id
     LEFT JOIN company_memberships m ON m.user_id = u.id AND m.company_id = u.company_id
-    WHERE lower(u.username) = ? AND u.disabled_at IS NULL
+    WHERE u.username = ? AND u.disabled_at IS NULL
   `).get(username);
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: "Username or password is incorrect." });
@@ -1267,7 +1267,7 @@ app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => 
   if (domainInput && (!/^(?=.{1,253}$)(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(domainInput))) {
     return res.status(400).json({ error: "Enter a valid company email domain, or leave it blank." });
   }
-  if (await db.prepare("SELECT 1 FROM users WHERE lower(username) = ?").get(adminUsername)) {
+  if (await db.prepare("SELECT 1 FROM users WHERE username = ?").get(adminUsername)) {
     return res.status(409).json({ error: "That username is already in use." });
   }
   if (adminEmail && await db.prepare("SELECT 1 FROM users WHERE lower(email) = ?").get(adminEmail)) return res.status(409).json({ error: "An account with this email already exists." });
@@ -1325,7 +1325,7 @@ app.post("/api/company/users", requireAuth, requireCompanyAdmin, async (req, res
   if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Password must be between 8 and 128 characters." });
   const company = await db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(req.user.company_id);
   if (!company) return res.status(404).json({ error: "Company not found or inactive." });
-  if (await db.prepare("SELECT 1 FROM users WHERE lower(username) = ?").get(username)) {
+  if (await db.prepare("SELECT 1 FROM users WHERE username = ?").get(username)) {
     return res.status(409).json({ error: "That username is already in use." });
   }
   if (email && await db.prepare("SELECT 1 FROM users WHERE lower(email) = ?").get(email)) {

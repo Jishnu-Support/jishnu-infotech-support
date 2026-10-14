@@ -12,10 +12,10 @@ if (process.env.CONFIRM_PLATFORM_DATA_RESET !== confirmation) {
   throw new Error(`Set CONFIRM_PLATFORM_DATA_RESET=${confirmation} to confirm this irreversible operation.`);
 }
 
-const username = (process.env.SEED_CONSULTANT_USERNAME || "JIT_Admin").trim().toLowerCase();
+const username = (process.env.SEED_CONSULTANT_USERNAME || "JIT_Admin").trim();
 const password = process.env.SEED_CONSULTANT_PASSWORD || "";
 const name = process.env.SEED_CONSULTANT_NAME?.trim() || "Jishnu Infotech Super Admin";
-if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) {
+if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(username)) {
   throw new Error("SEED_CONSULTANT_USERNAME must be 3 to 32 letters, numbers, dots, underscores, or hyphens.");
 }
 if (password.length < 8 || password.length > 128) {

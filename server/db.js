@@ -333,6 +333,10 @@ const schemaMigrations = [
     ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (lower(username));
   `) },
+  { version: 9, apply: () => db.exec(`
+    DROP INDEX IF EXISTS users_username_lower_idx;
+    CREATE UNIQUE INDEX IF NOT EXISTS users_username_idx ON users (username);
+  `) },
 ];
 
 async function seedDatabase() {
@@ -341,8 +345,8 @@ async function seedDatabase() {
 
   const agentEmail = process.env.SEED_CONSULTANT_EMAIL || process.env.SEED_AGENT_EMAIL || null;
   const requestedUsername = (process.env.SEED_CONSULTANT_USERNAME || agentEmail?.split("@")[0] || "superadmin")
-    .trim().toLowerCase().replace(/[^a-z0-9._-]/g, "").slice(0, 32);
-  const agentUsername = /^[a-z0-9][a-z0-9._-]{2,31}$/.test(requestedUsername) ? requestedUsername : "superadmin";
+    .trim().replace(/[^A-Za-z0-9._-]/g, "").slice(0, 32);
+  const agentUsername = /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(requestedUsername) ? requestedUsername : "superadmin";
   const agentPassword = process.env.SEED_CONSULTANT_PASSWORD || process.env.SEED_AGENT_PASSWORD || null;
   const contactNumber = process.env.SEED_CONSULTANT_CONTACT_NUMBER?.trim() || null;
   const agentName = process.env.SEED_CONSULTANT_NAME?.trim() || process.env.SEED_AGENT_NAME?.trim() || "Jishnu Infotech Super Admin";
@@ -370,7 +374,7 @@ async function recoverSuperAdminFromEnvironment() {
   const explicitlyRequested = process.env.RECOVER_SUPER_ADMIN?.trim().toLowerCase() === "true";
   if (process.env.RECOVER_SUPER_ADMIN?.trim().toLowerCase() === "false") return;
   const email = process.env.SEED_CONSULTANT_EMAIL?.trim();
-  const username = process.env.SEED_CONSULTANT_USERNAME?.trim().toLowerCase();
+  const username = process.env.SEED_CONSULTANT_USERNAME?.trim();
   const password = process.env.SEED_CONSULTANT_PASSWORD;
   const contactNumber = process.env.SEED_CONSULTANT_CONTACT_NUMBER?.trim() || null;
   const automaticSync = Boolean(username && password);
@@ -383,7 +387,7 @@ async function recoverSuperAdminFromEnvironment() {
     console.warn("Super Admin environment login sync skipped because the configured password length is invalid.");
     return;
   }
-  if (username && !/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) {
+  if (username && !/^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(username)) {
     console.warn("Super Admin environment login sync skipped because SEED_CONSULTANT_USERNAME is invalid.");
     return;
   }
@@ -402,7 +406,7 @@ async function recoverSuperAdminFromEnvironment() {
   const identityPredicates = [];
   const identityValues = [];
   if (username) {
-    identityPredicates.push("lower(username) = ?");
+    identityPredicates.push("username = ?");
     identityValues.push(username);
   }
   if (email) {
