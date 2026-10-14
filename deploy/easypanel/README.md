@@ -26,15 +26,17 @@ DATABASE_URL=PASTE_THE_PRIVATE_POSTGRES_CONNECTION_URL
 ATTACHMENTS_PATH=/app/data/attachments
 JWT_SECRET=GENERATE_A_LONG_RANDOM_SECRET
 APP_BASE_URL=https://support.example.com
-SEED_CONSULTANT_EMAIL=superadmin@yourcompany.example
+SEED_CONSULTANT_USERNAME=superadmin
 SEED_CONSULTANT_PASSWORD=SET_A_UNIQUE_PASSWORD_OF_AT_LEAST_12_CHARACTERS
-SEED_CONSULTANT_CONTACT_NUMBER=+15551234567
 SEED_CONSULTANT_NAME=Jishnu Infotech Super Admin
+# Optional contact fields:
+SEED_CONSULTANT_EMAIL=
+SEED_CONSULTANT_CONTACT_NUMBER=
 ```
 
 Generate `JWT_SECRET` with `openssl rand -hex 32` on a trusted machine. Never commit or share it. Use the exact public HTTPS domain for `APP_BASE_URL`; production startup rejects HTTP URLs. The bootstrap Super Admin password must be at least 12 characters. The PostgreSQL URL should be copied from the private service credentials; do not construct it manually because generated passwords may contain URL-special characters.
 
-SMTP and IMAP variables are optional. Configure SMTP to enable invitations, password recovery, and outbound ticket email. Configure IMAP only if inbound mailbox-to-ticket processing is needed. Use authenticated SMTP submission (normally port 587) and provider-specific credentials as required.
+SMTP and IMAP variables are optional. The Super Admin signs in with the configured username and password. Company and Consultant accounts can be created directly with usernames and initial passwords, and administrators can reset passwords without email. Configure SMTP only for optional outbound ticket email, legacy invitations, and self-service email recovery. Configure IMAP only if inbound mailbox-to-ticket processing is needed.
 
 In the App service's **Storage** settings, add a persistent **Volume** mounted at `/app/data/attachments`. Keep the app at one replica because attachment storage and IMAP polling are not coordinated across multiple replicas.
 
@@ -51,7 +53,7 @@ Before inviting real clients:
 - Configure remote PostgreSQL backups in the Postgres service's **Backups** tab. Run a manual backup and test restoration into a non-production database.
 - Configure a separate remote volume backup for the App service's attachment volume. Volume backup is a mirror, not a versioned snapshot; enable versioning/retention at the storage provider if available.
 - Store backups outside the VPS so a server or disk failure does not destroy the backup too.
-- Configure SMTP and test password recovery/invitations before relying on those email workflows.
+- Configure SMTP only if you plan to use outbound ticket email, legacy invitations, or email password recovery.
 - Schedule Linux/EasyPanel updates and monitor memory and disk usage.
 
 Keep database credentials and all application secrets in EasyPanel's environment settings, not in the repository. Back up the database and attachments before changing service names, volume mounts, or database versions.

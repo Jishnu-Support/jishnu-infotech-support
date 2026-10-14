@@ -12,7 +12,7 @@ type Priority = "low" | "normal" | "high" | "urgent";
 type TicketCategory = "Functional" | "Technical" | "Account access" | "Billing" | "Technical support" | "Feature request" | "Other";
 type ConsultantSpecialty = "functional" | "technical" | "both";
 type User = {
-  id: number; name: string; email: string; role: Role; isAdmin?: boolean;
+  id: number; name: string; username: string; email: string | null; role: Role; isAdmin?: boolean;
   isCompanyAdmin?: boolean; companyId?: number | null; companyName?: string | null; companySupportValidUntil?: string | null;
 };
 type CompanyMembership = { id: number; name: string; supportValidUntil?: string | null; isCompanyAdmin?: boolean };
@@ -21,9 +21,9 @@ type Ticket = {
   id: number; subject: string; description: string; status: Status; priority: Priority;
   category: TicketCategory; tags: string[]; customFields: Record<string, string>;
   source: "portal" | "email"; isHistoricalImport?: boolean; createdAt: string; updatedAt: string;
-  customer: { id: number | null; name: string; email: string; contactNumber: string | null };
+  customer: { id: number | null; name: string; email: string | null; contactNumber: string | null };
   company: Company | null;
-  assignee: { id: number; name: string; email: string; contactNumber: string | null } | null;
+  assignee: { id: number; name: string; email: string | null; contactNumber: string | null } | null;
   messageCount: number; lastMessage: string;
   firstResponseDueAt: string; resolutionDueAt: string;
   firstResponseAt: string | null; isFirstResponseOverdue: boolean; isResolutionOverdue: boolean;
@@ -33,7 +33,7 @@ type Message = { id: number; body: string; isInternal: boolean; createdAt: strin
 type TicketAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string; uploadedBy: number };
 type TicketDetail = { ticket: Ticket; messages: Message[]; attachments: TicketAttachment[]; assignmentHistory: AssignmentEvent[]; categories: TicketCategory[]; canRate: boolean };
 type Customer = {
-  id: number; name: string; email: string; companyId?: number; companyName?: string;
+  id: number; name: string; username?: string; email: string | null; companyId?: number; companyName?: string;
   routingPriority?: number; priorityLabel?: string; specialty?: ConsultantSpecialty;
 };
 type AssignmentEvent = {
@@ -57,11 +57,11 @@ type AnalyticsReport = {
   };
   agentWorkload: Array<{ id: number; name: string; routingPriority: number; active: number; assignedInPeriod: number; resolvedInPeriod: number }>;
   companyVolume: Array<{ name: string; count: number }>;
-  customerActivity: Array<{ id: number; name: string; email: string; companyName: string | null; raisedInPeriod: number; active: number; inProgress: number; resolvedInPeriod: number }>;
+  customerActivity: Array<{ id: number; name: string; username?: string; email: string | null; companyName: string | null; raisedInPeriod: number; active: number; inProgress: number; resolvedInPeriod: number }>;
   scopeCompany: { id: number; name: string } | null;
 };
 type ReportTicket = { id: number; subject: string; status: Status; priority: Priority; updatedAt: string; companyId: number | null; customerId: number | null; consultantId: number | null; companyName: string | null; customerName: string; consultantName: string | null };
-type ReportTicketDirectory = { companies: Array<{ id: number; name: string }>; customers: Array<{ id: number; name: string; email: string; companyName: string | null }>; consultants: Array<{ id: number; name: string }> };
+type ReportTicketDirectory = { companies: Array<{ id: number; name: string }>; customers: Array<{ id: number; name: string; email: string | null; companyName: string | null }>; consultants: Array<{ id: number; name: string }> };
 type KnowledgeBaseTicket = { id: number; issue: string; description: string; reportedAt: string; solution: string; closedAt: string; solutionType: string; clientName: string; consultantName: string };
 type PortalMode = "login" | "register";
 type ApiError = { error?: string };
@@ -454,7 +454,7 @@ function App() {
     try {
       const result = await api<{ user: User; companies?: CompanyMembership[] }>("/auth/login", {
         method: "POST",
-        body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),
+        body: JSON.stringify({ username: form.get("username"), password: form.get("password") }),
       });
       if (result.user.role !== portal) {
         await api("/auth/logout", { method: "POST" });
@@ -489,6 +489,7 @@ function App() {
         method: "POST",
         body: JSON.stringify({
           name: form.get("name"),
+          username: form.get("username"),
           email: form.get("email"),
           contactNumber: form.get("contactNumber"),
           password: form.get("password"),
@@ -816,9 +817,9 @@ function App() {
                 </div>
                 <div className="detail-info">
                   {isAgent
-                    ? <div className="detail-person"><div className="avatar customer-avatar">{initials(selectedTicket.customer.name)}</div><div><strong>Client · {displayClientName(selectedTicket.customer.name)}</strong><span>{selectedTicket.customer.email}</span><span className="detail-contact-number">Contact: {selectedTicket.customer.contactNumber || "Unavailable"}</span></div></div>
+                    ? <div className="detail-person"><div className="avatar customer-avatar">{initials(selectedTicket.customer.name)}</div><div><strong>Client · {displayClientName(selectedTicket.customer.name)}</strong><span>{selectedTicket.customer.email || "No email provided"}</span><span className="detail-contact-number">Contact: {selectedTicket.customer.contactNumber || "Unavailable"}</span></div></div>
                     : selectedTicket.assignee
-                      ? <div className="detail-person"><div className="avatar avatar-agent">{initials(selectedTicket.assignee.name)}</div><div><strong>Consultant · {selectedTicket.assignee.name}</strong><span>{selectedTicket.assignee.email}</span><span className="detail-contact-number">Contact: {selectedTicket.assignee.contactNumber || "Unavailable"}</span></div></div>
+                      ? <div className="detail-person"><div className="avatar avatar-agent">{initials(selectedTicket.assignee.name)}</div><div><strong>Consultant · {selectedTicket.assignee.name}</strong><span>{selectedTicket.assignee.email || "No email provided"}</span><span className="detail-contact-number">Contact: {selectedTicket.assignee.contactNumber || "Unavailable"}</span></div></div>
                       : <div className="detail-person"><div className="avatar avatar-agent"><UserRound size={14} /></div><div><strong>Consultant</strong><span>Unassigned</span></div></div>}
                   <div className="detail-info-item"><span>Created</span><strong>{timeAgo(selectedTicket.createdAt)}</strong></div>
                   {selectedTicket.company && <div className="detail-info-item"><span>Company</span><strong>{selectedTicket.company.name}</strong></div>}
@@ -927,7 +928,7 @@ function App() {
         <form className="create-modal" onSubmit={createTicket}>
           <div className="modal-heading"><div><div className="eyebrow">SUPPORT REQUEST</div><h2>Create a ticket</h2></div><button type="button" className="icon-button" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); setNewTicketCategory(""); }} aria-label="Close"><X size={18} /></button></div>
           <label>Category<select name="category" required value={newTicketCategory} onChange={(event) => setNewTicketCategory(event.target.value as TicketCategory | "")}><option value="" disabled>Select Functional or Technical</option><option value="Functional">Functional</option><option value="Technical">Technical</option></select></label>
-          {isAgent && <label>Customer<select name="customerSelection" required value={prefillCustomerId && prefillCompanyId ? `${prefillCompanyId}:${prefillCustomerId}` : ""} onChange={(event) => { const [companyId, customerId] = event.target.value.split(":").map(Number); setPrefillCompanyId(companyId || null); setPrefillCustomerId(customerId || null); }}><option value="" disabled>Select a customer</option>{customers.map((customer) => <option key={`${customer.companyId}:${customer.id}`} value={`${customer.companyId}:${customer.id}`}>{customer.companyName ? `${customer.companyName} · ` : ""}{customer.name} · {customer.email}</option>)}</select><input type="hidden" name="customerId" value={prefillCustomerId ?? ""} /><input type="hidden" name="companyId" value={prefillCompanyId ?? ""} /></label>}
+          {isAgent && <label>Customer<select name="customerSelection" required value={prefillCustomerId && prefillCompanyId ? `${prefillCompanyId}:${prefillCustomerId}` : ""} onChange={(event) => { const [companyId, customerId] = event.target.value.split(":").map(Number); setPrefillCompanyId(companyId || null); setPrefillCustomerId(customerId || null); }}><option value="" disabled>Select a customer</option>{customers.map((customer) => <option key={`${customer.companyId}:${customer.id}`} value={`${customer.companyId}:${customer.id}`}>{customer.companyName ? `${customer.companyName} · ` : ""}{customer.name} · {customer.username || customer.email || `Client ${customer.id}`}</option>)}</select><input type="hidden" name="customerId" value={prefillCustomerId ?? ""} /><input type="hidden" name="companyId" value={prefillCompanyId ?? ""} /></label>}
           <label>Subject<input name="subject" required minLength={4} maxLength={160} placeholder="What do you need help with?" autoFocus /></label>
           <label>Description<textarea name="description" required minLength={10} maxLength={5000} placeholder="Share a few details so we can help…" rows={5} /></label>
           <label>Priority<select name="priority" defaultValue="normal"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
@@ -1062,7 +1063,7 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
 
   function exportReport() {
     if (!report) return;
-    const rows: Array<Array<string | number>> = [
+    const rows: Array<Array<string | number | null | undefined>> = [
       ["Jishnu Infotech Support Report", `${report.startDate} to ${report.endDate}`],
       ["Scope", workspaceWide ? report.scopeCompany?.name || "All client companies" : "Your company"],
       ["Tickets created", report.summary.created],
@@ -1306,25 +1307,21 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   onChanged: () => Promise<void>;
 }) {
   type CompanyUser = {
-    id: number; name: string; email: string; contactNumber: string | null; isCompanyAdmin: boolean;
+    id: number; name: string; username: string; email: string | null; contactNumber: string | null; isCompanyAdmin: boolean;
     approvalStatus: "approved" | "pending" | "rejected"; disabledAt: string | null;
   };
   type JoinCode = { id: number; expiresAt: string | null; revokedAt: string | null; createdAt: string };
   const [companies, setCompanies] = useState<Array<Company & { userCount: number; pendingCount: number }>>([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(initialCompanyId);
   const [companyName, setCompanyName] = useState("");
-  const [firstAdminEmail, setFirstAdminEmail] = useState("");
   const [newCompanySupportValidUntil, setNewCompanySupportValidUntil] = useState("");
   const [editSupportValidUntil, setEditSupportValidUntil] = useState("");
   const [companyUsers, setCompanyUsers] = useState<CompanyUser[]>([]);
-  const [linkableClients, setLinkableClients] = useState<Array<{ id: number; name: string; email: string; companies: Array<{ id: number; name: string }> }>>([]);
+  const [linkableClients, setLinkableClients] = useState<Array<{ id: number; name: string; username: string; email: string | null; companies: Array<{ id: number; name: string }> }>>([]);
   const [linkClientId, setLinkClientId] = useState("");
   const [invitations, setInvitations] = useState<Array<{ id: number; email: string; isCompanyAdmin: boolean; expiresAt: string }>>([]);
   const [joinCodes, setJoinCodes] = useState<JoinCode[]>([]);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteAsAdmin, setInviteAsAdmin] = useState(false);
   const [createdJoinCode, setCreatedJoinCode] = useState("");
-  const [invitationUrl, setInvitationUrl] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
@@ -1373,43 +1370,26 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
 
   async function createCompany(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const formElement = event.currentTarget;
     setError("");
     setMessage("");
-    setInvitationUrl("");
     try {
-      const result = await api<{ company: Company; invitation: { email: string; emailSent: boolean; invitationUrl?: string } }>("/admin/companies", {
+      const form = new FormData(formElement);
+      const result = await api<{ company: Company; administrator: { username: string } }>("/admin/companies", {
         method: "POST",
-        body: JSON.stringify({ name: companyName, adminEmail: firstAdminEmail, supportValidUntil: newCompanySupportValidUntil }),
+        body: JSON.stringify({
+          name: companyName, adminName: form.get("adminName"), adminUsername: form.get("adminUsername"),
+          adminEmail: form.get("adminEmail"), adminContactNumber: form.get("adminContactNumber"),
+          adminPassword: form.get("adminPassword"), supportValidUntil: newCompanySupportValidUntil,
+        }),
       });
       setSelectedCompanyId(result.company.id);
       setCompanyName("");
-      setFirstAdminEmail("");
       setNewCompanySupportValidUntil("");
-      setInvitationUrl(result.invitation.invitationUrl || "");
-      setMessage(result.invitation.emailSent
-        ? `Created ${result.company.name} and emailed an administrator invitation to ${result.invitation.email}.`
-        : `Created ${result.company.name}. Share the invitation link below with ${result.invitation.email}.`);
+      formElement.reset();
+      setMessage(`Created ${result.company.name}. The first administrator can sign in with username ${result.administrator.username}. Share the initial password securely.`);
       await loadCompanies();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create company."); }
-  }
-
-  async function inviteUser(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError("");
-    setMessage("");
-    try {
-      const result = await api<{ invitation: { email: string; emailSent: boolean; invitationUrl?: string } }>("/company/invitations", {
-        method: "POST",
-        body: JSON.stringify({ email: inviteEmail, isCompanyAdmin: inviteAsAdmin, companyId: selectedCompanyId }),
-      });
-      setInviteEmail("");
-      setInviteAsAdmin(false);
-      setInvitationUrl(result.invitation.invitationUrl || "");
-      setMessage(result.invitation.emailSent
-        ? `Invitation email sent to ${result.invitation.email}.`
-        : `Invitation link created. Share it with ${result.invitation.email}.`);
-      await loadCompanyUsers();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not invite this user."); }
   }
 
   async function createCompanyUser(event: FormEvent<HTMLFormElement>) {
@@ -1422,7 +1402,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       const result = await api<{ user: CompanyUser; companyName: string }>("/company/users", {
         method: "POST",
         body: JSON.stringify({
-          name: form.get("name"), email: form.get("email"),
+          name: form.get("name"), username: form.get("username"), email: form.get("email"),
           contactNumber: form.get("contactNumber"), password: form.get("password"),
         }),
       });
@@ -1455,6 +1435,17 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
         : changes.approvalStatus === "rejected" ? `${user.name}'s request was declined.`
           : changes.disabled !== undefined ? `${user.name} access updated.` : `${user.name}'s company role updated.`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update client account."); }
+  }
+
+  async function resetClientPassword(user: CompanyUser) {
+    const password = window.prompt(`Enter a new password for ${user.name} (8 to 128 characters):`);
+    if (password === null) return;
+    if (password.length < 8 || password.length > 128) { setError("Password must be between 8 and 128 characters."); return; }
+    setError(""); setMessage("");
+    try {
+      await api(`/company/users/${user.id}`, { method: "PATCH", body: JSON.stringify({ password, companyId: selectedCompanyId }) });
+      setMessage(`Password reset for ${user.username}. Share the new password securely.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not reset this password."); }
   }
 
   async function revokeCode(code: JoinCode) {
@@ -1490,13 +1481,15 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />{workspaceAdmin ? "JISHNU INFOTECH ADMINISTRATION" : "COMPANY ADMINISTRATION"}</div><h1>{workspaceAdmin ? "Client companies" : "Company users"}</h1><p>{workspaceAdmin ? "Create isolated client workspaces and manage their access." : `Manage users and enrollment for ${companies.find((company) => company.id === selectedCompanyId)?.name || "your company"}.`}</p></div></div>
     {error && <div className="inline-error" role="alert">{error}<button onClick={() => setError("")}><X size={13} /></button></div>}
     {message && <div className="inline-success" role="status">{message}<button onClick={() => setMessage("")}><X size={13} /></button></div>}
-    {invitationUrl && <p className="development-link">Invitation link (share with the invitee; expires in 48 hours): <a href={invitationUrl}>{invitationUrl}</a></p>}
-
     {workspaceAdmin && <section className="settings-card company-create-section">
-      <div className="settings-card-heading"><div><h2>Create a company</h2><p>Set up a separate client workspace and prepare an invitation for its first administrator.</p></div><Plus size={18} /></div>
+      <div className="settings-card-heading"><div><h2>Create a company</h2><p>Set up the workspace and create its first administrator login.</p></div><Plus size={18} /></div>
       <form className="company-create-form" onSubmit={createCompany}>
         <label>Company name<input value={companyName} onChange={(event) => setCompanyName(event.target.value)} minLength={2} maxLength={120} required /></label>
-        <label>Company admin email<input type="email" value={firstAdminEmail} onChange={(event) => setFirstAdminEmail(event.target.value)} required /></label>
+        <label>Administrator name<input name="adminName" minLength={2} maxLength={100} required /></label>
+        <label>Administrator username<input name="adminUsername" minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" autoComplete="username" required /></label>
+        <label>Initial password<input name="adminPassword" type="password" minLength={8} maxLength={128} autoComplete="new-password" required /></label>
+        <label>Administrator email (optional)<input name="adminEmail" type="email" maxLength={254} /></label>
+        <label>Contact number (optional)<input name="adminContactNumber" type="tel" maxLength={25} /></label>
         <label>Support valid until<input type="date" value={newCompanySupportValidUntil} onChange={(event) => setNewCompanySupportValidUntil(event.target.value)} required /></label>
         <button className="button button-primary" type="submit"><Plus size={15} /> Create company</button>
       </form>
@@ -1520,12 +1513,13 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
         <button className="button button-primary" type="submit" disabled={!editSupportValidUntil}>Save date</button>
       </form>}
       {!workspaceAdmin && <div className="client-access-method">
-        <h3>Add a client manually</h3>
-        <p className="settings-hint">Create an active client login for your company. Share the initial password with the client securely.</p>
+        <h3>Create a client login</h3>
+        <p className="settings-hint">Create an active login and share the username and initial password securely.</p>
         <form className="manual-client-form" onSubmit={createCompanyUser}>
           <label>Full name<input name="name" autoComplete="name" minLength={2} maxLength={100} required /></label>
-          <label>Email address<input name="email" type="email" autoComplete="email" maxLength={254} required /></label>
-          <label>Contact number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} required /></label>
+          <label>Username<input name="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" autoComplete="username" required /></label>
+          <label>Email address (optional)<input name="email" type="email" autoComplete="email" maxLength={254} /></label>
+          <label>Contact number (optional)<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} /></label>
           <label>Initial password<input name="password" type="password" autoComplete="new-password" minLength={8} maxLength={128} required /></label>
           <button className="button button-primary" type="submit"><Plus size={15} /> Add client</button>
         </form>
@@ -1536,7 +1530,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
         <form className="link-client-form" onSubmit={linkClientToCompany}>
           <label>Client account<select value={linkClientId} onChange={(event) => setLinkClientId(event.target.value)} required>
             <option value="">Select a client</option>
-            {linkableClients.filter((client) => !client.companies.some((company) => company.id === selectedCompanyId)).map((client) => <option key={client.id} value={client.id}>{client.name} · {client.email}{client.companies.length ? ` · Also in ${client.companies.map((company) => company.name).join(", ")}` : ""}</option>)}
+            {linkableClients.filter((client) => !client.companies.some((company) => company.id === selectedCompanyId)).map((client) => <option key={client.id} value={client.id}>{client.name} · {client.username}{client.email ? ` · ${client.email}` : ""}{client.companies.length ? ` · Also in ${client.companies.map((company) => company.name).join(", ")}` : ""}</option>)}
           </select></label>
           <button className="button button-primary" type="submit" disabled={!linkClientId}><Plus size={15} /> Link client</button>
         </form>
@@ -1544,7 +1538,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       {companyUsers.some((user) => user.approvalStatus === "pending") && <div className="company-users-section">
         <h3>Requests awaiting approval</h3>
         {companyUsers.filter((user) => user.approvalStatus === "pending").map((user) => <div className="admin-team-row" key={user.id}>
-          <div className="directory-customer"><strong>{displayClientName(user.name)}</strong><span>{user.email}</span></div>
+          <div className="directory-customer"><strong>{displayClientName(user.name)}</strong><span>{user.username}{user.email ? ` · ${user.email}` : ""}</span></div>
           <button className="button button-primary" onClick={() => updateUser(user, { approvalStatus: "approved" })}>Approve</button>
           <button className="button button-quiet" onClick={() => updateUser(user, { approvalStatus: "rejected" })}>Decline</button>
         </div>)}
@@ -1553,7 +1547,8 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       <div className="company-users-section"><h3>Company members</h3>
         {companyUsers.filter((user) => user.approvalStatus !== "pending").map((user) => <div className="admin-team-row" key={user.id}>
           <div className="avatar customer-avatar">{initials(user.name)}</div>
-          <div className="directory-customer"><strong>{user.name}{user.isCompanyAdmin && <span className="admin-badge">COMPANY ADMIN</span>}</strong><span>{user.email}{user.contactNumber ? ` · ${user.contactNumber}` : ""}</span></div>
+          <div className="directory-customer"><strong>{user.name}{user.isCompanyAdmin && <span className="admin-badge">COMPANY ADMIN</span>}</strong><span>{user.username}{user.email ? ` · ${user.email}` : ""}{user.contactNumber ? ` · ${user.contactNumber}` : ""}</span></div>
+          {user.approvalStatus === "approved" && <button className="button button-quiet" onClick={() => resetClientPassword(user)}>Reset password</button>}
           <span className={`team-state ${user.disabledAt || user.approvalStatus === "rejected" ? "team-disabled" : ""}`}>{user.approvalStatus === "rejected" ? "Declined" : user.disabledAt ? "Disabled" : "Active"}</span>
           {(workspaceAdmin || !user.isCompanyAdmin) && user.approvalStatus === "approved" && <button className="button button-quiet" onClick={() => updateUser(user, { isCompanyAdmin: !user.isCompanyAdmin })}>{user.isCompanyAdmin ? "Remove admin" : "Make admin"}</button>}
           <button className="button button-quiet" onClick={() => updateUser(user, { disabled: !user.disabledAt })}>{user.disabledAt ? "Enable" : "Disable"}</button>
@@ -1568,19 +1563,6 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       </div>
 
       {invitations.length > 0 && <div className="pending-invitations"><strong>Pending user invitations</strong>{invitations.map((invitation) => <div key={invitation.id}><span>{invitation.email}{invitation.isCompanyAdmin ? " · Company admin" : ""}</span><small>Expires {new Date(invitation.expiresAt).toLocaleString()}</small></div>)}</div>}
-    </section>}
-    {selectedCompanyId && <section className="settings-card company-mail-invite-card">
-      <div className="settings-card-heading"><div><h2>{workspaceAdmin ? "Invite a user" : "Invite a client"}</h2><p>Create an invitation for {selectedCompany?.name || "this company"}; share the link manually when email is not configured.</p></div><Mail size={18} /></div>
-      {workspaceAdmin ? <form className="invite-form" onSubmit={inviteUser}>
-        <label className="company-invite-label" htmlFor="company-user-email">Email address</label>
-        <div><input id="company-user-email" type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="colleague@company.com" required />
-          <label className="checkbox-label"><input type="checkbox" checked={inviteAsAdmin} onChange={(event) => setInviteAsAdmin(event.target.checked)} /> Company admin</label>
-          <button className="button button-primary" type="submit"><Plus size={15} /> Create invitation</button>
-        </div>
-      </form> : <form className="client-invite-form" onSubmit={inviteUser}>
-        <label>Email address<input id="company-user-email" type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="colleague@company.com" required /></label>
-        <button className="button button-primary" type="submit"><Plus size={15} /> Create invitation</button>
-      </form>}
     </section>}
   </section>;
 }
@@ -1622,8 +1604,7 @@ function ConsultantNewTicketPopup({ notification, onDismiss, onOpen }: {
 }
 
 function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
-  const [agents, setAgents] = useState<Array<{ id: number; name: string; email: string; isAdmin: boolean; routingPriority: number; specialty: ConsultantSpecialty; disabledAt: string | null }>>([]);
-  const [invitations, setInvitations] = useState<Array<{ id: number; email: string; specialty: ConsultantSpecialty; expiresAt: string }>>([]);
+  const [agents, setAgents] = useState<Array<{ id: number; name: string; username: string; email: string | null; isAdmin: boolean; routingPriority: number; specialty: ConsultantSpecialty; disabledAt: string | null }>>([]);
   const [sla, setSla] = useState({ firstResponseHours: 4, resolutionHours: 48 });
   const [emailStatus, setEmailStatus] = useState<{
     smtpConfigured: boolean; imapConfigured: boolean; smtpHost: string | null; inboundMailbox: string | null;
@@ -1631,41 +1612,20 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
   } | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [invitationUrl, setInvitationUrl] = useState("");
   const [editingSpecialty, setEditingSpecialty] = useState<number | null>(null);
   const [specialtyDraft, setSpecialtyDraft] = useState<ConsultantSpecialty>("both");
 
   const load = useCallback(async () => {
     const [team, slaResult, emailResult] = await Promise.all([
-      api<{ agents: typeof agents; invitations: typeof invitations }>("/admin/agents"),
+      api<{ agents: typeof agents }>("/admin/agents"),
       api<{ sla: typeof sla }>("/admin/sla-settings"),
       api<typeof emailStatus>("/admin/email-status"),
     ]);
     setAgents(team.agents);
-    setInvitations(team.invitations);
     setSla(slaResult.sla);
     setEmailStatus(emailResult);
   }, []);
   useEffect(() => { load().catch((reason: Error) => setError(reason.message)); }, [load]);
-
-  async function invite(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const formElement = event.currentTarget;
-    setError("");
-    setMessage("");
-    const form = new FormData(formElement);
-    try {
-      const result = await api<{ invitation: { email: string; emailSent: boolean; invitationUrl?: string } }>("/agent-invitations", {
-        method: "POST", body: JSON.stringify({ email: form.get("email"), specialty: form.get("specialty") }),
-      });
-      setMessage(result.invitation.emailSent
-        ? `Invitation email sent to ${result.invitation.email}.`
-        : `Invitation link created. Share it with ${result.invitation.email}.`);
-      setInvitationUrl(result.invitation.invitationUrl || "");
-      formElement.reset();
-      await load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not invite this Consultant."); }
-  }
 
   async function createConsultant(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1674,17 +1634,28 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
     setMessage("");
     const form = new FormData(formElement);
     try {
-      const result = await api<{ agent: { name: string; email: string; isAdmin: boolean } }>("/admin/agents", {
+      const result = await api<{ agent: { name: string; username: string; isAdmin: boolean } }>("/admin/agents", {
         method: "POST",
         body: JSON.stringify({
-          name: form.get("name"), email: form.get("email"), contactNumber: form.get("contactNumber"), password: form.get("password"),
+          name: form.get("name"), username: form.get("username"), email: form.get("email"), contactNumber: form.get("contactNumber"), password: form.get("password"),
           isAdmin: form.get("isAdmin") === "on", specialty: form.get("specialty"),
         }),
       });
-      setMessage(`${result.agent.isAdmin ? "Super Admin" : "Consultant"} account created for ${result.agent.name} (${result.agent.email}). Share the initial password with them through a secure channel.`);
+      setMessage(`${result.agent.isAdmin ? "Super Admin" : "Consultant"} account created for ${result.agent.name}. Username: ${result.agent.username}. Share the initial password securely.`);
       formElement.reset();
       await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create the account."); }
+  }
+
+  async function resetAgentPassword(agent: typeof agents[number]) {
+    const password = window.prompt(`Enter a new password for ${agent.name} (8 to 128 characters):`);
+    if (password === null) return;
+    if (password.length < 8 || password.length > 128) { setError("Password must be between 8 and 128 characters."); return; }
+    setError(""); setMessage("");
+    try {
+      await api(`/agents/${agent.id}`, { method: "PATCH", body: JSON.stringify({ password }) });
+      setMessage(`Password reset for ${agent.username}. Share the new password securely.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not reset this password."); }
   }
 
   async function saveSla(event: FormEvent<HTMLFormElement>) {
@@ -1741,23 +1712,21 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
     {message && <div className="inline-success" role="status">{message}<button onClick={() => setMessage("")}><X size={13} /></button></div>}
 
     <section className="settings-card">
-      <div className="settings-card-heading"><div><h2>Consultant team</h2><p>Create accounts directly or invite by email, then control team access.</p></div><span>{agents.filter((agent) => !agent.disabledAt).length} active</span></div>
+      <div className="settings-card-heading"><div><h2>Consultant team</h2><p>Create username and password accounts directly, then control team access.</p></div><span>{agents.filter((agent) => !agent.disabledAt).length} active</span></div>
       <form className="team-create-form" onSubmit={createConsultant}>
         <label>Full name<input name="name" autoComplete="name" minLength={2} maxLength={120} required placeholder="Consultant name" /></label>
-        <label>Work email<input name="email" type="email" autoComplete="email" maxLength={254} required placeholder="consultant@company.com" /></label>
-        <label>Contact number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} required placeholder="+91 98765 43210" /></label>
+        <label>Username<input name="username" autoComplete="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" required placeholder="consultant01" /></label>
+        <label>Work email (optional)<input name="email" type="email" autoComplete="email" maxLength={254} placeholder="consultant@company.com" /></label>
+        <label>Contact number (optional)<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" /></label>
         <label>Consultant type<select name="specialty" defaultValue="" required><option value="" disabled>Select specialty</option><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Both</option></select></label>
         <label>Initial password<input name="password" type="password" autoComplete="new-password" minLength={8} maxLength={128} required placeholder="At least 8 characters" /><small>Share this password with the new user through a secure channel.</small></label>
         <label className="team-admin-option"><input name="isAdmin" type="checkbox" /> Grant Super Admin permissions</label>
         <button className="button button-primary" type="submit"><Plus size={15} /> Create account</button>
       </form>
-      <form className="invite-form" onSubmit={invite}><label htmlFor="invite-email">Or create a Consultant invitation link</label><label className="invite-specialty">Consultant type<select name="specialty" defaultValue="" required><option value="" disabled>Select specialty</option><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Both</option></select></label><div><input id="invite-email" name="email" type="email" placeholder="consultant@jishnuinfotech.com" required /><button className="button button-primary" type="submit"><Plus size={15} /> Create invitation</button></div>{!emailStatus?.smtpConfigured && <small>Email is not configured. Share the generated invitation link manually; it expires in 48 hours.</small>}</form>
-    {invitationUrl && <p className="development-link">Invitation link (share with the invitee; expires in 48 hours): <a href={invitationUrl}>{invitationUrl}</a></p>}
       <p className="settings-hint">Automatic tickets follow Primary-to-secondary priority; Consultants with the same priority are balanced by active unresolved workload. Use the arrows to change priority.</p>
       <div className="admin-team-list">
-        {agents.map((agent) => <div className="admin-team-row" key={agent.id}><div className="avatar avatar-agent">{initials(agent.name)}</div><div className="directory-customer"><strong>{agent.name}{Boolean(agent.isAdmin) && <span className="admin-badge">SUPER ADMIN</span>}</strong><span>{agent.email}</span></div>{editingSpecialty === agent.id ? <><select aria-label={`Specialty for ${agent.name}`} className="consultant-specialty-edit" value={specialtyDraft} onChange={(event) => setSpecialtyDraft(event.target.value as ConsultantSpecialty)}><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Functional + Technical</option></select><button className="button button-quiet" onClick={() => saveSpecialty(agent)}>Save</button><button className="button button-quiet" onClick={() => setEditingSpecialty(null)}>Cancel</button></> : <><span className="consultant-specialty-label">{agent.specialty === "both" ? "Functional + Technical" : agent.specialty[0].toUpperCase() + agent.specialty.slice(1)}</span><button className="button button-quiet" onClick={() => { setEditingSpecialty(agent.id); setSpecialtyDraft(agent.specialty); }}>Edit type</button></>}<span className="agent-routing-priority">{agent.routingPriority === 1 ? "Primary" : agent.routingPriority === 2 ? "Secondary" : `#${agent.routingPriority}`}</span><button className="button button-quiet" aria-label={`Move ${agent.name} up in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority <= 1} onClick={() => moveAgent(agent, -1)}><ArrowUp size={13} /></button><button className="button button-quiet" aria-label={`Move ${agent.name} down in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority >= agents.filter((item) => !item.disabledAt).length} onClick={() => moveAgent(agent, 1)}><ArrowDown size={13} /></button><span className={`team-state ${agent.disabledAt ? "team-disabled" : ""}`}>{agent.disabledAt ? "Disabled" : "Active"}</span><button className="button button-quiet" disabled={Boolean(agent.isAdmin) && !agent.disabledAt} onClick={() => toggleAgent(agent)}>{agent.disabledAt ? "Enable" : "Disable"}</button></div>)}
+        {agents.map((agent) => <div className="admin-team-row" key={agent.id}><div className="avatar avatar-agent">{initials(agent.name)}</div><div className="directory-customer"><strong>{agent.name}{Boolean(agent.isAdmin) && <span className="admin-badge">SUPER ADMIN</span>}</strong><span>{agent.username}{agent.email ? ` · ${agent.email}` : ""}</span></div>{editingSpecialty === agent.id ? <><select aria-label={`Specialty for ${agent.name}`} className="consultant-specialty-edit" value={specialtyDraft} onChange={(event) => setSpecialtyDraft(event.target.value as ConsultantSpecialty)}><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Both</option></select><button className="button button-quiet" onClick={() => saveSpecialty(agent)}>Save</button><button className="button button-quiet" onClick={() => setEditingSpecialty(null)}>Cancel</button></> : <><span className="consultant-specialty-label">{agent.specialty === "both" ? "Functional + Technical" : agent.specialty[0].toUpperCase() + agent.specialty.slice(1)}</span><button className="button button-quiet" onClick={() => { setEditingSpecialty(agent.id); setSpecialtyDraft(agent.specialty); }}>Edit type</button></>}<span className="agent-routing-priority">{agent.routingPriority === 1 ? "Primary" : agent.routingPriority === 2 ? "Secondary" : `#${agent.routingPriority}`}</span><button className="button button-quiet" aria-label={`Move ${agent.name} up in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority <= 1} onClick={() => moveAgent(agent, -1)}><ArrowUp size={13} /></button><button className="button button-quiet" aria-label={`Move ${agent.name} down in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority >= agents.filter((item) => !item.disabledAt).length} onClick={() => moveAgent(agent, 1)}><ArrowDown size={13} /></button><span className={`team-state ${agent.disabledAt ? "team-disabled" : ""}`}>{agent.disabledAt ? "Disabled" : "Active"}</span><button className="button button-quiet" onClick={() => resetAgentPassword(agent)}>Reset password</button><button className="button button-quiet" disabled={Boolean(agent.isAdmin) && !agent.disabledAt} onClick={() => toggleAgent(agent)}>{agent.disabledAt ? "Enable" : "Disable"}</button></div>)}
       </div>
-      {invitations.length > 0 && <div className="pending-invitations"><strong>Pending invitations</strong>{invitations.map((invitation) => <div key={invitation.id}><span>{invitation.email} · {invitation.specialty === "both" ? "Both" : invitation.specialty[0].toUpperCase() + invitation.specialty.slice(1)}</span><small>Expires {new Date(invitation.expiresAt).toLocaleString()}</small></div>)}</div>}
     </section>
 
     <section className="settings-card">
@@ -1859,29 +1828,6 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
   onSubmit: (event: FormEvent<HTMLFormElement>, portal: Role) => void;
   onRegister: (event: FormEvent<HTMLFormElement>) => void;
 }) {
-  const [showRecovery, setShowRecovery] = useState(false);
-  const [recoveryError, setRecoveryError] = useState("");
-  const [recoveryNotice, setRecoveryNotice] = useState("");
-  const [recoveryUrl, setRecoveryUrl] = useState("");
-  const [recoveryBusy, setRecoveryBusy] = useState(false);
-  async function requestPasswordReset(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setRecoveryError("");
-    setRecoveryNotice("");
-    setRecoveryUrl("");
-    setRecoveryBusy(true);
-    const form = new FormData(event.currentTarget);
-    try {
-      const result = await api<{ message: string; resetUrl?: string }>("/auth/password-reset", {
-        method: "POST", body: JSON.stringify({ email: form.get("email") }),
-      });
-      setRecoveryNotice(result.message);
-      setRecoveryUrl(result.resetUrl || "");
-    } catch (reason) {
-      setRecoveryError(reason instanceof Error ? reason.message : "Could not request a password reset.");
-    } finally { setRecoveryBusy(false); }
-  }
-
   return <main className="login-screen">
     <div className="login-decoration decoration-one" /><div className="login-decoration decoration-two" />
     <div className="login-card">
@@ -1891,30 +1837,24 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
         <button type="button" className={portal === "customer" ? "selected" : ""} role="tab" aria-selected={portal === "customer"} onClick={() => onPortalChange("customer")}><Users size={14} /> Client portal</button>
         <button type="button" className={portal === "agent" ? "selected" : ""} role="tab" aria-selected={portal === "agent"} onClick={() => onPortalChange("agent")}><Inbox size={14} /> Consultant portal</button>
       </div>
-      {portal === "customer" && !showRecovery && <div className="auth-mode-tabs">
+      {portal === "customer" && <div className="auth-mode-tabs">
         <button type="button" className={mode === "login" ? "selected" : ""} onClick={() => onModeChange("login")}>Sign in</button>
         <button type="button" className={mode === "register" ? "selected" : ""} onClick={() => onModeChange("register")}>Create client account</button>
       </div>}
-      {notice && !showRecovery && <div className="inline-success" role="status">{notice}</div>}
-      {showRecovery && portal === "customer" ? <form className="login-form" onSubmit={requestPasswordReset}>
-        <label>Email address<input name="email" type="email" autoComplete="email" placeholder="you@company.com" required /></label>
-        {recoveryError && <div className="inline-error" role="alert">{recoveryError}</div>}
-        {recoveryNotice && <div className="inline-success" role="status">{recoveryNotice}</div>}
-        {recoveryUrl && <a className="auth-back-link" href={recoveryUrl}>Open development reset link</a>}
-        <button className="button button-primary login-button" type="submit" disabled={recoveryBusy}>{recoveryBusy ? "Sending…" : "Send reset link"} <ArrowRight size={16} /></button>
-        <button type="button" className="auth-back-link auth-back-button" onClick={() => setShowRecovery(false)}>Back to sign in</button>
-      </form> : <form className="login-form" onSubmit={mode === "register" && portal === "customer" ? onRegister : (event) => onSubmit(event, portal)}>
+      {notice && <div className="inline-success" role="status">{notice}</div>}
+      <form className="login-form" onSubmit={mode === "register" && portal === "customer" ? onRegister : (event) => onSubmit(event, portal)}>
         {mode === "register" && portal === "customer" && <>
           <label>Your name<input name="name" autoComplete="name" minLength={2} maxLength={100} placeholder="Full name" required /></label>
           <label>Company invitation code<input name="joinCode" autoComplete="off" placeholder="Enter a code from your company admin" required /><span className="form-hint">Your invitation code identifies your company and activates your account.</span></label>
-          <label>Contact number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
+          <label>Contact number (optional)<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" /></label>
         </>}
-        <label>Email address<input name="email" type="email" autoComplete="username" placeholder="you@company.com" required /></label>
+        <label>Username<input name="username" autoComplete="username" minLength={mode === "register" ? 3 : undefined} maxLength={mode === "register" ? 32 : 254} pattern={mode === "register" ? "[A-Za-z0-9][A-Za-z0-9._-]{2,31}" : undefined} placeholder={mode === "register" ? "Choose a username" : "Username (existing accounts may use email)"} required /></label>
+        {mode === "register" && portal === "customer" && <label>Email address (optional)<input name="email" type="email" autoComplete="email" placeholder="you@company.com" /></label>}
         <label>Password<div className="password-field"><input name="password" type="password" autoComplete={mode === "register" ? "new-password" : "current-password"} minLength={mode === "register" ? 8 : undefined} maxLength={128} placeholder={mode === "register" ? "At least 8 characters" : "Enter your password"} required /></div></label>
         {error && <div className="inline-error">{error}</div>}
         <button className="button button-primary login-button" type="submit">{mode === "register" ? "Create account" : "Sign in"} <ArrowRight size={16} /></button>
-      </form>}
-      {!showRecovery && mode === "login" && portal === "customer" && <button type="button" className="forgot-password-link" onClick={() => { setShowRecovery(true); setRecoveryError(""); setRecoveryNotice(""); }}>Forgot password?</button>}
+      </form>
+      {mode === "login" && <p className="form-hint">Need a password reset? Contact your account administrator.</p>}
       <div className="login-help"><ShieldCheck size={15} /> Your support workspace, securely connected</div>
     </div>
     <footer className="login-footer"><span>© 2026 Jishnu Infotech</span><span><CircleHelp size={13} /> Need help signing in?</span></footer>

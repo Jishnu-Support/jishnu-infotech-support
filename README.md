@@ -18,15 +18,15 @@ npm run dev
 
 Open the Vite URL printed in the terminal (normally `http://localhost:5173`) and choose the Client Portal or Consultant Portal on the sign-in screen.
 
-On an empty database, the app creates only the Super Admin specified by `SEED_CONSULTANT_EMAIL`, `SEED_CONSULTANT_PASSWORD`, and `SEED_CONSULTANT_CONTACT_NUMBER`. Set these values in `.env` before the first start. No companies, clients, or sample tickets are created. The Super Admin can create client companies after signing in.
+On an empty database, the app creates only the Super Admin specified by `SEED_CONSULTANT_USERNAME` and `SEED_CONSULTANT_PASSWORD`. Email and contact number are optional. Set these values in `.env` before the first start. No companies, clients, or sample tickets are created. The Super Admin can create client companies and user accounts after signing in.
 
 To clear a local development database, run `npm run db:reset-local -- --confirm`. The command only accepts a localhost PostgreSQL connection, clears application records and uploaded attachment files, and preserves schema migrations. Configure a Super Admin bootstrap account in `.env` before signing in again.
 
 ## Production configuration
 
-Set `NODE_ENV=production`, `DATABASE_URL` to your PostgreSQL connection string, a unique random `JWT_SECRET` of at least 32 bytes, and the three Super Admin bootstrap values from `.env.example` before first startup. Set `APP_BASE_URL` to the public HTTPS URL. The first start of an empty database creates only this Super Admin. Build the frontend with `npm run build`, then run `npm start`; the Node server serves the built UI and API together.
+Set `NODE_ENV=production`, `DATABASE_URL` to your PostgreSQL connection string, a unique random `JWT_SECRET` of at least 32 bytes, and `SEED_CONSULTANT_USERNAME` plus `SEED_CONSULTANT_PASSWORD` before first startup. Email and contact number are optional. Set `APP_BASE_URL` to the public HTTPS URL. The first start of an empty database creates only this Super Admin. Build the frontend with `npm run build`, then run `npm start`; the Node server serves the built UI and API together.
 
-The bootstrap values are only used when the PostgreSQL database has no users. Passwords must be 8 to 128 characters. After confirming the Super Admin can sign in, remove the `SEED_*` values from the hosting environment. Do not expose an unconfigured instance to the public internet.
+The bootstrap values are only used when the PostgreSQL database has no users. Usernames must be 3 to 32 characters and use letters, numbers, dots, underscores, or hyphens; passwords must be 8 to 128 characters. Existing accounts receive generated usernames during the schema migration and can continue signing in with their email during the transition. After confirming the Super Admin can sign in, remove the `SEED_*` values from the hosting environment. Do not expose an unconfigured instance to the public internet.
 
 Run `npm test` to execute the local unit tests. The app records applied PostgreSQL schema versions in `schema_migrations`; the initial schema baseline is applied before the server starts. Back up production data before deploying a schema upgrade and confirm the hosting provider's backup and restore process.
 
@@ -38,7 +38,7 @@ Set `DATABASE_URL` to a new, empty PostgreSQL database, then run `npm run db:imp
 
 Jishnu Infotech Consultants work across client companies. Client accounts and tickets are scoped to a company: regular client users see their own tickets, company administrators can review their company's tickets and manage company users, and the Super Admin can manage all companies and the Consultant team.
 
-Jishnu workspace administrators create a company and invite its first company administrator from **Companies**. Each client company supports all three onboarding paths:
+Jishnu workspace administrators create a company and set up its first company administrator directly from **Companies** by choosing a username and initial password. This does not require SMTP. Company administrators can create additional accounts with usernames and initial passwords. Email remains optional contact information. The legacy invitation and registration flows remain available where configured:
 
 - Individual user invitations sent by a company administrator.
 - A reusable company invitation code, valid for 30 days and revocable by a company administrator.
@@ -54,15 +54,15 @@ When a client opens a ticket, they can choose a preferred Jishnu Infotech Consul
 
 Set these values in the server's private `.env` file (never commit mailbox credentials):
 
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_FROM`, and, when required, `SMTP_USER` / `SMTP_PASSWORD` enable outbound ticket replies, password recovery, and Consultant invitations.
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_FROM`, and, when required, `SMTP_USER` / `SMTP_PASSWORD` enable optional outbound ticket replies, password recovery, and legacy Consultant invitations. Account creation and administrator password resets work without SMTP.
 - `IMAP_HOST`, `IMAP_PORT`, `IMAP_SECURE`, `IMAP_MAILBOX`, `IMAP_USER`, and `IMAP_PASSWORD` enable inbound mail polling. Gmail/Google Workspace can use `imap.gmail.com` with IMAP enabled; some organizations require a mailbox app password. OAuth is not implemented.
 - `APP_BASE_URL` must be the externally reachable portal URL so emailed invitation and reset links point to the correct deployment. `IMAP_POLL_INTERVAL_MS` defaults to 30 seconds.
 
-Outbound Consultant replies are recorded in a retrying outbox (up to five delivery attempts); the Super Admin can see pending, sent, and failed totals in **Settings**. Inbound messages use IMAP UID cursors, Message-ID deduplication, and mail reply headers to attach responses to the corresponding ticket. Previously unknown senders are auto-associated only when an active company has a matching configured email domain; other messages are logged and left out of client tickets until an administrator configures the domain. Auto-provisioned clients can use **Forgot password?** to set their own password. SMTP and IMAP are optional for local development but must be configured for production invitations and password recovery.
+Outbound Consultant replies are recorded in a retrying outbox (up to five delivery attempts); the Super Admin can see pending, sent, and failed totals in **Settings**. Inbound messages use IMAP UID cursors, Message-ID deduplication, and mail reply headers to attach responses to the corresponding ticket. Previously unknown senders are auto-associated only when an active company has a matching configured email domain; other messages are logged and left out of client tickets until an administrator configures the domain. SMTP and IMAP are optional. Without SMTP, password resets are handled by an account administrator, and outbound/inbound email features remain unavailable.
 
 ### Team and service targets
 
-The Super Admin can invite Consultants, enable/disable Consultant accounts, and configure response/resolution targets under **Settings**. Invitations and password-reset links are single-use and expire after 48 hours and 30 minutes respectively. In local development, invitation/reset links are shown in the UI when SMTP is not configured; production requires SMTP for those workflows.
+The Super Admin can create Consultant accounts with usernames and initial passwords, reset passwords, enable/disable Consultant accounts, and configure response/resolution targets under **Settings**. Legacy invitation and email password-reset workflows remain optional and require SMTP.
 
 Default SLAs are **4 elapsed hours** for first response and **48 elapsed hours** for resolution. They count nights and weekends; business calendars, holidays, and time-zone-aware schedules are not implemented. Overdue alerts appear in the assigned Consultant's **Notifications**. The first existing Consultant is promoted to Super Admin on startup if the workspace has no Super Admin.
 

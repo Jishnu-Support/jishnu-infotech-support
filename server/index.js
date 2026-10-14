@@ -73,6 +73,7 @@ function publicUser(user) {
   return {
     id: user.id,
     name: user.name,
+    username: user.username,
     email: user.email,
     contactNumber: user.contact_number || null,
     role: user.role,
@@ -118,6 +119,31 @@ function validContactNumber(value) {
     : null;
 }
 
+function normalizeUsername(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function validUsername(username) {
+  return /^[a-z0-9][a-z0-9._-]{2,31}$/.test(username);
+}
+
+function usernameFromEmail(email) {
+  const prefix = normalizeUsername(email?.split("@")[0]).replace(/[^a-z0-9._-]/g, "").slice(0, 24) || "user";
+  const safePrefix = /^[a-z0-9]/.test(prefix) ? prefix : `u${prefix}`.slice(0, 24);
+  return `${safePrefix}-${randomBytes(3).toString("hex")}`;
+}
+
+function optionalEmail(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const email = value.trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 254 ? email : false;
+}
+
+function optionalContactNumber(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  return validContactNumber(value) || false;
+}
+
 function validDateOnly(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const date = new Date(`${value}T00:00:00.000Z`);
@@ -138,7 +164,7 @@ async function requireAuth(req, res, next) {
     return res.status(401).json({ error: "Your session has expired. Please sign in again." });
   }
   const user = await db.prepare(`
-    SELECT u.id, u.name, u.email, u.contact_number, u.role, u.is_admin, u.is_company_admin, u.company_id,
+    SELECT u.id, u.name, u.username, u.email, u.contact_number, u.role, u.is_admin, u.is_company_admin, u.company_id,
            u.approval_status, c.name AS company_name, c.support_valid_until AS company_support_valid_until
     FROM users u LEFT JOIN companies c ON c.id = u.company_id
     WHERE u.id = ? AND u.disabled_at IS NULL
@@ -324,19 +350,19 @@ app.get("/api/health", async (_req, res) => {
 });
 
 app.post("/api/auth/login", authLimiter, async (req, res) => {
-  const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
+  const username = normalizeUsername(req.body.username || req.body.email);
   const password = typeof req.body.password === "string" ? req.body.password : "";
-  if (!email || !password) return res.status(400).json({ error: "Enter your email and password." });
+  if (!username || !password) return res.status(400).json({ error: "Enter your username and password." });
 
   const user = await db.prepare(`
     SELECT u.*, c.name AS company_name, c.support_valid_until AS company_support_valid_until,
            COALESCE(m.is_company_admin, u.is_company_admin) AS current_company_admin
     FROM users u LEFT JOIN companies c ON c.id = u.company_id
     LEFT JOIN company_memberships m ON m.user_id = u.id AND m.company_id = u.company_id
-    WHERE u.email = ? COLLATE NOCASE AND u.disabled_at IS NULL
-  `).get(email);
+    WHERE (lower(u.username) = ? OR lower(u.email) = ?) AND u.disabled_at IS NULL
+  `).get(username, username);
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-    return res.status(401).json({ error: "Email or password is incorrect." });
+    return res.status(401).json({ error: "Username or password is incorrect." });
   }
   if (user.role === "customer" && user.approval_status !== "approved") {
     return res.status(403).json({ error: "Your company account is awaiting administrator approval." });
@@ -363,14 +389,16 @@ app.get("/api/companies/available", async (_req, res) => {
 
 app.post("/api/auth/register", authLimiter, async (req, res) => {
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
-  const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
-  const contactNumber = validContactNumber(req.body.contactNumber);
+  const username = normalizeUsername(req.body.username);
+  const email = optionalEmail(req.body.email);
+  const contactNumber = optionalContactNumber(req.body.contactNumber);
   const password = typeof req.body.password === "string" ? req.body.password : "";
   const joinCode = typeof req.body.joinCode === "string" ? req.body.joinCode.trim() : "";
   const requestedCompanyId = Number(req.body.companyId);
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: "Enter a valid email address." });
-  if (!contactNumber) return res.status(400).json({ error: "Enter a valid contact number (7 to 15 digits)." });
+  if (!validUsername(username)) return res.status(400).json({ error: "Username must be 3–32 characters and use letters, numbers, dots, underscores, or hyphens." });
+  if (email === false) return res.status(400).json({ error: "Enter a valid email address or leave it blank." });
+  if (contactNumber === false) return res.status(400).json({ error: "Enter a valid contact number or leave it blank." });
   if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Password must be between 8 and 128 characters." });
 
   let company;
@@ -394,9 +422,9 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
 
   try {
     const id = Number((await db.prepare(`
-      INSERT INTO users (name, email, contact_number, password_hash, role, company_id, approval_status)
-      VALUES (?, ?, ?, ?, 'customer', ?, ?)
-    `).run(name, email, contactNumber, bcrypt.hashSync(password, 12), company.id, approvalStatus)).lastInsertRowid);
+      INSERT INTO users (name, username, email, contact_number, password_hash, role, company_id, approval_status)
+      VALUES (?, ?, ?, ?, ?, 'customer', ?, ?)
+    `).run(name, username, email, contactNumber, bcrypt.hashSync(password, 12), company.id, approvalStatus)).lastInsertRowid);
     await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin) VALUES (?, ?, 0) ON CONFLICT DO NOTHING")
       .run(id, company.id);
     if (approvalStatus === "pending") {
@@ -405,14 +433,14 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
         SELECT u.id, NULL, ?, ? FROM users u
         JOIN company_memberships m ON m.user_id = u.id
         WHERE u.role = 'customer' AND m.is_company_admin = 1 AND m.company_id = ? AND u.approval_status = 'approved'
-      `).run(`company_join_request:${id}`, `${name} (${email}) requested access to ${company.name}.`, company.id);
+      `).run(`company_join_request:${id}`, `${name} (${username}) requested access to ${company.name}.`, company.id);
       return res.status(202).json({
         pendingApproval: true,
         message: `Your account for ${company.name} is waiting for a company administrator to approve it.`,
       });
     }
     const user = await db.prepare(`
-      SELECT u.id, u.name, u.email, u.contact_number, u.role, u.is_admin, u.is_company_admin, u.company_id,
+      SELECT u.id, u.name, u.username, u.email, u.contact_number, u.role, u.is_admin, u.is_company_admin, u.company_id,
              u.approval_status, c.name AS company_name, c.support_valid_until AS company_support_valid_until
       FROM users u JOIN companies c ON c.id = u.company_id WHERE u.id = ?
     `).get(id);
@@ -424,7 +452,7 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
     });
     return res.status(201).json({ user: publicUser(user), companies: await companyMemberships(user.id) });
   } catch (error) {
-    if (error.code === "23505") return res.status(409).json({ error: "An account with this email already exists." });
+    if (error.code === "23505") return res.status(409).json({ error: "That username or email address is already in use." });
     throw error;
   }
 });
@@ -515,8 +543,8 @@ app.post("/api/auth/agent-invitations/accept", async (req, res) => {
   try {
     const accept = db.transaction(async () => {
       const nextPriority = (await db.prepare("SELECT COALESCE(MAX(routing_priority), 0) + 1 AS priority FROM users WHERE role = 'agent' AND disabled_at IS NULL").get()).priority;
-      const user = await db.prepare("INSERT INTO users (name, email, contact_number, password_hash, role, routing_priority, specialty) VALUES (?, ?, ?, ?, 'agent', ?, ?)")
-        .run(name, invitation.email, contactNumber, bcrypt.hashSync(password, 12), nextPriority, invitation.specialty);
+      const user = await db.prepare("INSERT INTO users (name, username, email, contact_number, password_hash, role, routing_priority, specialty) VALUES (?, ?, ?, ?, ?, 'agent', ?, ?)")
+        .run(name, usernameFromEmail(invitation.email), invitation.email, contactNumber, bcrypt.hashSync(password, 12), nextPriority, invitation.specialty);
       const accepted = await db.prepare("UPDATE agent_invitations SET accepted_at = CURRENT_TIMESTAMP WHERE id = ? AND accepted_at IS NULL")
         .run(invitation.id);
       if (accepted.changes !== 1) throw new Error("Invitation has already been accepted.");
@@ -528,7 +556,7 @@ app.post("/api/auth/agent-invitations/accept", async (req, res) => {
     if (error.message === "Invitation has already been accepted.") return res.status(400).json({ error: "This invitation link has already been used." });
     throw error;
   }
-  const user = await db.prepare("SELECT id, name, email, contact_number, role, is_admin FROM users WHERE id = ?").get(userId);
+  const user = await db.prepare("SELECT id, name, username, email, contact_number, role, is_admin FROM users WHERE id = ?").get(userId);
   res.cookie("relay_session", createToken(user), {
     httpOnly: true,
     secure: isProduction,
@@ -569,9 +597,9 @@ app.post("/api/auth/client-invitations/accept", authLimiter, async (req, res) =>
   try {
     const accept = db.transaction(async () => {
       const user = await db.prepare(`
-        INSERT INTO users (name, email, contact_number, password_hash, role, company_id, is_company_admin)
-        VALUES (?, ?, ?, ?, 'customer', ?, ?)
-      `).run(name, invitation.email, contactNumber, bcrypt.hashSync(password, 12), invitation.company_id, invitation.is_company_admin);
+        INSERT INTO users (name, username, email, contact_number, password_hash, role, company_id, is_company_admin)
+        VALUES (?, ?, ?, ?, ?, 'customer', ?, ?)
+      `).run(name, usernameFromEmail(invitation.email), invitation.email, contactNumber, bcrypt.hashSync(password, 12), invitation.company_id, invitation.is_company_admin);
       await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin) VALUES (?, ?, ?) ON CONFLICT DO NOTHING")
         .run(user.lastInsertRowid, invitation.company_id, invitation.is_company_admin);
       const updated = await db.prepare("UPDATE client_invitations SET accepted_at = CURRENT_TIMESTAMP WHERE id = ? AND accepted_at IS NULL")
@@ -581,7 +609,7 @@ app.post("/api/auth/client-invitations/accept", authLimiter, async (req, res) =>
     });
     const userId = await accept();
     const user = await db.prepare(`
-      SELECT u.id, u.name, u.email, u.contact_number, u.role, u.is_admin, u.is_company_admin, u.company_id,
+      SELECT u.id, u.name, u.username, u.email, u.contact_number, u.role, u.is_admin, u.is_company_admin, u.company_id,
              u.approval_status, c.name AS company_name, c.support_valid_until AS company_support_valid_until
       FROM users u JOIN companies c ON c.id = u.company_id WHERE u.id = ?
     `).get(userId);
@@ -968,7 +996,7 @@ app.get("/api/report-tickets", requireAuth, async (req, res) => {
 
 app.get("/api/customers", requireAuth, requireAgent, async (_req, res) => {
   const customers = await db.prepare(`
-    SELECT u.id, u.name, u.email, m.company_id AS companyId, c.name AS companyName
+    SELECT u.id, u.name, u.username, u.email, m.company_id AS companyId, c.name AS companyName
     FROM users u JOIN company_memberships m ON m.user_id = u.id JOIN companies c ON c.id = m.company_id
     WHERE u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL
     ORDER BY c.name, u.name
@@ -1026,7 +1054,7 @@ app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
 
 app.get("/api/agents", requireAuth, async (_req, res) => {
   const agents = await db.prepare(`
-    SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty
+    SELECT id, name, username, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty
     FROM users WHERE role = 'agent' AND disabled_at IS NULL ORDER BY routing_priority, id
   `).all();
   res.json({ agents: agents.map((agent, index) => ({
@@ -1041,10 +1069,12 @@ app.patch("/api/agents/:id", requireAuth, requireAdmin, async (req, res) => {
   const hasDisabled = req.body.disabled !== undefined;
   const hasRoutingPriority = req.body.routingPriority !== undefined;
   const hasSpecialty = req.body.specialty !== undefined;
-  if ((!hasDisabled && !hasRoutingPriority && !hasSpecialty)
+  const hasPassword = req.body.password !== undefined;
+  if ((!hasDisabled && !hasRoutingPriority && !hasSpecialty && !hasPassword)
     || (hasDisabled && typeof req.body.disabled !== "boolean")
     || (hasRoutingPriority && (!Number.isInteger(req.body.routingPriority) || req.body.routingPriority < 1))
-    || (hasSpecialty && !["functional", "technical", "both"].includes(req.body.specialty))) {
+    || (hasSpecialty && !["functional", "technical", "both"].includes(req.body.specialty))
+    || (hasPassword && (typeof req.body.password !== "string" || req.body.password.length < 8 || req.body.password.length > 128))) {
     return res.status(400).json({ error: "Choose a valid Consultant access or routing-priority update." });
   }
   const agent = await db.prepare("SELECT id, is_admin, disabled_at, routing_priority FROM users WHERE id = ? AND role = 'agent'").get(agentId);
@@ -1086,7 +1116,8 @@ app.patch("/api/agents/:id", requireAuth, requireAdmin, async (req, res) => {
     })();
   }
   if (hasSpecialty) await db.prepare("UPDATE users SET specialty = ? WHERE id = ?").run(req.body.specialty, agentId);
-  res.json({ agent: await db.prepare("SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty, disabled_at AS disabledAt FROM users WHERE id = ?").get(agentId) });
+  if (hasPassword) await db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(bcrypt.hashSync(req.body.password, 12), agentId);
+  res.json({ agent: await db.prepare("SELECT id, name, username, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty, disabled_at AS disabledAt FROM users WHERE id = ?").get(agentId) });
 });
 
 app.get("/api/admin/sla-settings", requireAuth, requireAdmin, async (_req, res) => {
@@ -1128,7 +1159,7 @@ app.get("/api/admin/email-status", requireAuth, requireAdmin, async (_req, res) 
 
 app.get("/api/admin/agents", requireAuth, requireAdmin, async (_req, res) => {
   const agents = await db.prepare(`
-    SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty,
+    SELECT id, name, username, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty,
            disabled_at AS disabledAt
     FROM users WHERE role = 'agent' ORDER BY disabled_at IS NOT NULL, routing_priority, id
   `).all();
@@ -1143,29 +1174,31 @@ app.get("/api/admin/agents", requireAuth, requireAdmin, async (_req, res) => {
 
 app.post("/api/admin/agents", requireAuth, requireAdmin, async (req, res) => {
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
-  const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
-  const contactNumber = validContactNumber(req.body.contactNumber);
+  const username = normalizeUsername(req.body.username);
+  const email = optionalEmail(req.body.email);
+  const contactNumber = optionalContactNumber(req.body.contactNumber);
   const password = typeof req.body.password === "string" ? req.body.password : "";
   const isAdmin = req.body.isAdmin === true;
   const specialty = req.body.specialty;
   if (name.length < 2 || name.length > 120) return res.status(400).json({ error: "Enter a name between 2 and 120 characters." });
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: "Enter a valid Consultant email address." });
-  if (!contactNumber) return res.status(400).json({ error: "Enter a valid contact number (7 to 15 digits)." });
+  if (!validUsername(username)) return res.status(400).json({ error: "Username must be 3–32 characters and use letters, numbers, dots, underscores, or hyphens." });
+  if (email === false) return res.status(400).json({ error: "Enter a valid email address or leave it blank." });
+  if (contactNumber === false) return res.status(400).json({ error: "Enter a valid contact number or leave it blank." });
   if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Set an initial password between 8 and 128 characters." });
   if (!["functional", "technical", "both"].includes(specialty)) return res.status(400).json({ error: "Choose Functional, Technical, or Both for the Consultant specialty." });
   try {
     const routingPriority = Number((await db.prepare("SELECT COALESCE(MAX(routing_priority), 0) AS priority FROM users WHERE role = 'agent'").get()).priority) + 1;
     const created = await db.prepare(`
-      INSERT INTO users (name, email, contact_number, password_hash, role, is_admin, routing_priority, specialty)
-      VALUES (?, ?, ?, ?, 'agent', ?, ?, ?) RETURNING id, name, email, contact_number AS contactNumber, is_admin AS isAdmin, routing_priority AS routingPriority, specialty
-    `).run(name, email, contactNumber, bcrypt.hashSync(password, 12), Number(isAdmin), routingPriority, specialty);
+      INSERT INTO users (name, username, email, contact_number, password_hash, role, is_admin, routing_priority, specialty)
+      VALUES (?, ?, ?, ?, ?, 'agent', ?, ?, ?) RETURNING id, name, username, email, contact_number AS contactNumber, is_admin AS isAdmin, routing_priority AS routingPriority, specialty
+    `).run(name, username, email, contactNumber, bcrypt.hashSync(password, 12), Number(isAdmin), routingPriority, specialty);
     const agent = await db.prepare(`
-      SELECT id, name, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty, disabled_at AS disabledAt
+      SELECT id, name, username, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty, disabled_at AS disabledAt
       FROM users WHERE id = ?
     `).get(created.lastInsertRowid);
     return res.status(201).json({ agent });
   } catch (error) {
-    if (error.code === "23505") return res.status(409).json({ error: "An account with this email already exists." });
+    if (error.code === "23505") return res.status(409).json({ error: "That username or email address is already in use." });
     throw error;
   }
 });
@@ -1185,7 +1218,7 @@ app.get("/api/admin/companies", requireAuth, requireAdmin, async (_req, res) => 
 
 app.get("/api/admin/client-accounts", requireAuth, requireAdmin, async (_req, res) => {
   const clients = await db.prepare(`
-    SELECT u.id, u.name, u.email, u.contact_number AS contactNumber,
+    SELECT u.id, u.name, u.username, u.email, u.contact_number AS contactNumber,
            COALESCE(json_agg(json_build_object('id', c.id, 'name', c.name)) FILTER (WHERE c.id IS NOT NULL), '[]') AS companies
     FROM users u
     LEFT JOIN company_memberships m ON m.user_id = u.id
@@ -1217,67 +1250,54 @@ app.post("/api/admin/companies/:id/clients", requireAuth, requireAdmin, async (r
 
 app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => {
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
-  const adminEmail = typeof req.body.adminEmail === "string" ? req.body.adminEmail.trim().toLowerCase() : "";
+  const adminName = typeof req.body.adminName === "string" ? req.body.adminName.trim() : "";
+  const adminUsername = normalizeUsername(req.body.adminUsername);
+  const adminEmail = optionalEmail(req.body.adminEmail);
+  const adminPassword = typeof req.body.adminPassword === "string" ? req.body.adminPassword : "";
+  const adminContactNumber = optionalContactNumber(req.body.adminContactNumber);
   const supportValidUntil = req.body.supportValidUntil;
   const domainInput = typeof req.body.domain === "string" ? req.body.domain.trim().toLowerCase().replace(/^@/, "") : "";
   if (name.length < 2 || name.length > 120) return res.status(400).json({ error: "Company name must be between 2 and 120 characters." });
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail) || adminEmail.length > 254) return res.status(400).json({ error: "Enter a valid first company administrator email." });
+  if (adminName.length < 2 || adminName.length > 100) return res.status(400).json({ error: "Enter the first company administrator's name." });
+  if (!validUsername(adminUsername)) return res.status(400).json({ error: "Administrator username must be 3–32 characters and use letters, numbers, dots, underscores, or hyphens." });
+  if (adminEmail === false) return res.status(400).json({ error: "Enter a valid email address or leave it blank." });
+  if (adminPassword.length < 8 || adminPassword.length > 128) return res.status(400).json({ error: "Set an initial password between 8 and 128 characters." });
+  if (adminContactNumber === false) return res.status(400).json({ error: "Enter a valid contact number or leave it blank." });
   if (!validDateOnly(supportValidUntil)) return res.status(400).json({ error: "Enter a valid Support valid until date." });
   if (domainInput && (!/^(?=.{1,253}$)(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(domainInput))) {
     return res.status(400).json({ error: "Enter a valid company email domain, or leave it blank." });
   }
-  if (await db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(adminEmail)) {
-    return res.status(409).json({ error: "An account with this email already exists." });
+  if (await db.prepare("SELECT 1 FROM users WHERE lower(username) = ?").get(adminUsername)) {
+    return res.status(409).json({ error: "That username is already in use." });
   }
+  if (adminEmail && await db.prepare("SELECT 1 FROM users WHERE lower(email) = ?").get(adminEmail)) return res.status(409).json({ error: "An account with this email already exists." });
   const slug = name.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 100);
   if (!slug) return res.status(400).json({ error: "Company name must contain at least one letter or number." });
-  const token = secureToken();
-  const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
   let companyId;
-  let invitationId;
+  let adminUserId;
   try {
     const created = db.transaction(async () => {
       const company = await db.prepare("INSERT INTO companies (name, slug, domain, support_valid_until) VALUES (?, ?, ?, ?)")
         .run(name, slug, domainInput || null, supportValidUntil);
       const companyIdValue = Number(company.lastInsertRowid);
-      const invitation = await db.prepare(`
-        INSERT INTO client_invitations (company_id, email, is_company_admin, token_hash, invited_by, expires_at)
-        VALUES (?, ?, 1, ?, ?, ?)
-      `).run(companyIdValue, adminEmail, hashToken(token), req.user.id, expiresAt);
-      return { companyId: companyIdValue, invitationId: Number(invitation.lastInsertRowid) };
+      const admin = await db.prepare(`
+        INSERT INTO users (name, username, email, contact_number, password_hash, role, company_id, is_company_admin, approval_status)
+        VALUES (?, ?, ?, ?, ?, 'customer', ?, 1, 'approved') RETURNING id
+      `).run(adminName, adminUsername, adminEmail, adminContactNumber, bcrypt.hashSync(adminPassword, 12), companyIdValue);
+      await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin) VALUES (?, ?, 1)")
+        .run(admin.lastInsertRowid, companyIdValue);
+      return { companyId: companyIdValue, adminUserId: Number(admin.lastInsertRowid) };
     });
-    ({ companyId, invitationId } = await created());
+    ({ companyId, adminUserId } = await created());
   } catch (error) {
     if (error.code === "23505") {
-      return res.status(409).json({ error: "A company with that name, address, or email domain already exists." });
+      return res.status(409).json({ error: "That company name, email domain, or administrator username is already in use." });
     }
     throw error;
   }
-  const invitationUrl = applicationUrl(`/client-invite?token=${encodeURIComponent(token)}`);
-  try {
-    if (emailIsConfigured()) {
-      await sendEmail({
-        to: adminEmail,
-        subject: `Join ${name} on Jishnu Infotech Support`,
-        text: `You have been invited to administer ${name}'s client support workspace. Accept within 48 hours:\n${invitationUrl}`,
-      });
-    }
-  } catch (error) {
-    await db.transaction(async () => {
-      await db.prepare("DELETE FROM client_invitations WHERE id = ?").run(invitationId);
-      await db.prepare("DELETE FROM companies WHERE id = ?").run(companyId);
-    })();
-    console.error("Company administrator invitation email delivery failed:", error.message);
-    return res.status(503).json({ error: "Could not send the company administrator invitation. Check SMTP settings and try again." });
-  }
   res.status(201).json({
     company: await db.prepare("SELECT id, name, domain, support_valid_until AS supportValidUntil FROM companies WHERE id = ?").get(companyId),
-    invitation: {
-      email: adminEmail,
-      emailSent: emailIsConfigured(),
-      expiresAt,
-      ...(!emailIsConfigured() ? { invitationUrl } : {}),
-    },
+    administrator: await db.prepare("SELECT id, name, username FROM users WHERE id = ?").get(adminUserId),
   });
 });
 
@@ -1294,32 +1314,37 @@ app.patch("/api/admin/companies/:id/support-valid-until", requireAuth, requireAd
 app.post("/api/company/users", requireAuth, requireCompanyAdmin, async (req, res) => {
   if (req.user.role !== "customer") return res.status(403).json({ error: "Client accounts must be created by a company administrator in the client portal." });
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
-  const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
-  const contactNumber = validContactNumber(req.body.contactNumber);
+  const username = normalizeUsername(req.body.username);
+  const email = optionalEmail(req.body.email);
+  const contactNumber = optionalContactNumber(req.body.contactNumber);
   const password = typeof req.body.password === "string" ? req.body.password : "";
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return res.status(400).json({ error: "Enter a valid client email address." });
-  if (!contactNumber) return res.status(400).json({ error: "Enter a valid contact number (7 to 15 digits)." });
+  if (!validUsername(username)) return res.status(400).json({ error: "Username must be 3–32 characters and use letters, numbers, dots, underscores, or hyphens." });
+  if (email === false) return res.status(400).json({ error: "Enter a valid email address or leave it blank." });
+  if (contactNumber === false) return res.status(400).json({ error: "Enter a valid contact number or leave it blank." });
   if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Password must be between 8 and 128 characters." });
   const company = await db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(req.user.company_id);
   if (!company) return res.status(404).json({ error: "Company not found or inactive." });
-  if (await db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(email)) {
+  if (await db.prepare("SELECT 1 FROM users WHERE lower(username) = ?").get(username)) {
+    return res.status(409).json({ error: "That username is already in use." });
+  }
+  if (email && await db.prepare("SELECT 1 FROM users WHERE lower(email) = ?").get(email)) {
     return res.status(409).json({ error: "An account with this email already exists." });
   }
   try {
     const created = await db.prepare(`
-      INSERT INTO users (name, email, contact_number, password_hash, role, company_id, approval_status)
-      VALUES (?, ?, ?, ?, 'customer', ?, 'approved') RETURNING id
-    `).run(name, email, contactNumber, bcrypt.hashSync(password, 12), company.id);
+      INSERT INTO users (name, username, email, contact_number, password_hash, role, company_id, approval_status)
+      VALUES (?, ?, ?, ?, ?, 'customer', ?, 'approved') RETURNING id
+    `).run(name, username, email, contactNumber, bcrypt.hashSync(password, 12), company.id);
     await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin) VALUES (?, ?, 0)").run(created.lastInsertRowid, company.id);
     const user = await db.prepare(`
-      SELECT id, name, email, contact_number AS contactNumber, is_company_admin AS isCompanyAdmin,
+      SELECT id, name, username, email, contact_number AS contactNumber, is_company_admin AS isCompanyAdmin,
              approval_status AS approvalStatus, disabled_at AS disabledAt, created_at AS createdAt
       FROM users WHERE id = ?
     `).get(created.lastInsertRowid);
     return res.status(201).json({ user, companyName: company.name });
   } catch (error) {
-    if (error.code === "23505") return res.status(409).json({ error: "An account with this email already exists." });
+    if (error.code === "23505") return res.status(409).json({ error: "That username or email address is already in use." });
     throw error;
   }
 });
@@ -1331,7 +1356,7 @@ app.get("/api/company/users", requireAuth, requireCompanyAdmin, async (req, res)
   const company = await db.prepare("SELECT id, name FROM companies WHERE id = ?").get(companyId);
   if (!company) return res.status(404).json({ error: "Company not found." });
   const users = await db.prepare(`
-    SELECT u.id, u.name, u.email, u.contact_number AS contactNumber, m.is_company_admin AS isCompanyAdmin,
+    SELECT u.id, u.name, u.username, u.email, u.contact_number AS contactNumber, m.is_company_admin AS isCompanyAdmin,
            u.approval_status AS approvalStatus, u.disabled_at AS disabledAt, u.created_at AS createdAt
     FROM users u JOIN company_memberships m ON m.user_id = u.id
     WHERE m.company_id = ? AND u.role = 'customer' ORDER BY u.approval_status = 'pending' DESC, u.name
@@ -1424,6 +1449,13 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, async (req
   const updates = [];
   const values = [];
   let membershipChanged = false;
+  if (req.body.password !== undefined) {
+    if (typeof req.body.password !== "string" || req.body.password.length < 8 || req.body.password.length > 128) {
+      return res.status(400).json({ error: "Set a password between 8 and 128 characters." });
+    }
+    updates.push("password_hash = ?");
+    values.push(bcrypt.hashSync(req.body.password, 12));
+  }
   if (req.body.approvalStatus !== undefined) {
     if (!["approved", "rejected"].includes(req.body.approvalStatus)) return res.status(400).json({ error: "Choose approved or rejected enrollment status." });
     updates.push("approval_status = ?");
@@ -1457,7 +1489,7 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, async (req
   await db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND kind = ?")
     .run(req.user.id, `company_join_request:${userId}`);
   const updatedUser = await db.prepare(`
-    SELECT u.id, u.name, u.email, m.is_company_admin AS isCompanyAdmin,
+    SELECT u.id, u.name, u.username, u.email, m.is_company_admin AS isCompanyAdmin,
            u.approval_status AS approvalStatus, u.disabled_at AS disabledAt
     FROM users u JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ? WHERE u.id = ?
   `).get(companyId, userId);
@@ -1756,7 +1788,7 @@ app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
   }
 
   const insertMessage = db.transaction(async () => {
-    const emailMessageId = !isInternal && req.user.role !== "customer" && emailIsConfigured()
+    const emailMessageId = !isInternal && req.user.role !== "customer" && emailIsConfigured() && ticket.customer_email
       ? `<${randomUUID()}@${process.env.SMTP_MESSAGE_ID_DOMAIN || "support.jishnuinfotech.com"}>`
       : null;
     const result = await db.prepare("INSERT INTO messages (ticket_id, author_id, body, is_internal, email_message_id) VALUES (?, ?, ?, ?, ?)")
@@ -1790,7 +1822,7 @@ app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
     FROM messages m JOIN users u ON u.id = m.author_id WHERE m.id = ?
   `).get(id);
   const message = { ...messageRow, isInternal: Boolean(messageRow.isInternal) };
-  res.status(201).json({ message, emailQueued: !isInternal && req.user.role !== "customer" && emailIsConfigured() });
+  res.status(201).json({ message, emailQueued: !isInternal && req.user.role !== "customer" && Boolean(ticket.customer_email) && emailIsConfigured() });
 });
 
 app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
@@ -1965,8 +1997,8 @@ async function pollSupportMailbox() {
               let inboundId = senderUser?.id;
               if (!inboundId) {
                 inboundId = Number((await db.prepare(
-                  "INSERT INTO users (name, email, password_hash, role, company_id, approval_status) VALUES (?, ?, ?, 'customer', ?, 'approved') RETURNING id",
-                ).run(parsed.from.value[0].name?.trim().slice(0, 100) || sender, sender, bcrypt.hashSync(secureToken(), 12), senderCompany.id)).lastInsertRowid);
+                  "INSERT INTO users (name, username, email, password_hash, role, company_id, approval_status) VALUES (?, ?, ?, ?, 'customer', ?, 'approved') RETURNING id",
+                ).run(parsed.from.value[0].name?.trim().slice(0, 100) || sender, usernameFromEmail(sender), sender, bcrypt.hashSync(secureToken(), 12), senderCompany.id)).lastInsertRowid);
                 await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin) VALUES (?, ?, 0) ON CONFLICT DO NOTHING")
                   .run(inboundId, senderCompany.id);
               }
