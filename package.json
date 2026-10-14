@@ -14,6 +14,7 @@
     "test": "node --test",
     "start": "node server/index.js",
     "db:reset-local": "node scripts/reset-local-database.js",
+    "db:reset-production": "node scripts/reset-production-database.js",
     "db:import-sqlite": "node scripts/import-sqlite-to-postgres.js"
   },
   "dependencies": {

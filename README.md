@@ -22,6 +22,8 @@ On an empty database, the app creates only the Super Admin specified by `SEED_CO
 
 To clear a local development database, run `npm run db:reset-local -- --confirm`. The command only accepts a localhost PostgreSQL connection, clears application records and uploaded attachment files, and preserves schema migrations. Configure a Super Admin bootstrap account in `.env` before signing in again.
 
+For a one-time full production wipe, pause the App service, configure the desired Super Admin username/password in the hosting environment, set `CONFIRM_PLATFORM_DATA_RESET=DELETE_ALL_PLATFORM_DATA`, and run `npm run db:reset-production` from the app container console. This deletes all companies, users, tickets, messages, settings, and stored ticket attachments, then creates only the Super Admin account. Remove the confirmation variable and resume the service immediately afterward. This cannot be undone; make a backup first if any existing records might be needed.
+
 ## Production configuration
 
 Set `NODE_ENV=production`, `DATABASE_URL` to your PostgreSQL connection string, a unique random `JWT_SECRET` of at least 32 bytes, and `SEED_CONSULTANT_USERNAME` plus `SEED_CONSULTANT_PASSWORD` before first startup. Email and contact number are optional. Set `APP_BASE_URL` to the public HTTPS URL. The first start of an empty database creates only this Super Admin. Build the frontend with `npm run build`, then run `npm start`; the Node server serves the built UI and API together.
