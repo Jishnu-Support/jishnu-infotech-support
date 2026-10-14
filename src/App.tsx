@@ -40,7 +40,10 @@ type AssignmentEvent = {
   id: number; source: string; createdAt: string; agentId: number | null;
   agentName: string; assignedByName: string | null;
 };
-type Notification = { id: number; ticketId: number; kind: string; message: string; readAt: string | null; createdAt: string };
+type Notification = {
+  id: number; ticketId: number; kind: string; message: string; readAt: string | null; createdAt: string;
+  subject?: string | null; description?: string | null; category?: string | null; priority?: Priority | null; customerName?: string | null;
+};
 type AnalyticsReport = {
   days: number; startDate: string; endDate: string;
   summary: { created: number; activeInPeriod: number; activeBacklog: number; waiting: number };
@@ -236,6 +239,7 @@ function App() {
   const [loginPortal, setLoginPortal] = useState<Role>("customer");
   const [portalMode, setPortalMode] = useState<PortalMode>("login");
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [newConsultantTicketAlerts, setNewConsultantTicketAlerts] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [actionMessage, setActionMessage] = useState("");
   const [refreshingInbox, setRefreshingInbox] = useState(false);
@@ -243,6 +247,7 @@ function App() {
   const [replyInternal, setReplyInternal] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
   const knownTicketIds = useRef<Set<number> | null>(null);
+  const knownNotificationIds = useRef<Set<number> | null>(null);
 
   const refreshTickets = useCallback(async () => {
     const result = await api<{ tickets: Ticket[] }>("/tickets", { cache: "no-store" });
@@ -311,7 +316,14 @@ function App() {
 
   const refreshNotifications = useCallback(async () => {
     if (user?.role !== "agent") return;
-    const result = await api<{ notifications: typeof notifications; unreadCount: number }>("/notifications");
+    const result = await api<{ notifications: typeof notifications; unreadCount: number }>("/notifications", { cache: "no-store" });
+    const knownIds = knownNotificationIds.current;
+    if (knownIds) {
+      const newTicketNotifications = result.notifications.filter((notification) =>
+        notification.kind === "ticket_created" && !knownIds.has(notification.id));
+      if (newTicketNotifications.length) setNewConsultantTicketAlerts((current) => [...current, ...newTicketNotifications]);
+    }
+    knownNotificationIds.current = new Set(result.notifications.map((notification) => notification.id));
     setNotifications(result.notifications);
     setUnreadCount(result.unreadCount);
   }, [user]);
@@ -335,7 +347,7 @@ function App() {
     refreshNotifications().catch((error: Error) => setActionError(error.message));
     const intervalId = window.setInterval(() => {
       refreshNotifications().catch((error: Error) => setActionError(error.message));
-    }, 30000);
+    }, 10000);
     return () => window.clearInterval(intervalId);
   }, [refreshNotifications, user]);
 
@@ -423,6 +435,7 @@ function App() {
         throw new Error(`This account is for the ${result.user.role === "agent" ? "Consultant" : "client"} portal. Choose the matching portal and try again.`);
       }
       setUser(result.user);
+      knownNotificationIds.current = null;
       const companies = result.companies || [];
       setAvailableCompanies(companies);
       setActiveView("inbox");
@@ -479,7 +492,9 @@ function App() {
     setShowCompanySelection(false);
     setActiveView("inbox");
     knownTicketIds.current = null;
+    knownNotificationIds.current = null;
     setNewTicketAlert(null);
+    setNewConsultantTicketAlerts([]);
     setTickets([]);
     setSelectedId(null);
     setDetail(null);
@@ -934,6 +949,21 @@ function App() {
           setActiveView("inbox");
           setFilter("all");
           setNewTicketAlert(null);
+        }}
+      />}
+      {newConsultantTicketAlerts[0] && user.role === "agent" && <ConsultantNewTicketPopup
+        notification={newConsultantTicketAlerts[0]}
+        onDismiss={() => setNewConsultantTicketAlerts((current) => current.slice(1))}
+        onOpen={async () => {
+          const alert = newConsultantTicketAlerts[0];
+          if (!alert) return;
+          if (!alert.readAt) {
+            await api("/notifications/read", { method: "POST", body: JSON.stringify({ id: alert.id }) });
+            await refreshNotifications();
+          }
+          setSelectedId(alert.ticketId);
+          setActiveView("inbox");
+          setNewConsultantTicketAlerts((current) => current.slice(1));
         }}
       />}
     </div>
@@ -1543,6 +1573,26 @@ function NotificationCenter({ notifications, onOpen }: {
         </button>)}
     </div>
   </section>;
+}
+
+function ConsultantNewTicketPopup({ notification, onDismiss, onOpen }: {
+  notification: Notification; onDismiss: () => void; onOpen: () => void;
+}) {
+  return <div className="modal-scrim feedback-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onDismiss(); }}>
+    <section className="create-modal feedback-modal new-ticket-modal" role="dialog" aria-modal="true" aria-labelledby="consultant-new-ticket-title">
+      <div className="modal-heading">
+        <div><div className="eyebrow">NEW TICKET · #{String(notification.ticketId).padStart(4, "0")}</div><h2 id="consultant-new-ticket-title">A ticket has been assigned to you</h2></div>
+        <button type="button" className="icon-button" onClick={onDismiss} aria-label="Close ticket notice"><X size={18} /></button>
+      </div>
+      <div className="new-ticket-summary">
+        <strong>{notification.subject || notification.message}</strong>
+        {notification.customerName && <span>From {notification.customerName}{notification.category ? ` · ${notification.category}` : ""}{notification.priority ? ` · ${notification.priority} priority` : ""}</span>}
+        {notification.description && <p>{notification.description}</p>}
+        <span>Only you received this assignment alert.</span>
+      </div>
+      <div className="modal-footer"><button type="button" className="button button-quiet" onClick={onDismiss}>Later</button><button type="button" className="button button-primary" onClick={onOpen}>View ticket <ArrowRight size={14} /></button></div>
+    </section>
+  </div>;
 }
 
 function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {

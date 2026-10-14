@@ -1466,8 +1466,12 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, async (req
 
 app.get("/api/notifications", requireAuth, requireAgent, async (req, res) => {
   const notifications = await db.prepare(`
-    SELECT id, ticket_id AS ticketId, kind, message, read_at AS readAt, created_at AS createdAt
-    FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50
+    SELECT n.id, n.ticket_id AS ticketId, n.kind, n.message, n.read_at AS readAt, n.created_at AS createdAt,
+           t.subject, t.description, t.category, t.priority, customer.name AS customerName
+    FROM notifications n
+    LEFT JOIN tickets t ON t.id = n.ticket_id
+    LEFT JOIN users customer ON customer.id = t.customer_id
+    WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 50
   `).all(req.user.id);
   res.json({ notifications, unreadCount: notifications.filter((notification) => !notification.readAt).length });
 });
@@ -1708,6 +1712,14 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
       const ticketId = Number(result.lastInsertRowid);
       await db.prepare("INSERT INTO messages (ticket_id, author_id, body) VALUES (?, ?, ?)").run(ticketId, req.user.id, description);
       await recordTicketAssignment(ticketId, agent?.id, req.user.id, assignmentSource);
+      if (req.user.role === "customer" && agent?.id) {
+        const customer = await db.prepare("SELECT name FROM users WHERE id = ?").get(customerId);
+        await db.prepare(`
+          INSERT INTO notifications (user_id, ticket_id, kind, message)
+          VALUES (?, ?, 'ticket_created', ?)
+          ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
+        `).run(agent.id, ticketId, `New ticket from ${customer?.name || "a customer"}: ${priority} priority · ${metadata.category} · ${subject}`);
+      }
       const insertAttachment = db.prepare(`
         INSERT INTO ticket_attachments (ticket_id, uploaded_by, storage_name, original_name, mime_type, size_bytes)
         VALUES (?, ?, ?, ?, ?, ?)
