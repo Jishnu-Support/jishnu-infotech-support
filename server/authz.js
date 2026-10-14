@@ -4,11 +4,8 @@ export function ticketAccessFilter(user, ticketId) {
   if (user.role === "agent") {
     return { sql: "id = ?", params: [ticketId] };
   }
-  if (user.role === "customer" && user.is_company_admin && user.company_id) {
-    return { sql: "id = ? AND company_id = ?", params: [ticketId, user.company_id] };
-  }
   if (user.role === "customer" && user.company_id) {
-    return { sql: "id = ? AND customer_id = ? AND company_id = ?", params: [ticketId, user.id, user.company_id] };
+    return { sql: "id = ? AND company_id = ?", params: [ticketId, user.company_id] };
   }
   return { sql: "FALSE", params: [] };
 }

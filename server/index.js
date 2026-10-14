@@ -698,9 +698,9 @@ app.get("/api/tickets", requireAuth, async (req, res) => {
         CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'waiting' THEN 2 ELSE 3 END,
         CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
         t.updated_at DESC`).all()
-    : req.user.is_company_admin
+    : req.user.company_id
       ? await db.prepare(`${ticketSelect} WHERE t.company_id = ? ORDER BY t.updated_at DESC`).all(req.user.company_id)
-      : await db.prepare(`${ticketSelect} WHERE t.customer_id = ? AND t.company_id = ? ORDER BY t.updated_at DESC`).all(req.user.id, req.user.company_id);
+      : await db.prepare(`${ticketSelect} WHERE t.customer_id = ? ORDER BY t.updated_at DESC`).all(req.user.id);
   res.json({ tickets: await Promise.all(rows.map(ticketSummary)) });
 });
 
@@ -1739,6 +1739,9 @@ app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
     FROM tickets t LEFT JOIN users c ON c.id = t.customer_id WHERE t.id = ?
   `).get(ticketId);
   if (!ticket) return res.status(404).json({ error: "Ticket not found." });
+  if (req.user.role === "customer" && ticket.customer_id !== req.user.id && !req.user.is_company_admin) {
+    return res.status(403).json({ error: "Only the ticket creator or a company administrator can reply to this ticket." });
+  }
 
   const insertMessage = db.transaction(async () => {
     const emailMessageId = !isInternal && req.user.role !== "customer" && emailIsConfigured()

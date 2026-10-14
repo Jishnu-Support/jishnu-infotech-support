@@ -600,7 +600,7 @@ function App() {
   const canChangeAssignment = Boolean(selectedTicket && (
     isAgent && (isSuperAdmin || selectedTicket.assignee?.id === user.id)
   ));
-  const heading = isAgent ? "Support inbox" : "My requests";
+  const heading = isAgent ? "Support inbox" : "Company inbox";
   async function openNewTicketForm() {
     if (!isAgent) {
       try {
@@ -631,8 +631,8 @@ function App() {
         </div>
         <div className="workspace-label">WORKSPACE</div>
         <nav className="primary-nav" aria-label="Main navigation">
-          <button aria-label={isAgent ? "Inbox" : "My requests"} title={isAgent ? "Inbox" : "My requests"} className={`nav-item ${activeView === "inbox" ? "active" : ""}`} onClick={() => { setActiveView("inbox"); setFilter("all"); }}>
-            <Inbox size={17} /><span>{isAgent ? "Inbox" : "My requests"}</span><span className="nav-count">{isAgent ? counts.open : counts.all}</span>
+          <button aria-label={isAgent ? "Inbox" : "Company inbox"} title={isAgent ? "Inbox" : "Company inbox"} className={`nav-item ${activeView === "inbox" ? "active" : ""}`} onClick={() => { setActiveView("inbox"); setFilter("all"); }}>
+            <Inbox size={17} /><span>{isAgent ? "Inbox" : "Company inbox"}</span><span className="nav-count">{isAgent ? counts.open : counts.all}</span>
           </button>
           {isAgent && <>
             <button aria-label="Assigned to me" title="Assigned to me" className={`nav-item ${activeView === "assigned" ? "active" : ""}`} onClick={() => { setActiveView("assigned"); setFilter("all"); }}>
@@ -692,7 +692,7 @@ function App() {
                 <div>
                   <div className="eyebrow"><span className="eyebrow-live" />{isAgent ? "YOUR TEAM, IN SYNC" : "WE'RE HERE TO HELP"}</div>
                   <h1>{activeView === "assigned" ? "Assigned to me" : heading}</h1>
-                  <p>{isAgent ? "Stay on top of every customer conversation." : "Track your support conversations in one place."}</p>
+                  <p>{isAgent ? "Stay on top of every customer conversation." : "See support tickets opened by you and your teammates."}</p>
                 </div>
                 <button className="button button-primary" onClick={openNewTicketForm}><Plus size={16} /> New ticket</button>
               </div>
@@ -805,7 +805,7 @@ function App() {
                   })}
                 </div>
                 </div>
-                <div className="reply-wrap">
+                {isAgent || isCompanyAdmin || selectedTicket.customer.id === user.id ? <div className="reply-wrap">
                   {actionError && <div className="inline-error">{actionError}<button onClick={() => setActionError("")}><X size={13} /></button></div>}
                   {actionMessage && <div className="inline-success">{actionMessage}<button onClick={() => setActionMessage("")}><X size={13} /></button></div>}
                   {isAgent && <div className="reply-mode-toggle" role="group" aria-label="Reply type">
@@ -816,7 +816,7 @@ function App() {
                     <textarea name="reply" placeholder={isAgent ? (replyInternal ? "Write an internal note for the support team…" : "Write a reply to the customer…") : "Reply to this conversation…"} maxLength={5000} required />
                     <div className="composer-footer"><span>{replyInternal ? <><ShieldCheck size={14} /> Only Consultants can see this note</> : <><Sparkles size={14} /> Replies are visible to the customer</>}</span><button className="button button-primary send-button" type="submit">{replyInternal ? "Add note" : "Send reply"} <Send size={14} /></button></div>
                   </form>
-                </div>
+                </div> : <div className="internal-note-notice"><ShieldCheck size={13} /><span>You can view this company ticket. Only its creator or a company administrator can reply.</span></div>}
               </section>
             ) : (
               <section className="detail-placeholder"><div className="placeholder-art"><MessageCircle size={30} /></div><strong>Select a ticket</strong><span>Choose a conversation to see the full story.</span></section>

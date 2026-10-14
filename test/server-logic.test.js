@@ -17,10 +17,10 @@ test("company administrators are scoped to their company", () => {
   });
 });
 
-test("regular customers are scoped to their own tickets and company", () => {
+test("regular customers can view tickets across their company", () => {
   assert.deepEqual(ticketAccessFilter({ role: "customer", id: 7, company_id: 12, is_company_admin: 0 }, 42), {
-    sql: "id = ? AND customer_id = ? AND company_id = ?",
-    params: [42, 7, 12],
+    sql: "id = ? AND company_id = ?",
+    params: [42, 12],
   });
 });
 
