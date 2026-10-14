@@ -454,7 +454,7 @@ function App() {
     try {
       const result = await api<{ user: User; companies?: CompanyMembership[] }>("/auth/login", {
         method: "POST",
-        body: JSON.stringify({ username: form.get("username"), password: form.get("password") }),
+        body: JSON.stringify({ username: form.get("username"), password: form.get("password"), portal, companyId: form.get("companyId") }),
       });
       if (result.user.role !== portal) {
         await api("/auth/logout", { method: "POST" });
@@ -1806,6 +1806,18 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
   onSubmit: (event: FormEvent<HTMLFormElement>, portal: Role) => void;
   onRegister: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+  const [companies, setCompanies] = useState<Array<{ id: number; name: string }>>([]);
+  const [companyLoadError, setCompanyLoadError] = useState("");
+
+  useEffect(() => {
+    if (portal !== "customer") return;
+    let active = true;
+    api<{ companies: Array<{ id: number; name: string }> }>("/companies/available")
+      .then((result) => { if (active) { setCompanies(result.companies); setCompanyLoadError(""); } })
+      .catch((reason: Error) => { if (active) setCompanyLoadError(reason.message); });
+    return () => { active = false; };
+  }, [portal]);
+
   return <main className="login-screen">
     <div className="login-decoration decoration-one" /><div className="login-decoration decoration-two" />
     <div className="login-card">
@@ -1821,12 +1833,13 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
       </div>}
       {notice && <div className="inline-success" role="status">{notice}</div>}
       <form className="login-form" onSubmit={mode === "register" && portal === "customer" ? onRegister : (event) => onSubmit(event, portal)}>
+        {mode === "login" && portal === "customer" && <label>Company<select name="companyId" required defaultValue=""><option value="" disabled>Select your company</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select>{companyLoadError && <span className="form-hint">{companyLoadError}</span>}</label>}
         {mode === "register" && portal === "customer" && <>
           <label>Your name<input name="name" autoComplete="name" minLength={2} maxLength={100} placeholder="Full name" required /></label>
           <label>Company invitation code<input name="joinCode" autoComplete="off" placeholder="Enter a code from your company admin" required /><span className="form-hint">Your invitation code identifies your company and activates your account.</span></label>
           <label>Mobile number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
         </>}
-        <label>Username<input name="username" autoComplete="username" minLength={mode === "register" ? 3 : undefined} maxLength={32} pattern={mode === "register" ? "[A-Za-z0-9][A-Za-z0-9._-]{2,31}" : undefined} placeholder={mode === "register" ? "Choose a username" : "Enter your username"} required /></label>
+        <label>Username<input name="username" autoComplete="username" autoCapitalize="none" spellCheck={false} minLength={mode === "register" ? 3 : undefined} maxLength={32} pattern={mode === "register" ? "[A-Za-z0-9][A-Za-z0-9._-]{2,31}" : undefined} placeholder={mode === "register" ? "Choose a username" : "Enter your username"} required /></label>
         {mode === "register" && portal === "customer" && <label>Email address (optional)<input name="email" type="email" autoComplete="email" placeholder="you@company.com" /></label>}
         <label>Password<div className="password-field"><input name="password" type="password" autoComplete={mode === "register" ? "new-password" : "current-password"} minLength={mode === "register" ? 8 : undefined} maxLength={128} placeholder={mode === "register" ? "At least 8 characters" : "Enter your password"} required /></div></label>
         {error && <div className="inline-error">{error}</div>}

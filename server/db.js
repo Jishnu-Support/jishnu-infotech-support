@@ -337,6 +337,12 @@ const schemaMigrations = [
     DROP INDEX IF EXISTS users_username_lower_idx;
     CREATE UNIQUE INDEX IF NOT EXISTS users_username_idx ON users (username);
   `) },
+  { version: 10, apply: () => db.exec(`
+    DROP INDEX IF EXISTS users_username_idx;
+    CREATE UNIQUE INDEX IF NOT EXISTS users_agent_username_idx ON users (username) WHERE role = 'agent';
+    CREATE UNIQUE INDEX IF NOT EXISTS users_customer_company_username_idx ON users (company_id, username)
+      WHERE role = 'customer' AND company_id IS NOT NULL;
+  `) },
 ];
 
 async function seedDatabase() {

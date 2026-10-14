@@ -144,6 +144,19 @@ function optionalContactNumber(value) {
   return validContactNumber(value) || false;
 }
 
+async function clientUsernameExistsInCompany(username, companyId, excludeUserId = null) {
+  const excludeSelf = excludeUserId === null ? "" : " AND u.id <> ?";
+  const params = [username, companyId, companyId];
+  if (excludeUserId !== null) params.push(excludeUserId);
+  return Boolean(await db.prepare(`
+    SELECT 1 FROM users u
+    LEFT JOIN company_memberships m ON m.user_id = u.id
+    WHERE u.role = 'customer' AND u.username = ?
+      AND (u.company_id = ? OR m.company_id = ?)${excludeSelf}
+    LIMIT 1
+  `).get(...params));
+}
+
 function validDateOnly(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const date = new Date(`${value}T00:00:00.000Z`);
@@ -352,15 +365,31 @@ app.get("/api/health", async (_req, res) => {
 app.post("/api/auth/login", authLimiter, async (req, res) => {
   const username = normalizeUsername(req.body.username);
   const password = typeof req.body.password === "string" ? req.body.password : "";
+  const portal = req.body.portal;
+  const companyId = Number(req.body.companyId);
   if (!username || !password) return res.status(400).json({ error: "Enter your username and password." });
+  if (portal !== "agent" && portal !== "customer") return res.status(400).json({ error: "Choose the correct portal." });
 
-  const user = await db.prepare(`
-    SELECT u.*, c.name AS company_name, c.support_valid_until AS company_support_valid_until,
-           COALESCE(m.is_company_admin, u.is_company_admin) AS current_company_admin
-    FROM users u LEFT JOIN companies c ON c.id = u.company_id
-    LEFT JOIN company_memberships m ON m.user_id = u.id AND m.company_id = u.company_id
-    WHERE u.username = ? AND u.disabled_at IS NULL
-  `).get(username);
+  let user;
+  if (portal === "customer") {
+    if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose your company to sign in." });
+    user = await db.prepare(`
+      SELECT u.*, c.name AS company_name, c.support_valid_until AS company_support_valid_until,
+             m.is_company_admin AS current_company_admin
+      FROM users u
+      JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ?
+      JOIN companies c ON c.id = m.company_id AND c.is_active = 1
+      WHERE u.username = ? AND u.role = 'customer' AND u.disabled_at IS NULL
+    `).get(companyId, username);
+    if (user) user.company_id = companyId;
+  } else {
+    user = await db.prepare(`
+      SELECT u.*, NULL AS company_name, NULL AS company_support_valid_until,
+             0 AS current_company_admin
+      FROM users u
+      WHERE u.username = ? AND u.role = 'agent' AND u.disabled_at IS NULL
+    `).get(username);
+  }
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: "Username or password is incorrect." });
   }
@@ -418,6 +447,10 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
     if (!company) return res.status(400).json({ error: "Choose an available client company." });
   } else {
     return res.status(400).json({ error: "Choose a company or enter a company invitation code." });
+  }
+
+  if (await clientUsernameExistsInCompany(username, company.id)) {
+    return res.status(409).json({ error: "That username is already in use in this company." });
   }
 
   try {
@@ -1239,6 +1272,9 @@ app.post("/api/admin/companies/:id/clients", requireAuth, requireAdmin, async (r
   if (!company) return res.status(404).json({ error: "Company not found or inactive." });
   const client = await db.prepare("SELECT id, name FROM users WHERE id = ? AND role = 'customer' AND approval_status = 'approved' AND disabled_at IS NULL").get(userId);
   if (!client) return res.status(404).json({ error: "Active client account not found." });
+  if (await clientUsernameExistsInCompany(client.username, companyId, userId)) {
+    return res.status(409).json({ error: "A client with this username already exists in that company." });
+  }
   try {
     await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin) VALUES (?, ?, 0)").run(userId, companyId);
   } catch (error) {
@@ -1266,9 +1302,6 @@ app.post("/api/admin/companies", requireAuth, requireAdmin, async (req, res) => 
   if (!validDateOnly(supportValidUntil)) return res.status(400).json({ error: "Enter a valid Support valid until date." });
   if (domainInput && (!/^(?=.{1,253}$)(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(domainInput))) {
     return res.status(400).json({ error: "Enter a valid company email domain, or leave it blank." });
-  }
-  if (await db.prepare("SELECT 1 FROM users WHERE username = ?").get(adminUsername)) {
-    return res.status(409).json({ error: "That username is already in use." });
   }
   if (adminEmail && await db.prepare("SELECT 1 FROM users WHERE lower(email) = ?").get(adminEmail)) return res.status(409).json({ error: "An account with this email already exists." });
   const slug = name.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 100);
@@ -1325,8 +1358,8 @@ app.post("/api/company/users", requireAuth, requireCompanyAdmin, async (req, res
   if (password.length < 8 || password.length > 128) return res.status(400).json({ error: "Password must be between 8 and 128 characters." });
   const company = await db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(req.user.company_id);
   if (!company) return res.status(404).json({ error: "Company not found or inactive." });
-  if (await db.prepare("SELECT 1 FROM users WHERE username = ?").get(username)) {
-    return res.status(409).json({ error: "That username is already in use." });
+  if (await clientUsernameExistsInCompany(username, company.id)) {
+    return res.status(409).json({ error: "That username is already in use in this company." });
   }
   if (email && await db.prepare("SELECT 1 FROM users WHERE lower(email) = ?").get(email)) {
     return res.status(409).json({ error: "An account with this email already exists." });
