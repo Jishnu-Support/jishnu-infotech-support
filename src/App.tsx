@@ -377,7 +377,9 @@ function App() {
     const matchCompany = !consultantInbox || companyFilter === "all" || ticket.company?.id === Number(companyFilter);
     const query = search.trim().toLowerCase();
     const matchSearch = !query || `${ticket.subject} ${ticket.customer.name} ${ticket.lastMessage}`.toLowerCase().includes(query);
-    const matchView = activeView !== "assigned" || ticket.assignee?.id === user?.id;
+    const matchView = activeView !== "assigned" || (user?.role === "agent"
+      ? ticket.assignee?.id === user.id
+      : ticket.customer.id === user?.id);
     return matchStatus && matchPriority && matchCompany && matchSearch && matchView;
   }), [activeView, companyFilter, filter, priorityFilter, search, tickets, user]);
 
@@ -388,6 +390,11 @@ function App() {
     waiting: tickets.filter((ticket) => ticket.status === "waiting").length,
     resolved: tickets.filter((ticket) => ticket.status === "resolved").length,
   }), [tickets]);
+
+  const myTicketCount = useMemo(
+    () => tickets.filter((ticket) => ticket.customer.id === user?.id).length,
+    [tickets, user?.id],
+  );
 
   const inboxCounts = useMemo(() => {
     const scopedTickets = user?.role === "agent" && activeView === "inbox" && companyFilter !== "all"
@@ -600,7 +607,7 @@ function App() {
   const canChangeAssignment = Boolean(selectedTicket && (
     isAgent && (isSuperAdmin || selectedTicket.assignee?.id === user.id)
   ));
-  const heading = isAgent ? "Support inbox" : "Company inbox";
+  const heading = isAgent ? "Support inbox" : activeView === "assigned" ? "My tickets" : "Company inbox";
   async function openNewTicketForm() {
     if (!isAgent) {
       try {
@@ -648,6 +655,9 @@ function App() {
               <BookOpen size={17} /><span>Knowledge Base</span>
             </button>
           </>}
+          {!isAgent && <button aria-label="My tickets" title="My tickets" className={`nav-item ${activeView === "assigned" ? "active" : ""}`} onClick={() => { setActiveView("assigned"); setFilter("all"); }}>
+            <UserRound size={17} /><span>My tickets</span><span className="nav-count">{myTicketCount}</span>
+          </button>}
           {isCompanyAdmin && <button aria-label="Company users" title="Company users" className={`nav-item ${activeView === "company-users" ? "active" : ""}`} onClick={() => setActiveView("company-users")}>
             <Users size={17} /><span>Company users</span>
           </button>}
@@ -691,8 +701,8 @@ function App() {
               <div className="page-heading">
                 <div>
                   <div className="eyebrow"><span className="eyebrow-live" />{isAgent ? "YOUR TEAM, IN SYNC" : "WE'RE HERE TO HELP"}</div>
-                  <h1>{activeView === "assigned" ? "Assigned to me" : heading}</h1>
-                  <p>{isAgent ? "Stay on top of every customer conversation." : "See support tickets opened by you and your teammates."}</p>
+                  <h1>{activeView === "assigned" && isAgent ? "Assigned to me" : heading}</h1>
+                  <p>{isAgent ? "Stay on top of every customer conversation." : activeView === "assigned" ? "Track the support tickets you opened." : "See support tickets opened by you and your teammates."}</p>
                 </div>
                 <button className="button button-primary" onClick={openNewTicketForm}><Plus size={16} /> New ticket</button>
               </div>
@@ -709,7 +719,7 @@ function App() {
                   {(["all", "open", "in_progress", "waiting", "resolved"] as const).map((value) => (
                     <button key={value} className={filter === value ? "selected" : ""} onClick={() => setFilter(value)}>
                       {value === "all" ? "All tickets" : value === "in_progress" ? "In progress" : value === "resolved" ? "Closed" : value[0].toUpperCase() + value.slice(1)}
-                      {value === "all" && <span className="filter-count">{activeView === "assigned" ? counts.in_progress : inboxCounts.all}</span>}
+                      {value === "all" && <span className="filter-count">{activeView === "assigned" ? (isAgent ? counts.in_progress : myTicketCount) : inboxCounts.all}</span>}
                     </button>
                   ))}
                 </div>
@@ -740,7 +750,7 @@ function App() {
                   </button>
                 ))}
               </div>
-              <div className="list-footer"><span>Showing <strong>{filteredTickets.length}</strong> of {activeView === "inbox" && user.role === "agent" ? inboxCounts.all : tickets.length} tickets</span><span className="footer-refresh-wrap">{inboxRefreshError && <span className="footer-refresh-error" role="alert">{inboxRefreshError}</span>}<button type="button" className="footer-refresh" onClick={refreshInboxNow} disabled={refreshingInbox} aria-live="polite"><RefreshCw size={13} className={refreshingInbox ? "refresh-spinning" : ""} />{refreshingInbox ? "Refreshing…" : "Refresh"}</button></span></div>
+              <div className="list-footer"><span>Showing <strong>{filteredTickets.length}</strong> of {activeView === "assigned" && !isAgent ? myTicketCount : activeView === "inbox" && isAgent ? inboxCounts.all : tickets.length} tickets</span><span className="footer-refresh-wrap">{inboxRefreshError && <span className="footer-refresh-error" role="alert">{inboxRefreshError}</span>}<button type="button" className="footer-refresh" onClick={refreshInboxNow} disabled={refreshingInbox} aria-live="polite"><RefreshCw size={13} className={refreshingInbox ? "refresh-spinning" : ""} />{refreshingInbox ? "Refreshing…" : "Refresh"}</button></span></div>
             </section>
 
             {selectedTicket ? (
