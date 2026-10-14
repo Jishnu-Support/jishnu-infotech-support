@@ -367,34 +367,47 @@ async function seedDatabase() {
 }
 
 async function recoverSuperAdminFromEnvironment() {
-  if (process.env.RECOVER_SUPER_ADMIN?.trim().toLowerCase() !== "true") return;
-
+  const explicitlyRequested = process.env.RECOVER_SUPER_ADMIN?.trim().toLowerCase() === "true";
+  if (process.env.RECOVER_SUPER_ADMIN?.trim().toLowerCase() === "false") return;
   const email = process.env.SEED_CONSULTANT_EMAIL?.trim();
   const username = process.env.SEED_CONSULTANT_USERNAME?.trim().toLowerCase();
   const password = process.env.SEED_CONSULTANT_PASSWORD;
   const contactNumber = process.env.SEED_CONSULTANT_CONTACT_NUMBER?.trim() || null;
+  const automaticSync = Boolean(username && password);
+  if (!explicitlyRequested && !automaticSync) return;
   if ((!email && !username) || !password) {
-    throw new Error("Super Admin recovery requires SEED_CONSULTANT_USERNAME or SEED_CONSULTANT_EMAIL, plus SEED_CONSULTANT_PASSWORD.");
-  }
-  if (password.length < 8) throw new Error("The Super Admin recovery password must be at least 8 characters.");
-
-  const completed = await db.prepare("SELECT value FROM workspace_settings WHERE key = ?").get("super_admin_recovery_completed");
-  if (completed) {
-    console.warn("Super Admin recovery has already run once. Remove RECOVER_SUPER_ADMIN from the app environment.");
+    if (explicitlyRequested) throw new Error("Super Admin recovery requires SEED_CONSULTANT_USERNAME or SEED_CONSULTANT_EMAIL, plus SEED_CONSULTANT_PASSWORD.");
     return;
   }
+  if (password.length < 8) throw new Error("The Super Admin recovery password must be at least 8 characters.");
+  if (username && !/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) {
+    throw new Error("SEED_CONSULTANT_USERNAME must be 3 to 32 letters, numbers, dots, underscores, or hyphens.");
+  }
+
+  const markerKey = explicitlyRequested ? "super_admin_recovery_completed" : "super_admin_seed_sync_completed";
+  const completed = await db.prepare("SELECT value FROM workspace_settings WHERE key = ?").get(markerKey);
+  if (completed) {
+    console.log("Super Admin environment login sync has already completed; no account changes made.");
+    return;
+  }
+  const userCount = Number((await db.prepare("SELECT COUNT(*) AS count FROM users").get()).count);
+  if (userCount === 0 && !explicitlyRequested) return;
 
   const target = await db.prepare("SELECT id, role, is_admin, disabled_at FROM users WHERE (? IS NOT NULL AND lower(username) = ?) OR (? IS NOT NULL AND lower(email) = lower(?))").get(username || null, username || null, email || null, email || null);
   let adminId = null;
   if (target) {
     if (target.role !== "agent" || !target.is_admin || target.disabled_at) {
-      throw new Error("The configured recovery login belongs to an account that is not an active Super Admin.");
+      if (explicitlyRequested) throw new Error("The configured recovery login belongs to an account that is not an active Super Admin.");
+      console.warn("Super Admin environment login sync skipped because the configured username/email belongs to another account.");
+      return;
     }
     adminId = target.id;
   } else {
     const admins = await db.prepare("SELECT id FROM users WHERE role = 'agent' AND is_admin = 1 AND disabled_at IS NULL ORDER BY id").all();
     if (admins.length !== 1) {
-      throw new Error(`Super Admin recovery needs exactly one active Super Admin to update; found ${admins.length}.`);
+      if (explicitlyRequested) throw new Error(`Super Admin recovery needs exactly one active Super Admin to update; found ${admins.length}.`);
+      console.warn(`Super Admin environment login sync skipped; expected one active Super Admin, found ${admins.length}.`);
+      return;
     }
     adminId = admins[0].id;
   }
@@ -403,9 +416,9 @@ async function recoverSuperAdminFromEnvironment() {
     await db.prepare("UPDATE users SET username = COALESCE(?, username), email = COALESCE(?, email), contact_number = COALESCE(?, contact_number), password_hash = ? WHERE id = ?")
       .run(username || null, email || null, contactNumber, bcrypt.hashSync(password, 12), adminId);
     await db.prepare("INSERT INTO workspace_settings (key, value) VALUES (?, ?)")
-      .run("super_admin_recovery_completed", new Date().toISOString());
+      .run(markerKey, new Date().toISOString());
   })();
-  console.log("Super Admin recovery completed. Remove RECOVER_SUPER_ADMIN from the app environment.");
+  console.log(`Super Admin environment login synchronized for username: ${username || "unchanged"}.`);
 }
 
 export async function initializeSchema() {
