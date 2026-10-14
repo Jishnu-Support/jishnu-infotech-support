@@ -388,7 +388,7 @@ async function recoverSuperAdminFromEnvironment() {
     return;
   }
 
-  const markerKey = explicitlyRequested ? "super_admin_recovery_completed" : "super_admin_seed_sync_completed";
+  const markerKey = automaticSync ? "super_admin_seed_sync_completed" : "super_admin_recovery_completed";
   const completed = await db.prepare("SELECT value FROM workspace_settings WHERE key = ?").get(markerKey);
   if (completed) {
     console.log("Super Admin environment login sync has already completed; no account changes made.");
