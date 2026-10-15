@@ -1685,7 +1685,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
         <button className="button button-primary" type="submit" disabled={companyDetailsDraft.name.trim().length < 2}>Save company details</button>
       </form>}
       {!workspaceAdmin && <div className="client-access-method">
-        <h3>Create a client login</h3>
+        <h3>Create a Customer login</h3>
         <p className="settings-hint">Create an active login and share the username and initial password securely.</p>
         <form className="manual-client-form" onSubmit={createCompanyUser}>
           <label>Full name<input name="name" autoComplete="name" minLength={2} maxLength={100} required /></label>
@@ -1693,7 +1693,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
           <label>Email address (optional)<input name="email" type="email" autoComplete="email" maxLength={254} /></label>
           <label>Mobile number<input name="contactNumber" type="tel" autoComplete="tel" maxLength={25} placeholder="+91 98765 43210" required /></label>
           <label>Initial password<input name="password" type="password" autoComplete="new-password" minLength={8} maxLength={128} required /></label>
-          <button className="button button-primary" type="submit"><Plus size={15} /> Add client</button>
+          <button className="button button-primary" type="submit"><Plus size={15} /> Add customer</button>
         </form>
       </div>}
       {workspaceAdmin && <div className="client-access-method multi-company-link">
@@ -2053,14 +2053,14 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
     <div className="login-decoration decoration-one" /><div className="login-decoration decoration-two" />
     <div className="login-card">
       <div className="login-brand"><CompanyLogo className="company-logo-login" /></div>
-      <div className="login-intro"><div className="eyebrow"><span className="eyebrow-live" />JISHNU INFOTECH SUPPORT</div><h1>{portal === "customer" ? <>Client support,<br />made straightforward.</> : <>Your support team,<br />in one workspace.</>}</h1><p>{portal === "customer" ? "Open a service request, follow its progress, and continue the conversation with our team." : "Review the shared queue, respond to client requests, and keep every ticket moving."}</p></div>
+      <div className="login-intro"><div className="eyebrow"><span className="eyebrow-live" />JISHNU INFOTECH SUPPORT</div><h1>{portal === "customer" ? "Customer Support Platform" : <>Your support team,<br />in one workspace.</>}</h1><p>{portal === "customer" ? "Open a service request, follow its progress, and continue the conversation with our team." : "Review the shared queue, respond to customer requests, and keep every ticket moving."}</p></div>
       <div className="portal-tabs" role="tablist" aria-label="Choose your portal">
-        <button type="button" className={portal === "customer" ? "selected" : ""} role="tab" aria-selected={portal === "customer"} onClick={() => onPortalChange("customer")}><Users size={14} /> Client portal</button>
+        <button type="button" className={portal === "customer" ? "selected" : ""} role="tab" aria-selected={portal === "customer"} onClick={() => onPortalChange("customer")}><Users size={14} /> Customer portal</button>
         <button type="button" className={portal === "agent" ? "selected" : ""} role="tab" aria-selected={portal === "agent"} onClick={() => onPortalChange("agent")}><Inbox size={14} /> Consultant portal</button>
       </div>
       {portal === "customer" && <div className="auth-mode-tabs">
         <button type="button" className={mode === "login" ? "selected" : ""} onClick={() => onModeChange("login")}>Sign in</button>
-        <button type="button" className={mode === "register" ? "selected" : ""} onClick={() => onModeChange("register")}>Create client account</button>
+        <button type="button" className={mode === "register" ? "selected" : ""} onClick={() => onModeChange("register")}>Create customer account</button>
       </div>}
       {notice && <div className="inline-success" role="status">{notice}</div>}
       <form className="login-form" onSubmit={mode === "register" && portal === "customer" ? onRegister : (event) => onSubmit(event, portal)}>
