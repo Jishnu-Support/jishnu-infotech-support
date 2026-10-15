@@ -1081,18 +1081,44 @@ app.get("/api/customers", requireAuth, requireAgent, async (_req, res) => {
 });
 
 async function userManualList(user) {
-  const visibility = user.role === "agent" && user.is_admin ? "" : "WHERE is_published = 1";
+  const isSuperAdmin = user.role === "agent" && user.is_admin;
+  const visibility = isSuperAdmin ? "" : `WHERE m.is_published = 1 AND (
+    m.audience_type = 'all'
+    OR (m.audience_type = 'user' AND m.audience_user_id = ?)
+    OR (m.audience_type = 'company' AND ? = 'customer' AND EXISTS (
+      SELECT 1 FROM company_memberships cm WHERE cm.user_id = ? AND cm.company_id = m.audience_company_id
+    ))
+  )`;
   return db.prepare(`
-    SELECT id, title, summary, content, media_kind AS mediaKind,
-           original_name AS mediaName, mime_type AS mediaMimeType, size_bytes AS mediaSizeBytes,
-           is_published AS isPublished, created_at AS createdAt, updated_at AS updatedAt
-    FROM user_manuals ${visibility}
-    ORDER BY updated_at DESC, id DESC
-  `).all();
+    SELECT m.id, m.title, m.summary, m.content, m.media_kind AS mediaKind,
+           m.original_name AS mediaName, m.mime_type AS mediaMimeType, m.size_bytes AS mediaSizeBytes,
+           m.is_published AS isPublished, m.audience_type AS audienceType,
+           m.audience_company_id AS audienceCompanyId, c.name AS audienceCompanyName,
+           m.audience_user_id AS audienceUserId, u.name AS audienceUserName,
+           m.created_at AS createdAt, m.updated_at AS updatedAt
+    FROM user_manuals m
+    LEFT JOIN companies c ON c.id = m.audience_company_id
+    LEFT JOIN users u ON u.id = m.audience_user_id
+    ${visibility}
+    ORDER BY m.updated_at DESC, m.id DESC
+  `).all(...(isSuperAdmin ? [] : [user.id, user.role, user.id]));
 }
 
 app.get("/api/user-manuals", requireAuth, async (req, res) => {
   res.json({ manuals: await userManualList(req.user) });
+});
+
+app.get("/api/user-manual-audience", requireAuth, requireAdmin, async (_req, res) => {
+  const [companies, users] = await Promise.all([
+    db.prepare("SELECT id, name FROM companies WHERE is_active = 1 ORDER BY name, id").all(),
+    db.prepare(`
+      SELECT id, name, username, role FROM users
+      WHERE disabled_at IS NULL AND approval_status = 'approved'
+        AND (role = 'customer' OR (role = 'agent' AND is_admin = 0))
+      ORDER BY role, name, id
+    `).all(),
+  ]);
+  res.json({ companies, users });
 });
 
 async function saveUserManual(req, res, manualId = null) {
@@ -1105,10 +1131,27 @@ async function saveUserManual(req, res, manualId = null) {
   const summary = typeof req.body.summary === "string" ? req.body.summary.trim() : "";
   const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
   const isPublished = req.body.isPublished !== "false" && req.body.isPublished !== false;
+  const audienceType = typeof req.body.audienceType === "string" ? req.body.audienceType : "all";
+  const audienceCompanyId = audienceType === "company" ? Number(req.body.audienceCompanyId) : null;
+  const audienceUserId = audienceType === "user" ? Number(req.body.audienceUserId) : null;
   const removeMedia = req.body.removeMedia === "true" || req.body.removeMedia === true;
   if (title.length < 3 || title.length > 160) return reject(400, "Title must be between 3 and 160 characters.");
   if (summary.length > 500) return reject(400, "Summary cannot exceed 500 characters.");
   if (content.length > 20000) return reject(400, "Guide content cannot exceed 20,000 characters.");
+  if (!["all", "company", "user"].includes(audienceType)) return reject(400, "Choose a valid guide audience.");
+  if (audienceType === "company" && (!Number.isInteger(audienceCompanyId) || audienceCompanyId < 1)) return reject(400, "Choose a company for this guide.");
+  if (audienceType === "user" && (!Number.isInteger(audienceUserId) || audienceUserId < 1)) return reject(400, "Choose a user for this guide.");
+  if (audienceType === "company") {
+    const company = await db.prepare("SELECT id FROM companies WHERE id = ? AND is_active = 1").get(audienceCompanyId);
+    if (!company) return reject(400, "The selected company is unavailable.");
+  }
+  if (audienceType === "user") {
+    const user = await db.prepare(`
+      SELECT id FROM users WHERE id = ? AND disabled_at IS NULL AND approval_status = 'approved'
+        AND (role = 'customer' OR (role = 'agent' AND is_admin = 0))
+    `).get(audienceUserId);
+    if (!user) return reject(400, "The selected user is unavailable.");
+  }
 
   const existing = manualId === null ? null : await db.prepare(`
     SELECT id, storage_name AS storageName, media_kind AS mediaKind, original_name AS mediaName,
@@ -1145,16 +1188,20 @@ async function saveUserManual(req, res, manualId = null) {
     if (manualId === null) {
       const created = await db.prepare(`
         INSERT INTO user_manuals
-          (title, summary, content, media_kind, storage_name, original_name, mime_type, size_bytes, is_published, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
-      `).run(title, summary, content, mediaKind, storageName, mediaName, mediaMimeType, mediaSizeBytes, isPublished ? 1 : 0, req.user.id);
+          (title, summary, content, media_kind, storage_name, original_name, mime_type, size_bytes,
+           is_published, created_by, audience_type, audience_company_id, audience_user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+      `).run(title, summary, content, mediaKind, storageName, mediaName, mediaMimeType, mediaSizeBytes,
+        isPublished ? 1 : 0, req.user.id, audienceType, audienceCompanyId, audienceUserId);
       savedId = Number(created.lastInsertRowid);
     } else {
       await db.prepare(`
         UPDATE user_manuals SET title = ?, summary = ?, content = ?, media_kind = ?, storage_name = ?,
-          original_name = ?, mime_type = ?, size_bytes = ?, is_published = ?, updated_at = CURRENT_TIMESTAMP
+          original_name = ?, mime_type = ?, size_bytes = ?, is_published = ?, audience_type = ?,
+          audience_company_id = ?, audience_user_id = ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `).run(title, summary, content, mediaKind, storageName, mediaName, mediaMimeType, mediaSizeBytes, isPublished ? 1 : 0, manualId);
+      `).run(title, summary, content, mediaKind, storageName, mediaName, mediaMimeType, mediaSizeBytes,
+        isPublished ? 1 : 0, audienceType, audienceCompanyId, audienceUserId, manualId);
       savedId = manualId;
     }
     if (existing?.storageName && (file || removeMedia)) {
@@ -1191,11 +1238,18 @@ app.delete("/api/user-manuals/:id", requireAuth, requireAdmin, async (req, res) 
 app.get("/api/user-manuals/:id/media", requireAuth, async (req, res) => {
   const manualId = Number(req.params.id);
   if (!Number.isInteger(manualId) || manualId < 1) return res.status(400).json({ error: "Choose a valid user manual." });
-  const visibility = req.user.role === "agent" && req.user.is_admin ? "" : "AND is_published = 1";
+  const isSuperAdmin = req.user.role === "agent" && req.user.is_admin;
+  const visibility = isSuperAdmin ? "" : `AND is_published = 1 AND (
+    audience_type = 'all'
+    OR (audience_type = 'user' AND audience_user_id = ?)
+    OR (audience_type = 'company' AND ? = 'customer' AND EXISTS (
+      SELECT 1 FROM company_memberships cm WHERE cm.user_id = ? AND cm.company_id = user_manuals.audience_company_id
+    ))
+  )`;
   const manual = await db.prepare(`
     SELECT storage_name AS storageName, original_name AS mediaName, mime_type AS mediaMimeType
     FROM user_manuals WHERE id = ? ${visibility}
-  `).get(manualId);
+  `).get(...(isSuperAdmin ? [manualId] : [manualId, req.user.id, req.user.role, req.user.id]));
   if (!manual?.storageName) return res.status(404).json({ error: "Published manual media not found." });
   res.type(manual.mediaMimeType);
   res.setHeader("Content-Disposition", "inline");

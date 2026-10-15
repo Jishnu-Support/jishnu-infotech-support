@@ -411,6 +411,14 @@ const schemaMigrations = [
     );
     CREATE INDEX IF NOT EXISTS user_manuals_published_idx ON user_manuals(is_published, updated_at DESC);
   `) },
+  { version: 15, apply: () => db.exec(`
+    ALTER TABLE user_manuals ADD COLUMN IF NOT EXISTS audience_type TEXT NOT NULL DEFAULT 'all'
+      CHECK (audience_type IN ('all', 'company', 'user'));
+    ALTER TABLE user_manuals ADD COLUMN IF NOT EXISTS audience_company_id BIGINT REFERENCES companies(id) ON DELETE CASCADE;
+    ALTER TABLE user_manuals ADD COLUMN IF NOT EXISTS audience_user_id BIGINT REFERENCES users(id) ON DELETE CASCADE;
+    CREATE INDEX IF NOT EXISTS user_manuals_audience_company_idx ON user_manuals(audience_company_id, is_published);
+    CREATE INDEX IF NOT EXISTS user_manuals_audience_user_idx ON user_manuals(audience_user_id, is_published);
+  `) },
 ];
 
 async function seedDatabase() {
