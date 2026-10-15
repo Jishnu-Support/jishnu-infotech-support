@@ -64,8 +64,10 @@ type AnalyticsReport = {
 type ReportTicket = { id: number; subject: string; status: Status; priority: Priority; updatedAt: string; companyId: number | null; customerId: number | null; consultantId: number | null; companyName: string | null; customerName: string; consultantName: string | null };
 type ReportTicketDirectory = { companies: Array<{ id: number; name: string }>; customers: Array<{ id: number; name: string; email: string | null; companyName: string | null }>; consultants: Array<{ id: number; name: string }> };
 type KnowledgeBaseTicket = { id: number; issue: string; description: string; reportedAt: string; solution: string; closedAt: string; solutionType: string; clientName: string; consultantName: string };
-type InformationPost = { id: number; consultantId: number; consultantName: string; consultantMobile: string | null; information: string; allClients: boolean | number; postedAt: string; updatedAt: string; recipientIds?: number[] };
+type InformationAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string };
+type InformationPost = { id: number; consultantId: number; consultantName: string; consultantMobile: string | null; information: string; allClients: boolean | number; postedAt: string; updatedAt: string; recipientIds?: number[]; attachments?: InformationAttachment[] };
 type InformationClient = { id: number; name: string; username: string; contactNumber: string | null; companyNames: string | null };
+type InformationNotification = { id: number; informationId: number; createdAt: string; postedAt: string; consultantName: string; consultantMobile: string | null; information: string; attachments: InformationAttachment[] };
 type PortalMode = "login" | "register";
 type ApiError = { error?: string };
 type AuthFlow = "portal" | "invite" | "client-invite" | "reset";
@@ -267,6 +269,7 @@ function App() {
   const [portalMode, setPortalMode] = useState<PortalMode>("login");
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [newConsultantTicketAlerts, setNewConsultantTicketAlerts] = useState<Notification[]>([]);
+  const [informationAlerts, setInformationAlerts] = useState<InformationNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [actionMessage, setActionMessage] = useState("");
   const [refreshingInbox, setRefreshingInbox] = useState(false);
@@ -377,6 +380,25 @@ function App() {
     }, 10000);
     return () => window.clearInterval(intervalId);
   }, [refreshNotifications, user]);
+
+  useEffect(() => {
+    if (user?.role !== "customer") { setInformationAlerts([]); return; }
+    let active = true;
+    const refreshInformationAlerts = () => {
+      api<{ notifications: InformationNotification[] }>("/information-center/notifications", { cache: "no-store" })
+        .then(({ notifications: incoming }) => {
+          if (!active) return;
+          setInformationAlerts((current) => {
+            const existingIds = new Set(current.map((notification) => notification.id));
+            return [...current, ...incoming.filter((notification) => !existingIds.has(notification.id))];
+          });
+        })
+        .catch(() => {});
+    };
+    refreshInformationAlerts();
+    const intervalId = window.setInterval(refreshInformationAlerts, 10000);
+    return () => { active = false; window.clearInterval(intervalId); };
+  }, [user]);
 
   useEffect(() => {
     if (!user) { setAgents([]); return; }
@@ -1007,6 +1029,26 @@ function App() {
           setSelectedId(alert.ticketId);
           setActiveView("inbox");
           setNewConsultantTicketAlerts((current) => current.slice(1));
+        }}
+      />}
+      {informationAlerts[0] && user.role === "customer" && !showCreate && !renewalPopup && feedbackTicketId === null && !newTicketAlert && <InformationUpdatePopup
+        notification={informationAlerts[0]}
+        onDismiss={async () => {
+          const notification = informationAlerts[0];
+          if (!notification) return;
+          try {
+            await api("/information-center/notifications/read", { method: "POST", body: JSON.stringify({ id: notification.id }) });
+            setInformationAlerts((current) => current.filter((item) => item.id !== notification.id));
+          } catch (error) { setActionError(error instanceof Error ? error.message : "Could not dismiss this information notice."); }
+        }}
+        onOpen={async () => {
+          const notification = informationAlerts[0];
+          if (!notification) return;
+          try {
+            await api("/information-center/notifications/read", { method: "POST", body: JSON.stringify({ id: notification.id }) });
+            setInformationAlerts((current) => current.filter((item) => item.id !== notification.id));
+            setActiveView("information");
+          } catch (error) { setActionError(error instanceof Error ? error.message : "Could not open this information notice."); }
         }}
       />}
     </div>
@@ -1735,6 +1777,30 @@ function ConsultantNewTicketPopup({ notification, onDismiss, onOpen }: {
   </div>;
 }
 
+function InformationUpdatePopup({ notification, onDismiss, onOpen }: {
+  notification: InformationNotification;
+  onDismiss: () => void;
+  onOpen: () => void;
+}) {
+  const normalizedDate = notification.postedAt.includes("T") ? notification.postedAt : notification.postedAt.replace(" ", "T");
+  const date = new Date(normalizedDate.endsWith("Z") ? normalizedDate : `${normalizedDate}Z`);
+  const postedDate = Number.isNaN(date.getTime()) ? notification.postedAt : new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit", month: "short", year: "numeric",
+  }).format(date);
+  return <div className="modal-scrim feedback-scrim information-alert-scrim" role="presentation">
+    <section className="create-modal feedback-modal information-alert-modal" role="dialog" aria-modal="true" aria-labelledby="information-alert-title">
+      <div className="modal-heading">
+        <div><div className="eyebrow">NEW INFORMATION Â· {postedDate}</div><h2 id="information-alert-title">An update from your Consultant</h2></div>
+        <button type="button" className="icon-button" onClick={onDismiss} aria-label="Dismiss information notice"><X size={18} /></button>
+      </div>
+      <div className="information-alert-author"><strong>{notification.consultantName}</strong><span>Consultant Â· {notification.consultantMobile || "Mobile number unavailable"}</span></div>
+      <p className="information-alert-copy">{notification.information}</p>
+      {notification.attachments.length > 0 && <div className="information-alert-files" aria-label="Information attachments">{notification.attachments.map((attachment) => <a key={attachment.id} href={`/api/information-center/${notification.informationId}/attachments/${attachment.id}`} target="_blank" rel="noreferrer"><Paperclip size={13} /><span>{attachment.name}</span><small>{formatBytes(attachment.sizeBytes)}</small></a>)}</div>}
+      <div className="modal-footer"><button type="button" className="button button-quiet" onClick={onDismiss}>Dismiss</button><button type="button" className="button button-primary" onClick={onOpen}>Open Information Center <ArrowRight size={14} /></button></div>
+    </section>
+  </div>;
+}
+
 function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
   const [agents, setAgents] = useState<Array<{ id: number; name: string; username: string; email: string | null; contactNumber: string | null; isAdmin: boolean; routingPriority: number; specialty: ConsultantSpecialty; disabledAt: string | null }>>([]);
   const [sla, setSla] = useState({ firstResponseHours: 4, resolutionHours: 48 });
@@ -2020,6 +2086,7 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState("");
   const [information, setInformation] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
   const [allClients, setAllClients] = useState(true);
   const [clientIds, setClientIds] = useState<number[]>([]);
   const [clientSearch, setClientSearch] = useState("");
@@ -2050,6 +2117,7 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
   function startNewPost() {
     setEditingId(null);
     setInformation("");
+    setFiles([]);
     setAllClients(true);
     setClientIds([]);
     setClientSearch("");
@@ -2061,6 +2129,7 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
   function startEditing(post: InformationPost) {
     setEditingId(post.id);
     setInformation(post.information);
+    setFiles([]);
     setAllClients(Boolean(post.allClients));
     setClientIds(post.recipientIds || []);
     setClientSearch("");
@@ -2075,11 +2144,17 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
     setError("");
     setMessage("");
     try {
+      const body = new FormData();
+      body.append("information", information);
+      body.append("allClients", allClients ? "true" : "false");
+      body.append("clientIds", JSON.stringify(allClients ? [] : clientIds));
+      files.forEach((file) => body.append("attachments", file));
       await api(`/information-center${editingId ? `/${editingId}` : ""}`, {
         method: editingId ? "PATCH" : "POST",
-        body: JSON.stringify({ information, allClients, clientIds: allClients ? [] : clientIds }),
+        body,
       });
       setShowEditor(false);
+      setFiles([]);
       setMessage(editingId ? "Information updated." : "Information posted to the selected audience.");
       setRefreshKey((key) => key + 1);
     } catch (reason) {
@@ -2107,6 +2182,8 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
       <div className="settings-card-heading"><div><h2>{editingId ? "Edit information" : "Post information"}</h2><p>Choose whether this update is shared with everyone or selected clients.</p></div><Megaphone size={18} /></div>
       <form onSubmit={savePost}>
         <label className="information-body-label">Information<textarea value={information} onChange={(event) => setInformation(event.target.value)} minLength={5} maxLength={10000} rows={5} required placeholder="Write the information you want to share…" /></label>
+        <label className="information-body-label">Attachments<input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" onChange={(event) => setFiles(Array.from(event.target.files || []))} /><small>Up to 5 PDF or image files per post, 10 MB each.</small></label>
+        {files.length > 0 && <div className="information-pending-files">{files.map((file) => <span key={`${file.name}-${file.size}`}>{file.name} Â· {formatBytes(file.size)}</span>)}</div>}
         <fieldset className="information-audience"><legend>Audience</legend>
           <label><input type="radio" name="information-audience" checked={allClients} onChange={() => setAllClients(true)} /> All clients</label>
           <label><input type="radio" name="information-audience" checked={!allClients} onChange={() => setAllClients(false)} /> Specific clients</label>
@@ -2130,6 +2207,7 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
         return <article className="information-card" key={post.id}>
           <div className="information-card-top"><span className="information-posted-date">Posted {dateLabel(post.postedAt)}</span>{canEdit && <button className="button button-quiet" type="button" onClick={() => startEditing(post)}><Pencil size={13} /> Edit</button>}</div>
           <p className="information-copy">{post.information}</p>
+          {(post.attachments || []).length > 0 && <div className="information-card-files" aria-label="Information attachments">{post.attachments?.map((attachment) => <a key={attachment.id} href={`/api/information-center/${post.id}/attachments/${attachment.id}`} target="_blank" rel="noreferrer"><Paperclip size={13} /><span>{attachment.name}</span><small>{formatBytes(attachment.sizeBytes)}</small></a>)}</div>}
           <div className="information-card-footer"><span><strong>{post.consultantName}</strong><small>Consultant</small></span><span><strong>{post.consultantMobile || "Not provided"}</strong><small>Mobile number</small></span>{isConsultant && <span><strong>{audience}</strong><small>Audience</small></span>}</div>
         </article>;
       })}</div>}

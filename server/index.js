@@ -1069,6 +1069,23 @@ async function informationCenterPayload(user, search) {
     ORDER BY p.created_at DESC, p.id DESC
     LIMIT 500
   `).all(...params);
+  for (const post of posts) post.attachments = [];
+  if (posts.length) {
+    const attachments = await db.prepare(`
+      SELECT id, information_id AS informationId, original_name AS name,
+             mime_type AS mimeType, size_bytes AS sizeBytes, created_at AS createdAt
+      FROM information_post_attachments
+      WHERE information_id IN (${posts.map(() => "?").join(",")})
+      ORDER BY id
+    `).all(...posts.map((post) => post.id));
+    const attachmentsByPost = new Map();
+    for (const attachment of attachments) {
+      const list = attachmentsByPost.get(attachment.informationId) || [];
+      list.push(attachment);
+      attachmentsByPost.set(attachment.informationId, list);
+    }
+    for (const post of posts) post.attachments = attachmentsByPost.get(post.id) || [];
+  }
   if (user.role === "agent" && posts.length) {
     const recipients = await db.prepare(`
       SELECT information_id AS informationId, client_id AS clientId
@@ -1105,16 +1122,44 @@ app.get("/api/information-center", requireAuth, async (req, res) => {
 });
 
 async function saveInformationPost(req, res, postId = null) {
+  const files = req.files || [];
+  const reject = (status, error) => {
+    discardUploadedFiles(files);
+    return res.status(status).json({ error });
+  };
   const information = typeof req.body.information === "string" ? req.body.information.trim() : "";
-  const allClients = req.body.allClients === true;
-  const clientIds = Array.isArray(req.body.clientIds)
-    ? [...new Set(req.body.clientIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))]
+  const allClients = req.body.allClients === true || req.body.allClients === "true";
+  let rawClientIds = req.body.clientIds;
+  if (typeof rawClientIds === "string") {
+    try { rawClientIds = JSON.parse(rawClientIds); } catch { return reject(400, "The selected client list is invalid."); }
+  }
+  const clientIds = Array.isArray(rawClientIds)
+    ? [...new Set(rawClientIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))]
     : [];
   if (information.length < 5 || information.length > 10000) {
-    return res.status(400).json({ error: "Information must be between 5 and 10,000 characters." });
+    return reject(400, "Information must be between 5 and 10,000 characters.");
   }
   if (!allClients && clientIds.length === 0) {
-    return res.status(400).json({ error: "Select at least one client or choose all clients." });
+    return reject(400, "Select at least one client or choose all clients.");
+  }
+  const verifiedFiles = [];
+  try {
+    for (const file of files) {
+      const detected = await fileTypeFromFile(file.path);
+      const requiredExtension = permittedAttachmentTypes.get(detected?.mime);
+      if (!detected || !requiredExtension || file.mimetype !== detected.mime) {
+        throw new Error(`The attachment "${file.originalname}" is not a valid PDF or image file.`);
+      }
+      const displayName = basename(file.originalname)
+        .replace(/[\u0000-\u001f\u007f]/g, "")
+        .replace(/[<>:"/\\|?*]/g, "_")
+        .replace(/[. ]+$/, "")
+        .slice(0, 150);
+      const baseName = displayName.replace(/\.[^.]*$/, "").trim() || "attachment";
+      verifiedFiles.push({ ...file, originalName: `${baseName}${requiredExtension}`, mimeType: detected.mime });
+    }
+  } catch (error) {
+    return reject(400, error.message);
   }
   if (clientIds.length) {
     const found = Number((await db.prepare(`
@@ -1122,48 +1167,133 @@ async function saveInformationPost(req, res, postId = null) {
       WHERE role = 'customer' AND approval_status = 'approved' AND disabled_at IS NULL
         AND id IN (${clientIds.map(() => "?").join(",")})
     `).get(...clientIds)).count);
-    if (found !== clientIds.length) return res.status(400).json({ error: "One or more selected clients are no longer active." });
+    if (found !== clientIds.length) return reject(400, "One or more selected clients are no longer active.");
   }
 
   if (postId !== null) {
     const existing = await db.prepare("SELECT id, consultant_id AS consultantId FROM information_posts WHERE id = ?").get(postId);
-    if (!existing) return res.status(404).json({ error: "Information post not found." });
+    if (!existing) return reject(404, "Information post not found.");
     if (Number(existing.consultantId) !== Number(req.user.id) && !req.user.is_admin) {
-      return res.status(403).json({ error: "Only the posting Consultant or Super Admin can edit this information." });
+      return reject(403, "Only the posting Consultant or Super Admin can edit this information.");
     }
   }
 
-  const id = await db.transaction(async () => {
-    let savedId = postId;
-    if (postId === null) {
-      const inserted = await db.prepare(`
-        INSERT INTO information_posts (consultant_id, consultant_name, consultant_mobile, information, all_clients)
-        VALUES (?, ?, ?, ?, ?) RETURNING id
-      `).run(req.user.id, req.user.name, req.user.contact_number || null, information, allClients ? 1 : 0);
-      savedId = Number(inserted.lastInsertRowid);
-    } else {
-      await db.prepare(`
-        UPDATE information_posts SET information = ?, all_clients = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `).run(information, allClients ? 1 : 0, postId);
-      await db.prepare("DELETE FROM information_post_recipients WHERE information_id = ?").run(postId);
-    }
-    if (!allClients && clientIds.length) {
-      const insertRecipient = db.prepare("INSERT INTO information_post_recipients (information_id, client_id) VALUES (?, ?)");
-      for (const clientId of clientIds) await insertRecipient.run(savedId, clientId);
-    }
-    return savedId;
-  })();
+  let id;
+  try {
+    id = await db.transaction(async () => {
+      let savedId = postId;
+      if (postId === null) {
+        const inserted = await db.prepare(`
+          INSERT INTO information_posts (consultant_id, consultant_name, consultant_mobile, information, all_clients)
+          VALUES (?, ?, ?, ?, ?) RETURNING id
+        `).run(req.user.id, req.user.name, req.user.contact_number || null, information, allClients ? 1 : 0);
+        savedId = Number(inserted.lastInsertRowid);
+      } else {
+        await db.prepare(`
+          UPDATE information_posts SET information = ?, all_clients = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(information, allClients ? 1 : 0, postId);
+        await db.prepare("DELETE FROM information_post_recipients WHERE information_id = ?").run(postId);
+      }
+      if (!allClients && clientIds.length) {
+        const insertRecipient = db.prepare("INSERT INTO information_post_recipients (information_id, client_id) VALUES (?, ?)");
+        for (const clientId of clientIds) await insertRecipient.run(savedId, clientId);
+      }
+      const insertAttachment = db.prepare(`
+        INSERT INTO information_post_attachments (information_id, uploaded_by, storage_name, original_name, mime_type, size_bytes)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      for (const file of verifiedFiles) {
+        await insertAttachment.run(savedId, req.user.id, file.filename, file.originalName, file.mimeType, file.size);
+      }
+      await db.prepare("DELETE FROM information_post_notifications WHERE information_id = ?").run(savedId);
+      const notifiedClients = allClients
+        ? await db.prepare("SELECT id FROM users WHERE role = 'customer' AND approval_status = 'approved' AND disabled_at IS NULL AND id <> ?").all(req.user.id)
+        : clientIds.filter((clientId) => Number(clientId) !== Number(req.user.id)).map((userId) => ({ id: userId }));
+      const addNotification = db.prepare("INSERT INTO information_post_notifications (information_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING");
+      for (const client of notifiedClients) await addNotification.run(savedId, client.id);
+      return savedId;
+    })();
+  } catch (error) {
+    discardUploadedFiles(files);
+    throw error;
+  }
   const result = await informationCenterPayload(req.user, "");
   const post = result.posts.find((item) => Number(item.id) === Number(id));
   res.status(postId === null ? 201 : 200).json({ post });
 }
 
-app.post("/api/information-center", requireAuth, requireAgent, async (req, res) => saveInformationPost(req, res));
-app.patch("/api/information-center/:id", requireAuth, requireAgent, async (req, res) => {
+app.post("/api/information-center", requireAuth, requireAgent, receiveAttachments, async (req, res) => saveInformationPost(req, res));
+app.patch("/api/information-center/:id", requireAuth, requireAgent, receiveAttachments, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Choose a valid information post." });
   return saveInformationPost(req, res, id);
+});
+
+app.get("/api/information-center/notifications", requireAuth, async (req, res) => {
+  if (req.user.role !== "customer") return res.json({ notifications: [] });
+  const notifications = await db.prepare(`
+    SELECT n.id, n.information_id AS informationId, n.created_at AS createdAt,
+           p.consultant_name AS consultantName, p.consultant_mobile AS consultantMobile,
+           p.information, p.created_at AS postedAt
+    FROM information_post_notifications n
+    JOIN information_posts p ON p.id = n.information_id
+    WHERE n.user_id = ? AND n.read_at IS NULL
+      AND (p.all_clients = 1 OR EXISTS (
+        SELECT 1 FROM information_post_recipients r WHERE r.information_id = p.id AND r.client_id = n.user_id
+      ))
+    ORDER BY n.created_at DESC, n.id DESC LIMIT 20
+  `).all(req.user.id);
+  if (notifications.length) {
+    const attachments = await db.prepare(`
+      SELECT id, information_id AS informationId, original_name AS name, mime_type AS mimeType,
+             size_bytes AS sizeBytes, created_at AS createdAt
+      FROM information_post_attachments
+      WHERE information_id IN (${notifications.map(() => "?").join(",")}) ORDER BY id
+    `).all(...notifications.map((item) => item.informationId));
+    const attachmentsByPost = new Map();
+    for (const attachment of attachments) {
+      const list = attachmentsByPost.get(attachment.informationId) || [];
+      list.push(attachment);
+      attachmentsByPost.set(attachment.informationId, list);
+    }
+    for (const notification of notifications) notification.attachments = attachmentsByPost.get(notification.informationId) || [];
+  }
+  res.json({ notifications });
+});
+
+app.post("/api/information-center/notifications/read", requireAuth, async (req, res) => {
+  const id = Number(req.body.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid information notification id." });
+  await db.prepare("UPDATE information_post_notifications SET read_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")
+    .run(id, req.user.id);
+  res.status(204).end();
+});
+
+app.get("/api/information-center/:id/attachments/:attachmentId", requireAuth, async (req, res) => {
+  const informationId = Number(req.params.id);
+  const attachmentId = Number(req.params.attachmentId);
+  if (!Number.isInteger(informationId) || !Number.isInteger(attachmentId) || informationId < 1 || attachmentId < 1) {
+    return res.status(400).json({ error: "Invalid information or attachment id." });
+  }
+  if (req.user.role === "customer") {
+    const visible = await db.prepare(`
+      SELECT p.id FROM information_posts p
+      WHERE p.id = ? AND (p.all_clients = 1 OR EXISTS (
+        SELECT 1 FROM information_post_recipients r WHERE r.information_id = p.id AND r.client_id = ?
+      ))
+    `).get(informationId, req.user.id);
+    if (!visible) return res.status(404).json({ error: "Attachment not found." });
+  }
+  const attachment = await db.prepare(`
+    SELECT storage_name, original_name, mime_type FROM information_post_attachments
+    WHERE id = ? AND information_id = ?
+  `).get(attachmentId, informationId);
+  if (!attachment) return res.status(404).json({ error: "Attachment not found." });
+  res.type(attachment.mime_type);
+  res.download(resolve(attachmentsRoot, attachment.storage_name), attachment.original_name, (error) => {
+    if (error && !res.headersSent) res.status(error.code === "ENOENT" ? 404 : 500).json({ error: "Could not retrieve this attachment." });
+  });
 });
 
 app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
@@ -2056,7 +2186,7 @@ function receiveAttachments(req, res, next) {
       ? error.code === "LIMIT_FILE_SIZE"
         ? "Each attachment must be 10 MB or smaller."
         : error.code === "LIMIT_FILE_COUNT"
-          ? "Attach up to 5 files to a ticket."
+          ? "Attach up to 5 files."
           : error.message
       : error.message;
     res.status(400).json({ error: message });
