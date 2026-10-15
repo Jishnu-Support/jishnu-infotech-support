@@ -1048,6 +1048,124 @@ app.get("/api/customers", requireAuth, requireAgent, async (_req, res) => {
   res.json({ customers });
 });
 
+async function informationCenterPayload(user, search) {
+  const params = [];
+  let visibility = "";
+  if (user.role === "customer") {
+    visibility = `AND (p.all_clients = 1 OR EXISTS (
+      SELECT 1 FROM information_post_recipients r WHERE r.information_id = p.id AND r.client_id = ?
+    ))`;
+    params.push(user.id);
+  }
+  const searchClause = search ? "AND (p.information ILIKE ? OR p.consultant_name ILIKE ? OR COALESCE(p.consultant_mobile, '') ILIKE ?)" : "";
+  if (search) params.push(...Array(3).fill(`%${search}%`));
+  const where = `WHERE 1 = 1 ${visibility} ${searchClause}`;
+  const total = Number((await db.prepare(`SELECT COUNT(*) AS count FROM information_posts p ${where}`).get(...params)).count);
+  const posts = await db.prepare(`
+    SELECT p.id, p.consultant_id AS consultantId, p.consultant_name AS consultantName,
+           p.consultant_mobile AS consultantMobile, p.information, p.all_clients AS allClients,
+           p.created_at AS postedAt, p.updated_at AS updatedAt
+    FROM information_posts p ${where}
+    ORDER BY p.created_at DESC, p.id DESC
+    LIMIT 500
+  `).all(...params);
+  if (user.role === "agent" && posts.length) {
+    const recipients = await db.prepare(`
+      SELECT information_id AS informationId, client_id AS clientId
+      FROM information_post_recipients
+      WHERE information_id IN (${posts.map(() => "?").join(",")})
+      ORDER BY client_id
+    `).all(...posts.map((post) => post.id));
+    const recipientsByPost = new Map();
+    for (const recipient of recipients) {
+      const list = recipientsByPost.get(recipient.informationId) || [];
+      list.push(recipient.clientId);
+      recipientsByPost.set(recipient.informationId, list);
+    }
+    for (const post of posts) post.recipientIds = recipientsByPost.get(post.id) || [];
+  }
+  return { posts, total };
+}
+
+app.get("/api/information-center", requireAuth, async (req, res) => {
+  const search = typeof req.query.search === "string" ? req.query.search.trim().slice(0, 120) : "";
+  const result = await informationCenterPayload(req.user, search);
+  if (req.user.role !== "agent") return res.json(result);
+  const clients = await db.prepare(`
+    SELECT u.id, u.name, u.username, u.contact_number AS contactNumber,
+           string_agg(DISTINCT c.name, ', ' ORDER BY c.name) AS companyNames
+    FROM users u
+    LEFT JOIN company_memberships m ON m.user_id = u.id
+    LEFT JOIN companies c ON c.id = m.company_id
+    WHERE u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL
+    GROUP BY u.id
+    ORDER BY u.name, u.id
+  `).all();
+  res.json({ ...result, clients });
+});
+
+async function saveInformationPost(req, res, postId = null) {
+  const information = typeof req.body.information === "string" ? req.body.information.trim() : "";
+  const allClients = req.body.allClients === true;
+  const clientIds = Array.isArray(req.body.clientIds)
+    ? [...new Set(req.body.clientIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))]
+    : [];
+  if (information.length < 5 || information.length > 10000) {
+    return res.status(400).json({ error: "Information must be between 5 and 10,000 characters." });
+  }
+  if (!allClients && clientIds.length === 0) {
+    return res.status(400).json({ error: "Select at least one client or choose all clients." });
+  }
+  if (clientIds.length) {
+    const found = Number((await db.prepare(`
+      SELECT COUNT(*) AS count FROM users
+      WHERE role = 'customer' AND approval_status = 'approved' AND disabled_at IS NULL
+        AND id IN (${clientIds.map(() => "?").join(",")})
+    `).get(...clientIds)).count);
+    if (found !== clientIds.length) return res.status(400).json({ error: "One or more selected clients are no longer active." });
+  }
+
+  if (postId !== null) {
+    const existing = await db.prepare("SELECT id, consultant_id AS consultantId FROM information_posts WHERE id = ?").get(postId);
+    if (!existing) return res.status(404).json({ error: "Information post not found." });
+    if (Number(existing.consultantId) !== Number(req.user.id) && !req.user.is_admin) {
+      return res.status(403).json({ error: "Only the posting Consultant or Super Admin can edit this information." });
+    }
+  }
+
+  const id = await db.transaction(async () => {
+    let savedId = postId;
+    if (postId === null) {
+      const inserted = await db.prepare(`
+        INSERT INTO information_posts (consultant_id, consultant_name, consultant_mobile, information, all_clients)
+        VALUES (?, ?, ?, ?, ?) RETURNING id
+      `).run(req.user.id, req.user.name, req.user.contact_number || null, information, allClients ? 1 : 0);
+      savedId = Number(inserted.lastInsertRowid);
+    } else {
+      await db.prepare(`
+        UPDATE information_posts SET information = ?, all_clients = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(information, allClients ? 1 : 0, postId);
+      await db.prepare("DELETE FROM information_post_recipients WHERE information_id = ?").run(postId);
+    }
+    if (!allClients && clientIds.length) {
+      const insertRecipient = db.prepare("INSERT INTO information_post_recipients (information_id, client_id) VALUES (?, ?)");
+      for (const clientId of clientIds) await insertRecipient.run(savedId, clientId);
+    }
+    return savedId;
+  })();
+  const result = await informationCenterPayload(req.user, "");
+  const post = result.posts.find((item) => Number(item.id) === Number(id));
+  res.status(postId === null ? 201 : 200).json({ post });
+}
+
+app.post("/api/information-center", requireAuth, requireAgent, async (req, res) => saveInformationPost(req, res));
+app.patch("/api/information-center/:id", requireAuth, requireAgent, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Choose a valid information post." });
+  return saveInformationPost(req, res, id);
+});
+
 app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
   const page = Number(req.query.page ?? 1);
   const pageSize = 50;

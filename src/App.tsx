@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowUp, BarChart3, Bell, Check,
   CheckCheck, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2, ClipboardPlus,
-  Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen,
+  Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen, Megaphone, Pencil,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 
@@ -64,6 +64,8 @@ type AnalyticsReport = {
 type ReportTicket = { id: number; subject: string; status: Status; priority: Priority; updatedAt: string; companyId: number | null; customerId: number | null; consultantId: number | null; companyName: string | null; customerName: string; consultantName: string | null };
 type ReportTicketDirectory = { companies: Array<{ id: number; name: string }>; customers: Array<{ id: number; name: string; email: string | null; companyName: string | null }>; consultants: Array<{ id: number; name: string }> };
 type KnowledgeBaseTicket = { id: number; issue: string; description: string; reportedAt: string; solution: string; closedAt: string; solutionType: string; clientName: string; consultantName: string };
+type InformationPost = { id: number; consultantId: number; consultantName: string; consultantMobile: string | null; information: string; allClients: boolean | number; postedAt: string; updatedAt: string; recipientIds?: number[] };
+type InformationClient = { id: number; name: string; username: string; contactNumber: string | null; companyNames: string | null };
 type PortalMode = "login" | "register";
 type ApiError = { error?: string };
 type AuthFlow = "portal" | "invite" | "client-invite" | "reset";
@@ -697,9 +699,15 @@ function App() {
             <button aria-label="Knowledge Base" title="Knowledge Base" className={`nav-item ${activeView === "knowledge" ? "active" : ""}`} onClick={() => setActiveView("knowledge")}>
               <BookOpen size={17} /><span>Knowledge Base</span>
             </button>
+            <button aria-label="Information Center" title="Information Center" className={`nav-item ${activeView === "information" ? "active" : ""}`} onClick={() => setActiveView("information")}>
+              <Megaphone size={17} /><span>Information Center</span>
+            </button>
           </>}
           {!isAgent && <button aria-label="My tickets" title="My tickets" className={`nav-item ${activeView === "assigned" ? "active" : ""}`} onClick={() => { setActiveView("assigned"); setFilter("all"); }}>
             <UserRound size={17} /><span>My tickets</span><span className="nav-count">{myTicketCount}</span>
+          </button>}
+          {!isAgent && <button aria-label="Information Center" title="Information Center" className={`nav-item ${activeView === "information" ? "active" : ""}`} onClick={() => setActiveView("information")}>
+            <Megaphone size={17} /><span>Information Center</span>
           </button>}
           {isCompanyAdmin && <button aria-label="Company users" title="Company users" className={`nav-item ${activeView === "company-users" ? "active" : ""}`} onClick={() => setActiveView("company-users")}>
             <Users size={17} /><span>Company users</span>
@@ -727,7 +735,7 @@ function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
+          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "information" ? "Information Center" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
           <div className="topbar-actions">
             {user.role === "customer" && availableCompanies.length > 1 && <button type="button" className="company-switcher" onClick={() => setShowCompanySelection(true)}><Building2 size={14} /><span>{user.companyName || "Select a company"}</span><ArrowDown size={13} /></button>}
             {(activeView === "inbox" || activeView === "assigned") && <div className="search-box"><Search size={15} /><input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tickets…" /><kbd>Ctrl K</kbd></div>}
@@ -874,7 +882,9 @@ function App() {
             )}
           </div>
         ) : (
-          activeView === "knowledge" && isAgent
+          activeView === "information"
+            ? <InformationCenter isConsultant={isAgent} isSuperAdmin={isSuperAdmin} currentUserId={user.id} />
+            : activeView === "knowledge" && isAgent
             ? <KnowledgeBase companies={inboxCompanies} />
             : activeView === "customers" && isAgent
             ? <CustomerDirectory
@@ -1998,6 +2008,132 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
     </div>
     <footer className="login-footer"><span>© 2026 Jishnu Infotech</span><span><CircleHelp size={13} /> Need help signing in?</span></footer>
   </main>;
+}
+
+function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
+  isConsultant: boolean;
+  isSuperAdmin: boolean;
+  currentUserId: number;
+}) {
+  const [posts, setPosts] = useState<InformationPost[]>([]);
+  const [clients, setClients] = useState<InformationClient[]>([]);
+  const [total, setTotal] = useState(0);
+  const [query, setQuery] = useState("");
+  const [information, setInformation] = useState("");
+  const [allClients, setAllClients] = useState(true);
+  const [clientIds, setClientIds] = useState<number[]>([]);
+  const [clientSearch, setClientSearch] = useState("");
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [showEditor, setShowEditor] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError("");
+    api<{ posts: InformationPost[]; total: number; clients?: InformationClient[] }>(`/information-center?search=${encodeURIComponent(query.trim())}`)
+      .then((result) => {
+        if (!active) return;
+        setPosts(result.posts);
+        setTotal(result.total);
+        if (result.clients) setClients(result.clients);
+      })
+      .catch((reason: Error) => { if (active) setError(reason.message); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [query, refreshKey]);
+
+  function startNewPost() {
+    setEditingId(null);
+    setInformation("");
+    setAllClients(true);
+    setClientIds([]);
+    setClientSearch("");
+    setMessage("");
+    setError("");
+    setShowEditor(true);
+  }
+
+  function startEditing(post: InformationPost) {
+    setEditingId(post.id);
+    setInformation(post.information);
+    setAllClients(Boolean(post.allClients));
+    setClientIds(post.recipientIds || []);
+    setClientSearch("");
+    setMessage("");
+    setError("");
+    setShowEditor(true);
+  }
+
+  async function savePost(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      await api(`/information-center${editingId ? `/${editingId}` : ""}`, {
+        method: editingId ? "PATCH" : "POST",
+        body: JSON.stringify({ information, allClients, clientIds: allClients ? [] : clientIds }),
+      });
+      setShowEditor(false);
+      setMessage(editingId ? "Information updated." : "Information posted to the selected audience.");
+      setRefreshKey((key) => key + 1);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not save this information.");
+    } finally { setSaving(false); }
+  }
+
+  const dateLabel = (value: string) => {
+    const normalized = value.includes("T") ? value : value.replace(" ", "T");
+    const date = new Date(normalized.endsWith("Z") ? normalized : `${normalized}Z`);
+    return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" }).format(date);
+  };
+  const visibleClients = clients.filter((client) =>
+    `${client.name} ${client.username} ${client.companyNames || ""}`.toLowerCase().includes(clientSearch.trim().toLowerCase()));
+
+  return <section className="feature-page information-page">
+    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />{isConsultant ? "CONSULTANT WORKSPACE" : "CLIENT WORKSPACE"}</div><h1>Information Center</h1><p>Important updates shared by the support team.</p></div>{isConsultant && <button className="button button-primary" type="button" onClick={startNewPost}><Plus size={15} /> Add information</button>}</div>
+    {error && <div className="inline-error" role="alert">{error}<button type="button" onClick={() => setError("")}><X size={13} /></button></div>}
+    {message && <div className="inline-success" role="status">{message}<button type="button" onClick={() => setMessage("")}><X size={13} /></button></div>}
+    <div className="directory-toolbar information-toolbar">
+      <div className="search-box"><Search size={15} /><input aria-label="Search information" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search information or Consultant…" /></div>
+      <span className="knowledge-total-card">{total} {total === 1 ? "Information post" : "Information posts"}</span>
+    </div>
+    {showEditor && <section className="settings-card information-editor">
+      <div className="settings-card-heading"><div><h2>{editingId ? "Edit information" : "Post information"}</h2><p>Choose whether this update is shared with everyone or selected clients.</p></div><Megaphone size={18} /></div>
+      <form onSubmit={savePost}>
+        <label className="information-body-label">Information<textarea value={information} onChange={(event) => setInformation(event.target.value)} minLength={5} maxLength={10000} rows={5} required placeholder="Write the information you want to share…" /></label>
+        <fieldset className="information-audience"><legend>Audience</legend>
+          <label><input type="radio" name="information-audience" checked={allClients} onChange={() => setAllClients(true)} /> All clients</label>
+          <label><input type="radio" name="information-audience" checked={!allClients} onChange={() => setAllClients(false)} /> Specific clients</label>
+        </fieldset>
+        {!allClients && <div className="information-client-picker">
+          <div className="search-box"><Search size={14} /><input aria-label="Search clients to notify" value={clientSearch} onChange={(event) => setClientSearch(event.target.value)} placeholder="Find clients…" /></div>
+          <div className="information-client-list">{visibleClients.map((client) => <label key={client.id}>
+            <input type="checkbox" checked={clientIds.includes(client.id)} onChange={(event) => setClientIds((current) => event.target.checked ? [...current, client.id] : current.filter((id) => id !== client.id))} />
+            <span><strong>{client.name}</strong><small>{client.companyNames || `@${client.username}`}</small></span>
+          </label>)}{visibleClients.length === 0 && <p className="settings-hint">No active clients match this search.</p>}</div>
+          <small>{clientIds.length} clients selected</small>
+        </div>}
+        <div className="information-editor-actions"><button className="button button-quiet" type="button" onClick={() => setShowEditor(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={saving || !information.trim() || (!allClients && clientIds.length === 0)}>{saving ? "Saving…" : editingId ? "Save changes" : "Post information"}</button></div>
+      </form>
+    </section>}
+    {loading ? <div className="report-empty" role="status">Loading information…</div> : posts.length === 0
+      ? <div className="empty-list"><Megaphone size={27} /><strong>No information posted yet</strong><span>{query ? "Try a different search." : "Updates from Consultants will appear here."}</span></div>
+      : <div className="information-list">{posts.map((post) => {
+        const canEdit = isConsultant && (isSuperAdmin || Number(post.consultantId) === currentUserId);
+        const audience = Boolean(post.allClients) ? "All clients" : (post.recipientIds || []).map((id) => clients.find((client) => client.id === id)?.name).filter(Boolean).join(", ") || "Selected clients";
+        return <article className="information-card" key={post.id}>
+          <div className="information-card-top"><span className="information-posted-date">Posted {dateLabel(post.postedAt)}</span>{canEdit && <button className="button button-quiet" type="button" onClick={() => startEditing(post)}><Pencil size={13} /> Edit</button>}</div>
+          <p className="information-copy">{post.information}</p>
+          <div className="information-card-footer"><span><strong>{post.consultantName}</strong><small>Consultant</small></span><span><strong>{post.consultantMobile || "Not provided"}</strong><small>Mobile number</small></span>{isConsultant && <span><strong>{audience}</strong><small>Audience</small></span>}</div>
+        </article>;
+      })}</div>}
+  </section>;
 }
 
 function KnowledgeBase({ companies }: { companies: Array<{ id: number; name: string }> }) {
