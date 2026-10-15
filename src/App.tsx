@@ -72,6 +72,8 @@ type InformationNotification = { id: number; informationId: number; createdAt: s
 type PortalMode = "login" | "register";
 type ApiError = { error?: string };
 type AuthFlow = "portal" | "invite" | "client-invite" | "reset";
+const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const LAST_ACTIVITY_STORAGE_KEY = "jishnuSupportLastActivityAt";
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const isFormData = options.body instanceof FormData;
@@ -486,6 +488,7 @@ function App() {
         await api("/auth/logout", { method: "POST" });
         throw new Error(`This account is for the ${result.user.role === "agent" ? "Consultant" : "client"} portal. Choose the matching portal and try again.`);
       }
+      localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(Date.now()));
       setUser(result.user);
       knownNotificationIds.current = null;
       const companies = result.companies || [];
@@ -527,6 +530,7 @@ function App() {
         setLoginNotice(result.message || "Your company administrator must approve this account before you can sign in.");
         setPortalMode("login");
       } else if (result.user) {
+        localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(Date.now()));
         setUser(result.user);
         setActiveView("inbox");
         knownTicketIds.current = new Set();
@@ -538,8 +542,9 @@ function App() {
     }
   }
 
-  async function signOut() {
-    await api("/auth/logout", { method: "POST" });
+  async function signOut(reason?: "inactive") {
+    try { await api("/auth/logout", { method: "POST" }); } catch { /* Clear the local session even if the server is unreachable. */ }
+    localStorage.removeItem(LAST_ACTIVITY_STORAGE_KEY);
     setUser(null);
     setAvailableCompanies([]);
     setShowCompanySelection(false);
@@ -551,7 +556,55 @@ function App() {
     setTickets([]);
     setSelectedId(null);
     setDetail(null);
+    if (reason === "inactive") setLoginNotice("You were signed out after 30 minutes of inactivity.");
   }
+
+  useEffect(() => {
+    if (!user) return;
+    let lastActivity = Number(localStorage.getItem(LAST_ACTIVITY_STORAGE_KEY));
+    if (!Number.isFinite(lastActivity) || lastActivity <= 0) {
+      lastActivity = Date.now();
+      localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(lastActivity));
+    }
+    let timeoutId: number;
+    let signedOut = false;
+    const scheduleTimeout = () => {
+      window.clearTimeout(timeoutId);
+      const remaining = SESSION_IDLE_TIMEOUT_MS - (Date.now() - lastActivity);
+      if (remaining <= 0) {
+        signedOut = true;
+        void signOut("inactive");
+      } else {
+        timeoutId = window.setTimeout(scheduleTimeout, remaining);
+      }
+    };
+    const recordActivity = () => {
+      lastActivity = Date.now();
+      localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(lastActivity));
+      scheduleTimeout();
+    };
+    const syncActivity = (event: StorageEvent) => {
+      if (event.key !== LAST_ACTIVITY_STORAGE_KEY) return;
+      if (event.newValue === null) {
+        if (!signedOut) { signedOut = true; void signOut(); }
+        return;
+      }
+      const remoteActivity = Number(event.newValue);
+      if (Number.isFinite(remoteActivity) && remoteActivity > lastActivity) {
+        lastActivity = remoteActivity;
+        scheduleTimeout();
+      }
+    };
+    const activityEvents: Array<keyof WindowEventMap> = ["pointerdown", "keydown", "touchstart", "wheel", "scroll"];
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, recordActivity, { passive: true }));
+    window.addEventListener("storage", syncActivity);
+    scheduleTimeout();
+    return () => {
+      window.clearTimeout(timeoutId);
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, recordActivity));
+      window.removeEventListener("storage", syncActivity);
+    };
+  }, [user]);
 
   async function selectCompany(companyId: number) {
     setActionError("");
@@ -751,7 +804,7 @@ function App() {
           <div className="sidebar-profile">
             <div className={`avatar ${isAgent ? "avatar-agent" : ""}`}>{initials(user.name)}</div>
             <div className="profile-copy"><strong>{isAgent ? user.name : displayClientName(user.name)}</strong><span>@{user.username}</span><span>{isAgent ? (user.isAdmin ? "Super Admin" : "Consultant") : user.companyName || "Client"}{isCompanyAdmin ? " · Company Admin" : ""}</span></div>
-            <button className="icon-button profile-menu" onClick={signOut} title="Sign out"><LogOut size={16} /></button>
+            <button className="icon-button profile-menu" onClick={() => signOut()} title="Sign out"><LogOut size={16} /></button>
           </div>
         </div>
       </aside>
