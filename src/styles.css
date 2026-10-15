@@ -286,6 +286,8 @@ h1, h2, p { margin-top: 0; }
 .information-audience label { display: inline-flex; align-items: center; gap: 6px; color: #536278; font-size: 10px; }
 .information-audience input, .information-client-list input { accent-color: #2864dc; }
 .information-client-picker { display: grid; gap: 8px; }
+.information-company-picker { display: grid; gap: 6px; max-width: 420px; color: #536278; font-size: 10px; }
+.information-company-picker select { min-height: 36px; padding: 7px 10px; border: 1px solid #e2e8f0; border-radius: 6px; color: #40516a; background: #fff; }
 .information-client-picker > .search-box { width: min(100%, 420px); }
 .information-client-list { max-height: 190px; overflow: auto; border: 1px solid #e9edf1; border-radius: 7px; background: #fff; }
 .information-client-list > label { display: flex; align-items: center; gap: 9px; min-height: 43px; padding: 7px 10px; border-bottom: 1px solid #f0f2f5; cursor: pointer; }

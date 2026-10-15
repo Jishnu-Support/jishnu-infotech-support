@@ -1054,8 +1054,12 @@ async function informationCenterPayload(user, search) {
   if (user.role === "customer") {
     visibility = `AND (p.all_clients = 1 OR EXISTS (
       SELECT 1 FROM information_post_recipients r WHERE r.information_id = p.id AND r.client_id = ?
+    ) OR EXISTS (
+      SELECT 1 FROM information_post_company_recipients cr
+      JOIN company_memberships cm ON cm.company_id = cr.company_id
+      WHERE cr.information_id = p.id AND cm.user_id = ?
     ))`;
-    params.push(user.id);
+    params.push(user.id, user.id);
   }
   const searchClause = search ? "AND (p.information ILIKE ? OR p.consultant_name ILIKE ? OR COALESCE(p.consultant_mobile, '') ILIKE ?)" : "";
   if (search) params.push(...Array(3).fill(`%${search}%`));
@@ -1100,6 +1104,19 @@ async function informationCenterPayload(user, search) {
       recipientsByPost.set(recipient.informationId, list);
     }
     for (const post of posts) post.recipientIds = recipientsByPost.get(post.id) || [];
+    const companyRecipients = await db.prepare(`
+      SELECT information_id AS informationId, company_id AS companyId
+      FROM information_post_company_recipients
+      WHERE information_id IN (${posts.map(() => "?").join(",")})
+      ORDER BY company_id
+    `).all(...posts.map((post) => post.id));
+    const companiesByPost = new Map();
+    for (const recipient of companyRecipients) {
+      const list = companiesByPost.get(recipient.informationId) || [];
+      list.push(recipient.companyId);
+      companiesByPost.set(recipient.informationId, list);
+    }
+    for (const post of posts) post.recipientCompanyIds = companiesByPost.get(post.id) || [];
   }
   return { posts, total };
 }
@@ -1117,7 +1134,8 @@ app.get("/api/information-center", requireAuth, async (req, res) => {
     WHERE u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL
     ORDER BY u.name, u.id
   `).all();
-  res.json({ ...result, clients });
+  const companies = await db.prepare("SELECT id, name FROM companies ORDER BY name, id").all();
+  res.json({ ...result, clients, companies });
 });
 
 async function saveInformationPost(req, res, postId = null) {
@@ -1127,7 +1145,12 @@ async function saveInformationPost(req, res, postId = null) {
     return res.status(status).json({ error });
   };
   const information = typeof req.body.information === "string" ? req.body.information.trim() : "";
-  const allClients = req.body.allClients === true || req.body.allClients === "true";
+  const legacyAllClients = req.body.allClients === true || req.body.allClients === "true";
+  const audience = ["all", "clients", "company"].includes(req.body.audience)
+    ? req.body.audience
+    : legacyAllClients ? "all" : "clients";
+  const allClients = audience === "all";
+  const companyId = Number(req.body.companyId);
   let rawClientIds = req.body.clientIds;
   if (typeof rawClientIds === "string") {
     try { rawClientIds = JSON.parse(rawClientIds); } catch { return reject(400, "The selected client list is invalid."); }
@@ -1138,8 +1161,11 @@ async function saveInformationPost(req, res, postId = null) {
   if (information.length < 5 || information.length > 10000) {
     return reject(400, "Information must be between 5 and 10,000 characters.");
   }
-  if (!allClients && clientIds.length === 0) {
+  if (audience === "clients" && clientIds.length === 0) {
     return reject(400, "Select at least one client or choose all clients.");
+  }
+  if (audience === "company" && (!Number.isInteger(companyId) || companyId < 1)) {
+    return reject(400, "Select a company for this information post.");
   }
   const verifiedFiles = [];
   try {
@@ -1160,13 +1186,17 @@ async function saveInformationPost(req, res, postId = null) {
   } catch (error) {
     return reject(400, error.message);
   }
-  if (clientIds.length) {
+  if (audience === "clients" && clientIds.length) {
     const found = Number((await db.prepare(`
       SELECT COUNT(*) AS count FROM users
       WHERE role = 'customer' AND approval_status = 'approved' AND disabled_at IS NULL
         AND id IN (${clientIds.map(() => "?").join(",")})
     `).get(...clientIds)).count);
     if (found !== clientIds.length) return reject(400, "One or more selected clients are no longer active.");
+  }
+  if (audience === "company") {
+    const company = await db.prepare("SELECT id FROM companies WHERE id = ?").get(companyId);
+    if (!company) return reject(400, "The selected company is no longer available.");
   }
 
   if (postId !== null) {
@@ -1193,10 +1223,15 @@ async function saveInformationPost(req, res, postId = null) {
           WHERE id = ?
         `).run(information, allClients ? 1 : 0, postId);
         await db.prepare("DELETE FROM information_post_recipients WHERE information_id = ?").run(postId);
+        await db.prepare("DELETE FROM information_post_company_recipients WHERE information_id = ?").run(postId);
       }
-      if (!allClients && clientIds.length) {
+      if (audience === "clients" && clientIds.length) {
         const insertRecipient = db.prepare("INSERT INTO information_post_recipients (information_id, client_id) VALUES (?, ?)");
         for (const clientId of clientIds) await insertRecipient.run(savedId, clientId);
+      }
+      if (audience === "company") {
+        await db.prepare("INSERT INTO information_post_company_recipients (information_id, company_id) VALUES (?, ?)")
+          .run(savedId, companyId);
       }
       const insertAttachment = db.prepare(`
         INSERT INTO information_post_attachments (information_id, uploaded_by, storage_name, original_name, mime_type, size_bytes)
@@ -1208,7 +1243,13 @@ async function saveInformationPost(req, res, postId = null) {
       await db.prepare("DELETE FROM information_post_notifications WHERE information_id = ?").run(savedId);
       const notifiedClients = allClients
         ? await db.prepare("SELECT id FROM users WHERE role = 'customer' AND approval_status = 'approved' AND disabled_at IS NULL AND id <> ?").all(req.user.id)
-        : clientIds.filter((clientId) => Number(clientId) !== Number(req.user.id)).map((userId) => ({ id: userId }));
+        : audience === "company"
+          ? await db.prepare(`
+              SELECT DISTINCT u.id FROM users u JOIN company_memberships cm ON cm.user_id = u.id
+              WHERE cm.company_id = ? AND u.role = 'customer' AND u.approval_status = 'approved'
+                AND u.disabled_at IS NULL AND u.id <> ?
+            `).all(companyId, req.user.id)
+          : clientIds.filter((clientId) => Number(clientId) !== Number(req.user.id)).map((userId) => ({ id: userId }));
       const notifiedConsultants = await db.prepare(
         "SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL AND id <> ?"
       ).all(req.user.id);
@@ -1237,6 +1278,10 @@ app.get("/api/information-center/notifications", requireAuth, async (req, res) =
   const audienceVisibility = req.user.role === "customer"
     ? `AND (p.all_clients = 1 OR EXISTS (
         SELECT 1 FROM information_post_recipients r WHERE r.information_id = p.id AND r.client_id = n.user_id
+      ) OR EXISTS (
+        SELECT 1 FROM information_post_company_recipients cr
+        JOIN company_memberships cm ON cm.company_id = cr.company_id
+        WHERE cr.information_id = p.id AND cm.user_id = n.user_id
       ))`
     : "AND p.consultant_id <> n.user_id";
   const notifications = await db.prepare(`
@@ -1286,8 +1331,12 @@ app.get("/api/information-center/:id/attachments/:attachmentId", requireAuth, as
       SELECT p.id FROM information_posts p
       WHERE p.id = ? AND (p.all_clients = 1 OR EXISTS (
         SELECT 1 FROM information_post_recipients r WHERE r.information_id = p.id AND r.client_id = ?
+      ) OR EXISTS (
+        SELECT 1 FROM information_post_company_recipients cr
+        JOIN company_memberships cm ON cm.company_id = cr.company_id
+        WHERE cr.information_id = p.id AND cm.user_id = ?
       ))
-    `).get(informationId, req.user.id);
+    `).get(informationId, req.user.id, req.user.id);
     if (!visible) return res.status(404).json({ error: "Attachment not found." });
   }
   const attachment = await db.prepare(`

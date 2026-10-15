@@ -384,6 +384,15 @@ const schemaMigrations = [
     CREATE INDEX IF NOT EXISTS information_post_attachments_post_idx ON information_post_attachments(information_id, id);
     CREATE INDEX IF NOT EXISTS information_post_notifications_unread_idx ON information_post_notifications(user_id, created_at DESC) WHERE read_at IS NULL;
   `) },
+  { version: 13, apply: () => db.exec(`
+    CREATE TABLE IF NOT EXISTS information_post_company_recipients (
+      information_id BIGINT NOT NULL REFERENCES information_posts(id) ON DELETE CASCADE,
+      company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      PRIMARY KEY (information_id, company_id)
+    );
+    CREATE INDEX IF NOT EXISTS information_post_company_recipients_company_idx
+      ON information_post_company_recipients(company_id, information_id);
+  `) },
 ];
 
 async function seedDatabase() {

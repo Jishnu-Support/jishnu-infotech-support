@@ -65,8 +65,9 @@ type ReportTicket = { id: number; subject: string; status: Status; priority: Pri
 type ReportTicketDirectory = { companies: Array<{ id: number; name: string }>; customers: Array<{ id: number; name: string; email: string | null; companyName: string | null }>; consultants: Array<{ id: number; name: string }> };
 type KnowledgeBaseTicket = { id: number; issue: string; description: string; reportedAt: string; solution: string; closedAt: string; solutionType: string; clientName: string; consultantName: string };
 type InformationAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string };
-type InformationPost = { id: number; consultantId: number; consultantName: string; consultantMobile: string | null; information: string; allClients: boolean | number; postedAt: string; updatedAt: string; recipientIds?: number[]; attachments?: InformationAttachment[] };
+type InformationPost = { id: number; consultantId: number; consultantName: string; consultantMobile: string | null; information: string; allClients: boolean | number; postedAt: string; updatedAt: string; recipientIds?: number[]; recipientCompanyIds?: number[]; attachments?: InformationAttachment[] };
 type InformationClient = { id: number; name: string; username: string; contactNumber: string | null; companyNames: string | null };
+type InformationCompany = { id: number; name: string };
 type InformationNotification = { id: number; informationId: number; createdAt: string; postedAt: string; consultantName: string; consultantMobile: string | null; information: string; attachments: InformationAttachment[] };
 type PortalMode = "login" | "register";
 type ApiError = { error?: string };
@@ -2089,11 +2090,13 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
 }) {
   const [posts, setPosts] = useState<InformationPost[]>([]);
   const [clients, setClients] = useState<InformationClient[]>([]);
+  const [companies, setCompanies] = useState<InformationCompany[]>([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState("");
   const [information, setInformation] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [allClients, setAllClients] = useState(true);
+  const [audience, setAudience] = useState<"all" | "clients" | "company">("all");
+  const [companyId, setCompanyId] = useState("");
   const [clientIds, setClientIds] = useState<number[]>([]);
   const [clientSearch, setClientSearch] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -2108,12 +2111,13 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
     let active = true;
     setLoading(true);
     setError("");
-    api<{ posts: InformationPost[]; total: number; clients?: InformationClient[] }>(`/information-center?search=${encodeURIComponent(query.trim())}`)
+    api<{ posts: InformationPost[]; total: number; clients?: InformationClient[]; companies?: InformationCompany[] }>(`/information-center?search=${encodeURIComponent(query.trim())}`)
       .then((result) => {
         if (!active) return;
         setPosts(result.posts);
         setTotal(result.total);
         if (result.clients) setClients(result.clients);
+        if (result.companies) setCompanies(result.companies);
       })
       .catch((reason: Error) => { if (active) setError(reason.message); })
       .finally(() => { if (active) setLoading(false); });
@@ -2124,7 +2128,8 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
     setEditingId(null);
     setInformation("");
     setFiles([]);
-    setAllClients(true);
+    setAudience("all");
+    setCompanyId("");
     setClientIds([]);
     setClientSearch("");
     setMessage("");
@@ -2136,7 +2141,9 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
     setEditingId(post.id);
     setInformation(post.information);
     setFiles([]);
-    setAllClients(Boolean(post.allClients));
+    const postCompanyIds = post.recipientCompanyIds || [];
+    setAudience(Boolean(post.allClients) ? "all" : postCompanyIds.length ? "company" : "clients");
+    setCompanyId(postCompanyIds[0] ? String(postCompanyIds[0]) : "");
     setClientIds(post.recipientIds || []);
     setClientSearch("");
     setMessage("");
@@ -2152,8 +2159,10 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
     try {
       const body = new FormData();
       body.append("information", information);
-      body.append("allClients", allClients ? "true" : "false");
-      body.append("clientIds", JSON.stringify(allClients ? [] : clientIds));
+      body.append("audience", audience);
+      body.append("allClients", audience === "all" ? "true" : "false");
+      body.append("clientIds", JSON.stringify(audience === "clients" ? clientIds : []));
+      body.append("companyId", audience === "company" ? companyId : "");
       files.forEach((file) => body.append("attachments", file));
       await api(`/information-center${editingId ? `/${editingId}` : ""}`, {
         method: editingId ? "PATCH" : "POST",
@@ -2185,16 +2194,20 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
       <span className="knowledge-total-card">{total} {total === 1 ? "Information post" : "Information posts"}</span>
     </div>
     {showEditor && <section className="settings-card information-editor">
-      <div className="settings-card-heading"><div><h2>{editingId ? "Edit information" : "Post information"}</h2><p>Choose whether this update is shared with everyone or selected clients.</p></div><Megaphone size={18} /></div>
+        <div className="settings-card-heading"><div><h2>{editingId ? "Edit information" : "Post information"}</h2><p>Choose whether this update is shared with everyone, a company, or selected clients.</p></div><Megaphone size={18} /></div>
       <form onSubmit={savePost}>
         <label className="information-body-label">Information<textarea value={information} onChange={(event) => setInformation(event.target.value)} minLength={5} maxLength={10000} rows={5} required placeholder="Write the information you want to share…" /></label>
         <label className="information-body-label">Attachments<input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" onChange={(event) => setFiles(Array.from(event.target.files || []))} /><small>Up to 5 PDF or image files per post, 10 MB each.</small></label>
         {files.length > 0 && <div className="information-pending-files">{files.map((file) => <span key={`${file.name}-${file.size}`}>{file.name} Â· {formatBytes(file.size)}</span>)}</div>}
         <fieldset className="information-audience"><legend>Audience</legend>
-          <label><input type="radio" name="information-audience" checked={allClients} onChange={() => setAllClients(true)} /> All clients</label>
-          <label><input type="radio" name="information-audience" checked={!allClients} onChange={() => setAllClients(false)} /> Specific clients</label>
+          <label><input type="radio" name="information-audience" checked={audience === "all"} onChange={() => setAudience("all")} /> All clients</label>
+          <label><input type="radio" name="information-audience" checked={audience === "company"} onChange={() => setAudience("company")} /> Specific company</label>
+          <label><input type="radio" name="information-audience" checked={audience === "clients"} onChange={() => setAudience("clients")} /> Specific clients</label>
         </fieldset>
-        {!allClients && <div className="information-client-picker">
+        {audience === "company" && <label className="information-company-picker">Company<select aria-label="Select company audience" value={companyId} onChange={(event) => setCompanyId(event.target.value)} required>
+          <option value="">Select a company</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}
+        </select></label>}
+        {audience === "clients" && <div className="information-client-picker">
           <div className="search-box"><Search size={14} /><input aria-label="Search clients to notify" value={clientSearch} onChange={(event) => setClientSearch(event.target.value)} placeholder="Find clients…" /></div>
           <div className="information-client-list">{visibleClients.map((client) => <label key={client.id}>
             <input type="checkbox" checked={clientIds.includes(client.id)} onChange={(event) => setClientIds((current) => event.target.checked ? [...current, client.id] : current.filter((id) => id !== client.id))} />
@@ -2202,19 +2215,21 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
           </label>)}{visibleClients.length === 0 && <p className="settings-hint">No active clients match this search.</p>}</div>
           <small>{clientIds.length} clients selected</small>
         </div>}
-        <div className="information-editor-actions"><button className="button button-quiet" type="button" onClick={() => setShowEditor(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={saving || !information.trim() || (!allClients && clientIds.length === 0)}>{saving ? "Saving…" : editingId ? "Save changes" : "Post information"}</button></div>
+        <div className="information-editor-actions"><button className="button button-quiet" type="button" onClick={() => setShowEditor(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={saving || !information.trim() || (audience === "clients" && clientIds.length === 0) || (audience === "company" && !companyId)}>{saving ? "Saving…" : editingId ? "Save changes" : "Post information"}</button></div>
       </form>
     </section>}
     {loading ? <div className="report-empty" role="status">Loading information…</div> : posts.length === 0
       ? <div className="empty-list"><Megaphone size={27} /><strong>No information posted yet</strong><span>{query ? "Try a different search." : "Updates from Consultants will appear here."}</span></div>
       : <div className="information-list">{posts.map((post) => {
         const canEdit = isConsultant && (isSuperAdmin || Number(post.consultantId) === currentUserId);
-        const audience = Boolean(post.allClients) ? "All clients" : (post.recipientIds || []).map((id) => clients.find((client) => client.id === id)?.name).filter(Boolean).join(", ") || "Selected clients";
+        const audienceLabel = Boolean(post.allClients) ? "All clients" : post.recipientCompanyIds?.length
+          ? companies.find((company) => company.id === post.recipientCompanyIds?.[0])?.name || "Selected company"
+          : (post.recipientIds || []).map((id) => clients.find((client) => client.id === id)?.name).filter(Boolean).join(", ") || "Selected clients";
         return <article className="information-card" key={post.id}>
           <div className="information-card-top"><span className="information-posted-date">Posted {dateLabel(post.postedAt)}</span>{canEdit && <button className="button button-quiet" type="button" onClick={() => startEditing(post)}><Pencil size={13} /> Edit</button>}</div>
           <p className="information-copy">{post.information}</p>
           {(post.attachments || []).length > 0 && <div className="information-card-files" aria-label="Information attachments">{post.attachments?.map((attachment) => <a key={attachment.id} href={`/api/information-center/${post.id}/attachments/${attachment.id}`} target="_blank" rel="noreferrer"><Paperclip size={13} /><span>{attachment.name}</span><small>{formatBytes(attachment.sizeBytes)}</small></a>)}</div>}
-          <div className="information-card-footer"><span><strong>{post.consultantName}</strong><small>Consultant</small></span><span><strong>{post.consultantMobile || "Not provided"}</strong><small>Mobile number</small></span>{isConsultant && <span><strong>{audience}</strong><small>Audience</small></span>}</div>
+          <div className="information-card-footer"><span><strong>{post.consultantName}</strong><small>Consultant</small></span><span><strong>{post.consultantMobile || "Not provided"}</strong><small>Mobile number</small></span>{isConsultant && <span><strong>{audienceLabel}</strong><small>Audience</small></span>}</div>
         </article>;
       })}</div>}
   </section>;
