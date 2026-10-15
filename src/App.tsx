@@ -69,6 +69,7 @@ type InformationPost = { id: number; consultantId: number; consultantName: strin
 type InformationClient = { id: number; name: string; username: string; contactNumber: string | null; companyNames: string | null };
 type InformationCompany = { id: number; name: string };
 type InformationNotification = { id: number; informationId: number; createdAt: string; postedAt: string; consultantName: string; consultantMobile: string | null; information: string; attachments: InformationAttachment[] };
+type UserManualEntry = { id: number; title: string; summary: string; content: string; mediaKind: "audio" | "video" | null; mediaName: string | null; mediaMimeType: string | null; mediaSizeBytes: number | null; isPublished: boolean | number; createdAt: string; updatedAt: string };
 type PortalMode = "login" | "register";
 type ApiError = { error?: string };
 type AuthFlow = "portal" | "invite" | "client-invite" | "reset";
@@ -778,12 +779,18 @@ function App() {
             <button aria-label="Information Center" title="Information Center" className={`nav-item ${activeView === "information" ? "active" : ""}`} onClick={() => setActiveView("information")}>
               <Megaphone size={17} /><span>Information Center</span>
             </button>
+          <button aria-label="User Manual" title="User Manual" className={`nav-item ${activeView === "user-manual" ? "active" : ""}`} onClick={() => setActiveView("user-manual")}>
+            <BookOpen size={17} /><span>User Manual</span>
+          </button>
           </>}
           {!isAgent && <button aria-label="My tickets" title="My tickets" className={`nav-item ${activeView === "assigned" ? "active" : ""}`} onClick={() => { setActiveView("assigned"); setFilter("all"); }}>
             <UserRound size={17} /><span>My tickets</span><span className="nav-count">{myTicketCount}</span>
           </button>}
           {!isAgent && <button aria-label="Information Center" title="Information Center" className={`nav-item ${activeView === "information" ? "active" : ""}`} onClick={() => setActiveView("information")}>
             <Megaphone size={17} /><span>Information Center</span>
+          </button>}
+          {!isAgent && <button aria-label="User Manual" title="User Manual" className={`nav-item ${activeView === "user-manual" ? "active" : ""}`} onClick={() => setActiveView("user-manual")}>
+            <BookOpen size={17} /><span>User Manual</span>
           </button>}
           {isCompanyAdmin && <button aria-label="Company users" title="Company users" className={`nav-item ${activeView === "company-users" ? "active" : ""}`} onClick={() => setActiveView("company-users")}>
             <Users size={17} /><span>Company users</span>
@@ -811,7 +818,7 @@ function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "information" ? "Information Center" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
+          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "information" ? "Information Center" : activeView === "user-manual" ? "User Manual" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
           <div className="topbar-actions">
             {user.role === "customer" && availableCompanies.length > 1 && <button type="button" className="company-switcher" onClick={() => setShowCompanySelection(true)}><Building2 size={14} /><span>{user.companyName || "Select a company"}</span><ArrowDown size={13} /></button>}
             {(activeView === "inbox" || activeView === "assigned") && <div className="search-box"><Search size={15} /><input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tickets…" /><kbd>Ctrl K</kbd></div>}
@@ -960,6 +967,8 @@ function App() {
         ) : (
           activeView === "information"
             ? <InformationCenter isConsultant={isAgent} isSuperAdmin={isSuperAdmin} currentUserId={user.id} />
+            : activeView === "user-manual"
+              ? <UserManual isSuperAdmin={isSuperAdmin} />
             : activeView === "knowledge" && isAgent
             ? <KnowledgeBase companies={inboxCompanies} />
             : activeView === "customers" && isAgent
@@ -2308,6 +2317,100 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
           <div className="information-card-footer"><span><strong>{post.consultantName}</strong><small>Consultant</small></span><span><strong>{post.consultantMobile || "Not provided"}</strong><small>Mobile number</small></span>{isConsultant && <span><strong>{audienceLabel}</strong><small>Audience</small></span>}</div>
         </article>;
       })}</div>}
+  </section>;
+}
+
+function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
+  const [manuals, setManuals] = useState<UserManualEntry[]>([]);
+  const [query, setQuery] = useState("");
+  const [title, setTitle] = useState("");
+  const [summary, setSummary] = useState("");
+  const [content, setContent] = useState("");
+  const [media, setMedia] = useState<File | null>(null);
+  const [removeMedia, setRemoveMedia] = useState(false);
+  const [isPublished, setIsPublished] = useState(true);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [showEditor, setShowEditor] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  const loadManuals = useCallback(async () => {
+    const result = await api<{ manuals: UserManualEntry[] }>("/user-manuals", { cache: "no-store" });
+    setManuals(result.manuals);
+  }, []);
+  useEffect(() => {
+    loadManuals().catch((reason: Error) => setError(reason.message)).finally(() => setLoading(false));
+  }, [loadManuals]);
+
+  function startNewManual() {
+    setEditingId(null);
+    setTitle(""); setSummary(""); setContent(""); setMedia(null); setRemoveMedia(false); setIsPublished(true);
+    setError(""); setMessage(""); setShowEditor(true);
+  }
+
+  function startEditing(manual: UserManualEntry) {
+    setEditingId(manual.id);
+    setTitle(manual.title); setSummary(manual.summary); setContent(manual.content); setMedia(null); setRemoveMedia(false);
+    setIsPublished(Boolean(manual.isPublished)); setError(""); setMessage(""); setShowEditor(true);
+  }
+
+  async function saveManual(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true); setError(""); setMessage("");
+    try {
+      const body = new FormData();
+      body.append("title", title); body.append("summary", summary); body.append("content", content);
+      body.append("isPublished", String(isPublished)); body.append("removeMedia", String(removeMedia));
+      if (media) body.append("media", media);
+      await api(`/user-manuals${editingId ? `/${editingId}` : ""}`, { method: editingId ? "PATCH" : "POST", body });
+      await loadManuals();
+      setShowEditor(false);
+      setMessage(editingId ? "User manual updated." : isPublished ? "User manual published to all customers." : "User manual saved as a draft.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save this user manual."); }
+    finally { setSaving(false); }
+  }
+
+  async function deleteManual(manual: UserManualEntry) {
+    if (!window.confirm(`Delete “${manual.title}” and its uploaded media?`)) return;
+    setError(""); setMessage("");
+    try {
+      await api(`/user-manuals/${manual.id}`, { method: "DELETE" });
+      await loadManuals();
+      setMessage("User manual deleted.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not delete this user manual."); }
+  }
+
+  const visibleManuals = manuals.filter((manual) =>
+    `${manual.title} ${manual.summary} ${manual.content}`.toLowerCase().includes(query.trim().toLowerCase()));
+
+  return <section className="feature-page user-manual-page">
+    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />{isSuperAdmin ? "CONSULTANT WORKSPACE" : "CUSTOMER WORKSPACE"}</div><h1>User Manual</h1><p>Guides and tutorials for using the support portal.</p></div>{isSuperAdmin && <button className="button button-primary" type="button" onClick={startNewManual}><Plus size={15} /> Add guide</button>}</div>
+    {error && <div className="inline-error" role="alert">{error}<button type="button" onClick={() => setError("")}><X size={13} /></button></div>}
+    {message && <div className="inline-success" role="status">{message}<button type="button" onClick={() => setMessage("")}><X size={13} /></button></div>}
+    <div className="directory-toolbar information-toolbar"><div className="search-box"><Search size={15} /><input aria-label="Search user manuals" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search guides…" /></div><span className="knowledge-total-card">{manuals.filter((manual) => isSuperAdmin || Boolean(manual.isPublished)).length} guides</span></div>
+    {showEditor && isSuperAdmin && <section className="settings-card manual-editor">
+      <div className="settings-card-heading"><div><h2>{editingId ? "Edit guide" : "Add a user guide"}</h2><p>Write instructions or upload an audio/video tutorial. Published guides are visible to all customers.</p></div><BookOpen size={18} /></div>
+      <form onSubmit={saveManual}>
+        <label>Guide title<input value={title} onChange={(event) => setTitle(event.target.value)} minLength={3} maxLength={160} required placeholder="For example: How to raise a support ticket" /></label>
+        <label>Short description (optional)<input value={summary} onChange={(event) => setSummary(event.target.value)} maxLength={500} placeholder="A short overview of this guide" /></label>
+        <label>Written instructions (optional)<textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={20000} rows={8} placeholder="Write step-by-step instructions here…" /></label>
+        <label>Audio or video file (optional)<input type="file" accept="audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/ogg,video/mp4,video/webm,.mp3,.m4a,.wav,.ogg,.mp4,.webm" onChange={(event) => { setMedia(event.target.files?.[0] || null); if (event.target.files?.[0]) setRemoveMedia(false); }} /><small>MP3, M4A, WAV, OGG, MP4, or WebM; up to 200 MB.</small></label>
+        {media && <div className="manual-file-selected"><Paperclip size={13} />{media.name} · {formatBytes(media.size)}</div>}
+        {editingId && manuals.find((manual) => manual.id === editingId)?.mediaName && !media && <div className="manual-current-media"><span>Current file: {manuals.find((manual) => manual.id === editingId)?.mediaName}</span><label><input type="checkbox" checked={removeMedia} onChange={(event) => setRemoveMedia(event.target.checked)} /> Remove current file</label></div>}
+        <label className="manual-publish-toggle"><input type="checkbox" checked={isPublished} onChange={(event) => setIsPublished(event.target.checked)} /> Publish this guide to all customers</label>
+        <div className="information-editor-actions"><button className="button button-quiet" type="button" onClick={() => setShowEditor(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={saving || title.trim().length < 3 || (!summary.trim() && !content.trim() && !media && !(editingId && manuals.find((manual) => manual.id === editingId)?.mediaName && !removeMedia))}>{saving ? "Saving…" : editingId ? "Save guide" : isPublished ? "Publish guide" : "Save draft"}</button></div>
+      </form>
+    </section>}
+    {loading ? <div className="report-empty" role="status">Loading user guides…</div> : visibleManuals.length === 0
+      ? <div className="empty-list"><BookOpen size={27} /><strong>No user guides yet</strong><span>{query ? "Try another search." : "Published instructions and tutorials will appear here."}</span></div>
+      : <div className="manual-list">{visibleManuals.map((manual) => <article className="manual-card" key={manual.id}>
+        <div className="manual-card-heading"><div><h2>{manual.title}</h2>{manual.summary && <p>{manual.summary}</p>}</div>{isSuperAdmin && <div className="manual-card-actions"><span className={`team-state ${Boolean(manual.isPublished) ? "" : "team-disabled"}`}>{Boolean(manual.isPublished) ? "Published" : "Draft"}</span><button type="button" className="button button-quiet" onClick={() => startEditing(manual)}><Pencil size={13} /> Edit</button><button type="button" className="button button-quiet" onClick={() => deleteManual(manual)}>Delete</button></div>}</div>
+        {manual.content && <div className="manual-content">{manual.content}</div>}
+        {manual.mediaName && manual.mediaKind === "audio" && <div className="manual-media"><div><strong>{manual.mediaName}</strong><small>Audio guide{manual.mediaSizeBytes ? ` · ${formatBytes(manual.mediaSizeBytes)}` : ""}</small></div><audio controls preload="metadata" src={`/api/user-manuals/${manual.id}/media`} /></div>}
+        {manual.mediaName && manual.mediaKind === "video" && <div className="manual-video"><video controls preload="metadata" src={`/api/user-manuals/${manual.id}/media`} /><span>{manual.mediaName}{manual.mediaSizeBytes ? ` · ${formatBytes(manual.mediaSizeBytes)}` : ""}</span></div>}
+      </article>)}</div>}
   </section>;
 }
 

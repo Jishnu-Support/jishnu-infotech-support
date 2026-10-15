@@ -40,7 +40,9 @@ if (isProduction) {
 }
 const tokenSecret = jwtSecret || "development-only-secret-change-before-deploy";
 const attachmentsRoot = resolve(process.env.ATTACHMENTS_PATH || "data/attachments");
+const manualsRoot = resolve(attachmentsRoot, "user-manuals");
 mkdirSync(attachmentsRoot, { recursive: true });
+mkdirSync(manualsRoot, { recursive: true });
 const permittedAttachmentTypes = new Map([
   ["image/jpeg", ".jpg"],
   ["image/png", ".png"],
@@ -56,6 +58,26 @@ const attachmentUpload = multer({
   fileFilter: (_req, file, callback) => callback(
     permittedAttachmentTypes.has(file.mimetype) ? null : new Error("Only PDF, JPEG, PNG, and WebP attachments are allowed."),
     permittedAttachmentTypes.has(file.mimetype),
+  ),
+});
+const permittedManualMediaTypes = new Map([
+  ["audio/mpeg", { extension: ".mp3", kind: "audio" }],
+  ["audio/mp4", { extension: ".m4a", kind: "audio" }],
+  ["audio/wav", { extension: ".wav", kind: "audio" }],
+  ["audio/x-wav", { extension: ".wav", kind: "audio" }],
+  ["audio/ogg", { extension: ".ogg", kind: "audio" }],
+  ["video/mp4", { extension: ".mp4", kind: "video" }],
+  ["video/webm", { extension: ".webm", kind: "video" }],
+]);
+const manualMediaUpload = multer({
+  storage: multer.diskStorage({
+    destination: manualsRoot,
+    filename: (_req, _file, callback) => callback(null, randomUUID()),
+  }),
+  limits: { files: 1, fields: 8, parts: 10, fileSize: 200 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => callback(
+    permittedManualMediaTypes.has(file.mimetype) ? null : new Error("Upload an MP3, M4A, WAV, OGG, MP4, or WebM audio/video file."),
+    permittedManualMediaTypes.has(file.mimetype),
   ),
 });
 const historicalWorkbookUpload = multer({
@@ -1056,6 +1078,130 @@ app.get("/api/customers", requireAuth, requireAgent, async (_req, res) => {
     ORDER BY c.name, u.name
   `).all();
   res.json({ customers });
+});
+
+async function userManualList(user) {
+  const visibility = user.role === "agent" && user.is_admin ? "" : "WHERE is_published = 1";
+  return db.prepare(`
+    SELECT id, title, summary, content, media_kind AS mediaKind,
+           original_name AS mediaName, mime_type AS mediaMimeType, size_bytes AS mediaSizeBytes,
+           is_published AS isPublished, created_at AS createdAt, updated_at AS updatedAt
+    FROM user_manuals ${visibility}
+    ORDER BY updated_at DESC, id DESC
+  `).all();
+}
+
+app.get("/api/user-manuals", requireAuth, async (req, res) => {
+  res.json({ manuals: await userManualList(req.user) });
+});
+
+async function saveUserManual(req, res, manualId = null) {
+  const file = req.file;
+  const reject = (status, message) => {
+    if (file) discardUploadedFiles([file]);
+    return res.status(status).json({ error: message });
+  };
+  const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+  const summary = typeof req.body.summary === "string" ? req.body.summary.trim() : "";
+  const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
+  const isPublished = req.body.isPublished !== "false" && req.body.isPublished !== false;
+  const removeMedia = req.body.removeMedia === "true" || req.body.removeMedia === true;
+  if (title.length < 3 || title.length > 160) return reject(400, "Title must be between 3 and 160 characters.");
+  if (summary.length > 500) return reject(400, "Summary cannot exceed 500 characters.");
+  if (content.length > 20000) return reject(400, "Guide content cannot exceed 20,000 characters.");
+
+  const existing = manualId === null ? null : await db.prepare(`
+    SELECT id, storage_name AS storageName, media_kind AS mediaKind, original_name AS mediaName,
+           mime_type AS mediaMimeType, size_bytes AS mediaSizeBytes
+    FROM user_manuals WHERE id = ?
+  `).get(manualId);
+  if (manualId !== null && !existing) return reject(404, "User manual not found.");
+  let detectedMedia = null;
+  if (file) {
+    const detected = await fileTypeFromFile(file.path);
+    const permitted = permittedManualMediaTypes.get(detected?.mime);
+    if (!detected || !permitted || detected.mime !== file.mimetype) {
+      return reject(400, `The uploaded media is not a supported audio or video file (${detected?.mime || "unknown file type"}).`);
+    }
+    const safeName = basename(file.originalname)
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .replace(/[<>:"/\\|?*]/g, "_")
+      .replace(/[. ]+$/, "")
+      .slice(0, 150);
+    detectedMedia = { ...permitted, mimeType: detected.mime, originalName: safeName || `manual-media${permitted.extension}` };
+    if (!detectedMedia.originalName.toLowerCase().endsWith(permitted.extension)) {
+      detectedMedia.originalName = `${detectedMedia.originalName}${permitted.extension}`;
+    }
+  }
+  const mediaKind = detectedMedia?.kind || (removeMedia ? null : existing?.mediaKind || null);
+  const mediaName = detectedMedia?.originalName || (removeMedia ? null : existing?.mediaName || null);
+  const mediaMimeType = detectedMedia?.mimeType || (removeMedia ? null : existing?.mediaMimeType || null);
+  const mediaSizeBytes = file?.size || (removeMedia ? null : existing?.mediaSizeBytes || null);
+  const storageName = file?.filename || (removeMedia ? null : existing?.storageName || null);
+  if (!summary && !content && !storageName) return reject(400, "Add written instructions or upload an audio/video guide.");
+
+  try {
+    let savedId;
+    if (manualId === null) {
+      const created = await db.prepare(`
+        INSERT INTO user_manuals
+          (title, summary, content, media_kind, storage_name, original_name, mime_type, size_bytes, is_published, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+      `).run(title, summary, content, mediaKind, storageName, mediaName, mediaMimeType, mediaSizeBytes, isPublished ? 1 : 0, req.user.id);
+      savedId = Number(created.lastInsertRowid);
+    } else {
+      await db.prepare(`
+        UPDATE user_manuals SET title = ?, summary = ?, content = ?, media_kind = ?, storage_name = ?,
+          original_name = ?, mime_type = ?, size_bytes = ?, is_published = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(title, summary, content, mediaKind, storageName, mediaName, mediaMimeType, mediaSizeBytes, isPublished ? 1 : 0, manualId);
+      savedId = manualId;
+    }
+    if (existing?.storageName && (file || removeMedia)) {
+      try { unlinkSync(resolve(manualsRoot, existing.storageName)); } catch { /* Missing old media does not undo the saved guide. */ }
+    }
+    const manuals = await userManualList(req.user);
+    res.status(manualId === null ? 201 : 200).json({ manual: manuals.find((item) => Number(item.id) === Number(savedId)) });
+  } catch (error) {
+    if (file) discardUploadedFiles([file]);
+    throw error;
+  }
+}
+
+app.post("/api/user-manuals", requireAuth, requireAdmin, manualMediaUpload.single("media"), async (req, res) => saveUserManual(req, res));
+app.patch("/api/user-manuals/:id", requireAuth, requireAdmin, manualMediaUpload.single("media"), async (req, res) => {
+  const manualId = Number(req.params.id);
+  if (!Number.isInteger(manualId) || manualId < 1) {
+    if (req.file) discardUploadedFiles([req.file]);
+    return res.status(400).json({ error: "Choose a valid user manual." });
+  }
+  return saveUserManual(req, res, manualId);
+});
+app.delete("/api/user-manuals/:id", requireAuth, requireAdmin, async (req, res) => {
+  const manualId = Number(req.params.id);
+  if (!Number.isInteger(manualId) || manualId < 1) return res.status(400).json({ error: "Choose a valid user manual." });
+  const manual = await db.prepare("SELECT storage_name AS storageName FROM user_manuals WHERE id = ?").get(manualId);
+  if (!manual) return res.status(404).json({ error: "User manual not found." });
+  await db.prepare("DELETE FROM user_manuals WHERE id = ?").run(manualId);
+  if (manual.storageName) {
+    try { unlinkSync(resolve(manualsRoot, manual.storageName)); } catch { /* The database record is already removed. */ }
+  }
+  res.status(204).end();
+});
+app.get("/api/user-manuals/:id/media", requireAuth, async (req, res) => {
+  const manualId = Number(req.params.id);
+  if (!Number.isInteger(manualId) || manualId < 1) return res.status(400).json({ error: "Choose a valid user manual." });
+  const visibility = req.user.role === "agent" && req.user.is_admin ? "" : "AND is_published = 1";
+  const manual = await db.prepare(`
+    SELECT storage_name AS storageName, original_name AS mediaName, mime_type AS mediaMimeType
+    FROM user_manuals WHERE id = ? ${visibility}
+  `).get(manualId);
+  if (!manual?.storageName) return res.status(404).json({ error: "Published manual media not found." });
+  res.type(manual.mediaMimeType);
+  res.setHeader("Content-Disposition", "inline");
+  res.sendFile(resolve(manualsRoot, manual.storageName), (error) => {
+    if (error && !res.headersSent) res.status(error.code === "ENOENT" ? 404 : 500).json({ error: "Could not retrieve this manual media." });
+  });
 });
 
 async function informationCenterPayload(user, search) {
