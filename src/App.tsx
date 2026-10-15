@@ -382,7 +382,7 @@ function App() {
   }, [refreshNotifications, user]);
 
   useEffect(() => {
-    if (user?.role !== "customer") { setInformationAlerts([]); return; }
+    if (!user || (user.role !== "customer" && user.role !== "agent")) { setInformationAlerts([]); return; }
     let active = true;
     const refreshInformationAlerts = () => {
       api<{ notifications: InformationNotification[] }>("/information-center/notifications", { cache: "no-store" })
@@ -1031,7 +1031,7 @@ function App() {
           setNewConsultantTicketAlerts((current) => current.slice(1));
         }}
       />}
-      {informationAlerts[0] && user.role === "customer" && !showCreate && !renewalPopup && feedbackTicketId === null && !newTicketAlert && <InformationUpdatePopup
+      {informationAlerts[0] && (user.role === "customer" || user.role === "agent") && !showCreate && !renewalPopup && feedbackTicketId === null && !newTicketAlert && <InformationUpdatePopup
         notification={informationAlerts[0]}
         onDismiss={async () => {
           const notification = informationAlerts[0];
@@ -1796,7 +1796,7 @@ function InformationUpdatePopup({ notification, onDismiss, onOpen }: {
   return <div className="modal-scrim feedback-scrim information-alert-scrim" role="presentation">
     <section className="create-modal feedback-modal information-alert-modal" role="dialog" aria-modal="true" aria-labelledby="information-alert-title">
       <div className="modal-heading">
-        <div><div className="eyebrow">NEW INFORMATION Â· {postedDate}</div><h2 id="information-alert-title">An update from your Consultant</h2></div>
+        <div><div className="eyebrow">NEW INFORMATION Â· {postedDate}</div><h2 id="information-alert-title">An information update was posted</h2></div>
         <button type="button" className="icon-button" onClick={onDismiss} aria-label="Dismiss information notice"><X size={18} /></button>
       </div>
       <div className="information-alert-author"><strong>{notification.consultantName}</strong><span>Consultant Â· {notification.consultantMobile || "Mobile number unavailable"}</span></div>

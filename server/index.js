@@ -1209,8 +1209,11 @@ async function saveInformationPost(req, res, postId = null) {
       const notifiedClients = allClients
         ? await db.prepare("SELECT id FROM users WHERE role = 'customer' AND approval_status = 'approved' AND disabled_at IS NULL AND id <> ?").all(req.user.id)
         : clientIds.filter((clientId) => Number(clientId) !== Number(req.user.id)).map((userId) => ({ id: userId }));
+      const notifiedConsultants = await db.prepare(
+        "SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL AND id <> ?"
+      ).all(req.user.id);
       const addNotification = db.prepare("INSERT INTO information_post_notifications (information_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING");
-      for (const client of notifiedClients) await addNotification.run(savedId, client.id);
+      for (const recipient of [...notifiedClients, ...notifiedConsultants]) await addNotification.run(savedId, recipient.id);
       return savedId;
     })();
   } catch (error) {
@@ -1230,7 +1233,12 @@ app.patch("/api/information-center/:id", requireAuth, requireAgent, receiveAttac
 });
 
 app.get("/api/information-center/notifications", requireAuth, async (req, res) => {
-  if (req.user.role !== "customer") return res.json({ notifications: [] });
+  if (req.user.role !== "customer" && req.user.role !== "agent") return res.json({ notifications: [] });
+  const audienceVisibility = req.user.role === "customer"
+    ? `AND (p.all_clients = 1 OR EXISTS (
+        SELECT 1 FROM information_post_recipients r WHERE r.information_id = p.id AND r.client_id = n.user_id
+      ))`
+    : "AND p.consultant_id <> n.user_id";
   const notifications = await db.prepare(`
     SELECT n.id, n.information_id AS informationId, n.created_at AS createdAt,
            p.consultant_name AS consultantName, p.consultant_mobile AS consultantMobile,
@@ -1238,9 +1246,7 @@ app.get("/api/information-center/notifications", requireAuth, async (req, res) =
     FROM information_post_notifications n
     JOIN information_posts p ON p.id = n.information_id
     WHERE n.user_id = ? AND n.read_at IS NULL
-      AND (p.all_clients = 1 OR EXISTS (
-        SELECT 1 FROM information_post_recipients r WHERE r.information_id = p.id AND r.client_id = n.user_id
-      ))
+      ${audienceVisibility}
     ORDER BY n.created_at DESC, n.id DESC LIMIT 20
   `).all(req.user.id);
   if (notifications.length) {
