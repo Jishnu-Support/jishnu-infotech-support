@@ -1302,6 +1302,39 @@ app.get("/api/admin/companies", requireAuth, requireAdmin, async (_req, res) => 
   res.json({ companies });
 });
 
+function historicalAccountMatch(accounts, record) {
+  const digits = (value) => String(value || "").replace(/\D/g, "");
+  const phoneKey = (value) => {
+    const valueDigits = digits(value);
+    return valueDigits.length > 10 ? valueDigits.slice(-10) : valueDigits;
+  };
+  const ticketPhone = phoneKey(record.reporterContact);
+  if (ticketPhone) {
+    const phoneMatches = accounts.filter((account) => phoneKey(account.contact_number) === ticketPhone);
+    if (phoneMatches.length === 1) return phoneMatches[0];
+    if (phoneMatches.length > 1) return null;
+  }
+  const nameKey = (value) => String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const ticketName = nameKey(record.reporterName);
+  const nameMatches = ticketName ? accounts.filter((account) => nameKey(account.name) === ticketName) : [];
+  return nameMatches.length === 1 ? nameMatches[0] : null;
+}
+
+async function historicalAccountMatches(companyId, tickets) {
+  const [clients, consultants] = companyId ? await Promise.all([
+    db.prepare(`
+      SELECT u.id, u.name, u.contact_number FROM users u
+      JOIN company_memberships m ON m.user_id = u.id
+      WHERE m.company_id = ? AND u.role = 'customer'
+    `).all(companyId),
+    db.prepare("SELECT id, name, contact_number FROM users WHERE role = 'agent' AND disabled_at IS NULL").all(),
+  ]) : [[], []];
+  return tickets.map((ticket) => ({
+    customer: ticket.reporterType === "client" ? historicalAccountMatch(clients, ticket) : null,
+    consultant: ticket.reporterType === "consultant" ? historicalAccountMatch(consultants, ticket) : null,
+  }));
+}
+
 app.post("/api/admin/historical-tickets/import", requireAuth, requireAdmin, historicalWorkbookUpload.single("workbook"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Choose an .xlsx workbook to import." });
   if (extname(req.file.originalname).toLowerCase() !== ".xlsx") {
@@ -1316,13 +1349,16 @@ app.post("/api/admin/historical-tickets/import", requireAuth, requireAdmin, hist
   }
 
   if (req.body.mode === "preview") {
-    const company = await db.prepare("SELECT name FROM companies WHERE lower(name) IN ('steel center', 'steel') ORDER BY CASE lower(name) WHEN 'steel center' THEN 0 ELSE 1 END LIMIT 1").get();
+    const company = await db.prepare("SELECT id, name FROM companies WHERE lower(name) IN ('steel center', 'steel') ORDER BY CASE lower(name) WHEN 'steel center' THEN 0 ELSE 1 END LIMIT 1").get();
+    const matches = await historicalAccountMatches(company?.id, parsed.tickets);
     return res.json({
       mode: "preview",
       companyName: company?.name || "Steel Center",
       total: parsed.tickets.length,
       clientTickets: parsed.tickets.filter((ticket) => ticket.reporterType === "client").length,
       consultantTickets: parsed.tickets.filter((ticket) => ticket.reporterType === "consultant").length,
+      linkedClientTickets: matches.filter((match) => match.customer).length,
+      assignedConsultantTickets: matches.filter((match) => match.consultant).length,
       skipped: parsed.skippedRows,
     });
   }
@@ -1344,11 +1380,16 @@ app.post("/api/admin/historical-tickets/import", requireAuth, requireAdmin, hist
     }
     if (!company) throw new Error("Could not prepare the Steel Center company for import.");
     await db.prepare("UPDATE companies SET is_active = 1 WHERE id = ?").run(company.id);
+    const matches = await historicalAccountMatches(company.id, parsed.tickets);
 
     let inserted = 0;
     let updated = 0;
-    for (const ticket of parsed.tickets) {
+    let linkedClientTickets = 0;
+    let assignedConsultantTickets = 0;
+    for (const [index, ticket] of parsed.tickets.entries()) {
       const existing = await db.prepare("SELECT id FROM tickets WHERE import_key = ?").get(ticket.importKey);
+      const customerId = matches[index].customer?.id || null;
+      const assigneeId = matches[index].consultant?.id || null;
       const reporterLabel = ticket.reporterType === "consultant" ? `Consultant-raised: ${ticket.reporterName}` : ticket.reporterName;
       const customFields = JSON.stringify({
         importSource: ticket.sourceSheet,
@@ -1363,15 +1404,15 @@ app.post("/api/admin/historical-tickets/import", requireAuth, requireAdmin, hist
           category, tags_json, custom_fields_json, resolved_at, created_at, updated_at,
           reported_client_name, reported_client_contact, historical_solution,
           historical_consultant_name, import_key
-        ) VALUES (?, ?, 'resolved', 'normal', NULL, ?, NULL, 'portal', 'Other', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, 'resolved', 'normal', ?, ?, ?, 'portal', 'Other', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (import_key) DO UPDATE SET
           subject = EXCLUDED.subject,
           description = EXCLUDED.description,
           status = 'resolved',
           priority = 'normal',
-          customer_id = NULL,
+          customer_id = EXCLUDED.customer_id,
           company_id = EXCLUDED.company_id,
-          assignee_id = NULL,
+          assignee_id = EXCLUDED.assignee_id,
           source = 'portal',
           category = 'Other',
           tags_json = '[]',
@@ -1385,21 +1426,36 @@ app.post("/api/admin/historical-tickets/import", requireAuth, requireAdmin, hist
           historical_consultant_name = EXCLUDED.historical_consultant_name
       `).run(
         ticket.issue.replace(/\s+/g, " ").slice(0, 120), ticket.issue,
-        company.id, customFields,
+        customerId, company.id, assigneeId, customFields,
         `${ticket.closedAt} 00:00:00`, `${ticket.openedAt} 00:00:00`, `${ticket.closedAt} 00:00:00`,
         reporterLabel, ticket.reporterContact || null, ticket.solution || null,
         ticket.reporterType === "consultant" ? ticket.reporterName : null, ticket.importKey,
       );
       if (existing) updated += 1;
       else inserted += 1;
+      if (customerId) linkedClientTickets += 1;
+      if (assigneeId) {
+        assignedConsultantTickets += 1;
+        const importedTicket = await db.prepare("SELECT id FROM tickets WHERE import_key = ?").get(ticket.importKey);
+        await db.prepare(`
+          INSERT INTO ticket_assignment_history (ticket_id, agent_id, source, created_at)
+          SELECT ?, ?, 'historical_import', ?
+          WHERE NOT EXISTS (
+            SELECT 1 FROM ticket_assignment_history
+            WHERE ticket_id = ? AND agent_id = ? AND source = 'historical_import'
+          )
+        `).run(importedTicket.id, assigneeId, `${ticket.openedAt} 00:00:00`, importedTicket.id, assigneeId);
+      }
     }
-    return { company, inserted, updated };
+    return { company, inserted, updated, linkedClientTickets, assignedConsultantTickets };
   })();
 
   res.status(200).json({
     companyName: result.company.name,
     imported: result.inserted,
     updated: result.updated,
+    linkedClientTickets: result.linkedClientTickets,
+    assignedConsultantTickets: result.assignedConsultantTickets,
     skipped: parsed.skippedRows,
   });
 });

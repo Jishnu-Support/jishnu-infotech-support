@@ -992,7 +992,7 @@ function App() {
 }
 
 function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
-  const [days, setDays] = useState(30);
+  const [days, setDays] = useState(90);
   const [selectedCompanyId, setSelectedCompanyId] = useState("");
   const [ticketFilters, setTicketFilters] = useState({ customerId: "", consultantId: "", dateFrom: "", dateTo: "", month: "" });
   const [ticketDirectory, setTicketDirectory] = useState<ReportTicketDirectory>({ companies: [], customers: [], consultants: [] });
@@ -1323,7 +1323,8 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   const [historyImporting, setHistoryImporting] = useState(false);
   const [historyImportMode, setHistoryImportMode] = useState<"preview" | "import" | null>(null);
   const [historyPreview, setHistoryPreview] = useState<{
-    file: File; companyName: string; total: number; clientTickets: number; consultantTickets: number; skipped: number;
+    file: File; companyName: string; total: number; clientTickets: number; consultantTickets: number;
+    linkedClientTickets: number; assignedConsultantTickets: number; skipped: number;
   } | null>(null);
 
   const loadCompanies = useCallback(async () => {
@@ -1512,19 +1513,19 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       body.append("workbook", workbook);
       body.append("mode", isReviewed ? "import" : "preview");
       if (!isReviewed) {
-        const preview = await api<{ companyName: string; total: number; clientTickets: number; consultantTickets: number; skipped: number }>(
+        const preview = await api<{ companyName: string; total: number; clientTickets: number; consultantTickets: number; linkedClientTickets: number; assignedConsultantTickets: number; skipped: number }>(
           "/admin/historical-tickets/import", { method: "POST", body },
         );
         setHistoryPreview({ file: workbook, ...preview });
-        setMessage(`Review ready: ${preview.total} tickets for ${preview.companyName} (${preview.clientTickets} client, ${preview.consultantTickets} consultant).`);
+        setMessage(`Review ready: ${preview.total} tickets for ${preview.companyName} (${preview.linkedClientTickets} matched to client accounts, ${preview.assignedConsultantTickets} matched to consultants).`);
         return;
       }
-      const result = await api<{ companyName: string; imported: number; updated: number; skipped: number }>(
+      const result = await api<{ companyName: string; imported: number; updated: number; linkedClientTickets: number; assignedConsultantTickets: number; skipped: number }>(
         "/admin/historical-tickets/import", { method: "POST", body },
       );
       form.reset();
       setHistoryPreview(null);
-      setMessage(`Historical import complete for ${result.companyName}: ${result.imported} new, ${result.updated} updated, ${result.skipped} blank rows skipped.`);
+      setMessage(`Historical import complete for ${result.companyName}: ${result.imported} new, ${result.updated} updated, ${result.linkedClientTickets} linked to client accounts, ${result.assignedConsultantTickets} assigned to consultants, ${result.skipped} blank rows skipped.`);
       await Promise.all([loadCompanies(), onChanged()]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not import this workbook.");
@@ -1539,8 +1540,8 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       <div className="settings-card-heading"><div><h2>Import historical tickets</h2><p>Upload the client and consultant ticket sheets into the Steel Center workspace.</p></div><Download size={18} /></div>
       <form className="company-create-form historical-import-form" onSubmit={importHistoricalTickets}>
         <label>Excel workbook (.xlsx)<input name="workbook" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required disabled={historyImporting} onChange={() => { setHistoryPreview(null); setMessage(""); }} /></label>
-        <p className="settings-hint">Maps reporter name and mobile, ticket issue, raised date, solution, and close date. Blank close dates use the opening date. Rows are stored as resolved historical tickets; no login accounts are created. Review the row counts before import.</p>
-        {historyPreview && <div className="historical-import-preview" role="status"><strong>{historyPreview.total} tickets · {historyPreview.companyName}</strong><span>{historyPreview.clientTickets} client tickets · {historyPreview.consultantTickets} consultant tickets{historyPreview.skipped ? ` · ${historyPreview.skipped} blank rows skipped` : ""}</span></div>}
+        <p className="settings-hint">Maps reporter name and mobile, ticket issue, raised date, solution, and close date. Blank close dates use the opening date. Imported rows appear in the workspace inbox and reports. Existing client and consultant accounts are linked by mobile number, then exact name, so matched rows also appear in their personal ticket views. No login accounts are created.</p>
+        {historyPreview && <div className="historical-import-preview" role="status"><strong>{historyPreview.total} tickets · {historyPreview.companyName}</strong><span>{historyPreview.clientTickets} client · {historyPreview.consultantTickets} consultant · {historyPreview.linkedClientTickets} matched to client accounts · {historyPreview.assignedConsultantTickets} matched to consultants{historyPreview.skipped ? ` · ${historyPreview.skipped} blank rows skipped` : ""}</span></div>}
         <button className="button button-primary" type="submit" disabled={historyImporting}><Download size={15} /> {historyImporting ? (historyImportMode === "import" ? "Importing…" : "Reviewing…") : historyPreview ? `Import ${historyPreview.total} tickets` : "Review workbook"}</button>
       </form>
     </section>}
