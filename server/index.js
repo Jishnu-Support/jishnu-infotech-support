@@ -380,12 +380,19 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
   let user;
   if (portal === "customer") {
     const candidates = await db.prepare(`
-      SELECT u.*, c.name AS company_name, c.support_valid_until AS company_support_valid_until,
-             COALESCE(m.is_company_admin, u.is_company_admin) AS current_company_admin
-      FROM users u LEFT JOIN companies c ON c.id = u.company_id
-      LEFT JOIN company_memberships m ON m.user_id = u.id AND m.company_id = u.company_id
+      SELECT u.*, active_company.id AS active_company_id,
+             active_company.name AS company_name,
+             active_company.support_valid_until AS company_support_valid_until,
+             COALESCE(active_company.is_company_admin, u.is_company_admin) AS current_company_admin
+      FROM users u
+      JOIN LATERAL (
+        SELECT c.id, c.name, c.support_valid_until, m.is_company_admin
+        FROM company_memberships m JOIN companies c ON c.id = m.company_id
+        WHERE m.user_id = u.id AND c.is_active = 1
+        ORDER BY (m.company_id = u.company_id) DESC, c.name, c.id
+        LIMIT 1
+      ) active_company ON TRUE
       WHERE u.username = ? AND u.role = 'customer' AND u.disabled_at IS NULL
-        AND c.is_active = 1
       ORDER BY u.id
     `).all(username);
     const matchingUsers = candidates.filter((candidate) => bcrypt.compareSync(password, candidate.password_hash));
@@ -407,7 +414,10 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
   if (user.role === "customer" && user.approval_status !== "approved") {
     return res.status(403).json({ error: "Your company account is awaiting administrator approval." });
   }
-  if (user.role === "customer") user.is_company_admin = user.current_company_admin;
+  if (user.role === "customer") {
+    user.is_company_admin = user.current_company_admin;
+    user.company_id = Number(user.active_company_id);
+  }
 
   const companies = user.role === "customer" ? await companyMemberships(user.id) : [];
   if (user.role === "customer" && !companies.some((company) => company.id === user.company_id)) {
@@ -1634,6 +1644,20 @@ app.patch("/api/admin/companies/:id", requireAuth, requireAdmin, async (req, res
   `).get(companyId) });
 });
 
+app.patch("/api/admin/companies/:id/status", requireAuth, requireAdmin, async (req, res) => {
+  const companyId = Number(req.params.id);
+  const isActive = req.body.isActive;
+  if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose a valid company." });
+  if (typeof isActive !== "boolean") return res.status(400).json({ error: "Choose whether the company should be active." });
+  const updated = await db.prepare("UPDATE companies SET is_active = ? WHERE id = ?").run(isActive ? 1 : 0, companyId);
+  if (updated.changes !== 1) return res.status(404).json({ error: "Company not found." });
+  const company = await db.prepare(`
+    SELECT id, name, domain, support_valid_until AS supportValidUntil, is_active AS isActive
+    FROM companies WHERE id = ?
+  `).get(companyId);
+  res.json({ company, message: isActive ? "Company access enabled." : "Company access disabled." });
+});
+
 app.get("/api/admin/companies/:id/ticket-clients", requireAuth, requireAdmin, async (req, res) => {
   const companyId = Number(req.params.id);
   if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose a valid company." });
@@ -1785,7 +1809,7 @@ app.post("/api/admin/historical-tickets/import", requireAuth, requireAdmin, hist
 
   const result = await db.transaction(async () => {
     let company = await db.prepare(`
-      SELECT id, name FROM companies
+      SELECT id, name, is_active AS isActive FROM companies
       WHERE lower(name) IN ('steel center', 'steel')
       ORDER BY CASE lower(name) WHEN 'steel center' THEN 0 ELSE 1 END
       LIMIT 1
@@ -1793,12 +1817,12 @@ app.post("/api/admin/historical-tickets/import", requireAuth, requireAdmin, hist
     if (!company) {
       company = await db.prepare(`
         INSERT INTO companies (name, slug, is_active) VALUES ('Steel Center', 'steel-center', 1)
-        ON CONFLICT (name) DO UPDATE SET is_active = 1
-        RETURNING id, name
+        ON CONFLICT (name) DO NOTHING
+        RETURNING id, name, is_active AS isActive
       `).get();
     }
     if (!company) throw new Error("Could not prepare the Steel Center company for import.");
-    await db.prepare("UPDATE companies SET is_active = 1 WHERE id = ?").run(company.id);
+    if (company.isActive === 0) throw new Error("Steel Center is disabled. Enable the company before importing historical tickets.");
     const matches = await historicalAccountMatches(company.id, parsed.tickets);
 
     let inserted = 0;

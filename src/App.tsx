@@ -16,7 +16,7 @@ type User = {
   isCompanyAdmin?: boolean; companyId?: number | null; companyName?: string | null; companySupportValidUntil?: string | null;
 };
 type CompanyMembership = { id: number; name: string; supportValidUntil?: string | null; isCompanyAdmin?: boolean };
-type Company = { id: number; name: string; domain?: string | null; supportValidUntil?: string | null };
+type Company = { id: number; name: string; domain?: string | null; supportValidUntil?: string | null; isActive?: boolean | number };
 type Ticket = {
   id: number; subject: string; description: string; status: Status; priority: Priority;
   category: TicketCategory; tags: string[]; customFields: Record<string, string>;
@@ -1648,6 +1648,23 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update company details."); }
   }
 
+  async function toggleCompanyStatus() {
+    if (!selectedCompany) return;
+    const nextIsActive = !Boolean(selectedCompany.isActive);
+    const action = nextIsActive ? "enable" : "disable";
+    if (!window.confirm(`${nextIsActive ? "Enable" : "Disable"} ${selectedCompany.name}? ${nextIsActive ? "Its users will be able to sign in again." : "Users will be blocked from signing in to this company."}`)) return;
+    setError("");
+    setMessage("");
+    try {
+      const result = await api<{ company: Company; message: string }>(`/admin/companies/${selectedCompany.id}/status`, {
+        method: "PATCH", body: JSON.stringify({ isActive: nextIsActive }),
+      });
+      setCompanies((current) => current.map((company) => company.id === result.company.id
+        ? { ...company, ...result.company } : company));
+      setMessage(result.message);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : `Could not ${action} this company.`); }
+  }
+
   return <section className="feature-page company-management">
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />{workspaceAdmin ? "JISHNU INFOTECH ADMINISTRATION" : "COMPANY ADMINISTRATION"}</div><h1>{workspaceAdmin ? "Client companies" : "Company users"}</h1><p>{workspaceAdmin ? "Create isolated client workspaces and manage their access." : `Manage users and enrollment for ${companies.find((company) => company.id === selectedCompanyId)?.name || "your company"}.`}</p></div></div>
     {error && <div className="inline-error" role="alert">{error}<button onClick={() => setError("")}><X size={13} /></button></div>}
@@ -1670,7 +1687,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       <div className="settings-card-heading"><div><h2>Companies</h2><p>Select a company to manage its users, invitations, and support contract.</p></div><Building2 size={18} /></div>
       <div className="company-list">
         {companies.map((company) => <button type="button" className={`company-select-row ${company.id === selectedCompanyId ? "selected" : ""}`} key={company.id} onClick={() => setSelectedCompanyId(company.id)}>
-          <span><strong>{company.name}</strong><small>{company.domain || "No email domain mapped"} · {company.userCount} users · {company.pendingCount} pending · Support valid until {company.supportValidUntil ? dateLabel(company.supportValidUntil) : "Not set"}</small></span><ArrowRight size={15} />
+          <span><strong>{company.name}{!Boolean(company.isActive) && <span className="team-state team-disabled">Disabled</span>}</strong><small>{company.domain || "No email domain mapped"} · {company.userCount} users · {company.pendingCount} pending · Support valid until {company.supportValidUntil ? dateLabel(company.supportValidUntil) : "Not set"}</small></span><ArrowRight size={15} />
         </button>)}
         {companies.length === 0 && <p className="settings-hint">No companies yet. Create a company above to get started.</p>}
       </div>
@@ -1685,6 +1702,10 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
         <span>Changes here update the company profile, email-domain mapping, and support contract.</span>
         <button className="button button-primary" type="submit" disabled={companyDetailsDraft.name.trim().length < 2}>Save company details</button>
       </form>}
+      {workspaceAdmin && selectedCompany && <div className="company-status-control">
+        <div><strong>Company access</strong><span>{Boolean(selectedCompany.isActive) ? "Active — company users can sign in." : "Disabled — company users cannot sign in."}</span></div>
+        <button className="button button-quiet" type="button" onClick={toggleCompanyStatus}>{Boolean(selectedCompany.isActive) ? "Disable company" : "Enable company"}</button>
+      </div>}
       {!workspaceAdmin && <div className="client-access-method">
         <h3>Create a Customer login</h3>
         <p className="settings-hint">Create an active login and share the username and initial password securely.</p>
