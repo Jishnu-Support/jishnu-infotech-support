@@ -419,6 +419,18 @@ const schemaMigrations = [
     CREATE INDEX IF NOT EXISTS user_manuals_audience_company_idx ON user_manuals(audience_company_id, is_published);
     CREATE INDEX IF NOT EXISTS user_manuals_audience_user_idx ON user_manuals(audience_user_id, is_published);
   `) },
+  { version: 16, apply: () => db.exec(`
+    CREATE TABLE IF NOT EXISTS user_manual_recipients (
+      manual_id BIGINT NOT NULL REFERENCES user_manuals(id) ON DELETE CASCADE,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      PRIMARY KEY (manual_id, user_id)
+    );
+    INSERT INTO user_manual_recipients (manual_id, user_id)
+    SELECT id, audience_user_id FROM user_manuals
+    WHERE audience_type = 'user' AND audience_user_id IS NOT NULL
+    ON CONFLICT DO NOTHING;
+    CREATE INDEX IF NOT EXISTS user_manual_recipients_user_idx ON user_manual_recipients(user_id, manual_id);
+  `) },
 ];
 
 async function seedDatabase() {

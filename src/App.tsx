@@ -69,7 +69,7 @@ type InformationPost = { id: number; consultantId: number; consultantName: strin
 type InformationClient = { id: number; name: string; username: string; contactNumber: string | null; companyNames: string | null };
 type InformationCompany = { id: number; name: string };
 type InformationNotification = { id: number; informationId: number; createdAt: string; postedAt: string; consultantName: string; consultantMobile: string | null; information: string; attachments: InformationAttachment[] };
-type UserManualEntry = { id: number; title: string; summary: string; content: string; mediaKind: "audio" | "video" | null; mediaName: string | null; mediaMimeType: string | null; mediaSizeBytes: number | null; isPublished: boolean | number; audienceType: "all" | "company" | "user"; audienceCompanyId: number | null; audienceCompanyName: string | null; audienceUserId: number | null; audienceUserName: string | null; createdAt: string; updatedAt: string };
+type UserManualEntry = { id: number; title: string; summary: string; content: string; mediaKind: "audio" | "video" | null; mediaName: string | null; mediaMimeType: string | null; mediaSizeBytes: number | null; isPublished: boolean | number; audienceType: "all" | "company" | "user"; audienceCompanyId: number | null; audienceCompanyName: string | null; audienceUserId: number | null; audienceUserName: string | null; audienceUserIds?: number[]; audienceUserNames?: string[]; createdAt: string; updatedAt: string };
 type ManualAudienceUser = { id: number; name: string; username: string; role: Role };
 type PortalMode = "login" | "register";
 type ApiError = { error?: string };
@@ -2334,7 +2334,7 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
   const [isPublished, setIsPublished] = useState(true);
   const [audienceType, setAudienceType] = useState<"all" | "company" | "user">("all");
   const [audienceCompanyId, setAudienceCompanyId] = useState("");
-  const [audienceUserId, setAudienceUserId] = useState("");
+  const [audienceUserIds, setAudienceUserIds] = useState<number[]>([]);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -2359,7 +2359,7 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
   function startNewManual() {
     setEditingId(null);
     setTitle(""); setSummary(""); setContent(""); setMedia(null); setRemoveMedia(false); setIsPublished(true);
-    setAudienceType("all"); setAudienceCompanyId(""); setAudienceUserId("");
+    setAudienceType("all"); setAudienceCompanyId(""); setAudienceUserIds([]);
     setError(""); setMessage(""); setShowEditor(true);
   }
 
@@ -2368,7 +2368,7 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
     setTitle(manual.title); setSummary(manual.summary); setContent(manual.content); setMedia(null); setRemoveMedia(false);
     setIsPublished(Boolean(manual.isPublished)); setAudienceType(manual.audienceType || "all");
     setAudienceCompanyId(manual.audienceCompanyId ? String(manual.audienceCompanyId) : "");
-    setAudienceUserId(manual.audienceUserId ? String(manual.audienceUserId) : "");
+    setAudienceUserIds((manual.audienceUserIds || (manual.audienceUserId ? [manual.audienceUserId] : [])).map(Number));
     setError(""); setMessage(""); setShowEditor(true);
   }
 
@@ -2381,14 +2381,14 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
       body.append("isPublished", String(isPublished)); body.append("removeMedia", String(removeMedia));
       body.append("audienceType", audienceType);
       if (audienceType === "company") body.append("audienceCompanyId", audienceCompanyId);
-      if (audienceType === "user") body.append("audienceUserId", audienceUserId);
+      if (audienceType === "user") body.append("audienceUserIds", JSON.stringify(audienceUserIds));
       if (media) body.append("media", media);
       await api(`/user-manuals${editingId ? `/${editingId}` : ""}`, { method: editingId ? "PATCH" : "POST", body });
       await loadManuals();
       setShowEditor(false);
       const audienceLabel = audienceType === "all" ? "all users" : audienceType === "company"
         ? audienceCompanies.find((company) => String(company.id) === audienceCompanyId)?.name || "the selected company"
-        : audienceUsers.find((user) => String(user.id) === audienceUserId)?.name || "the selected user";
+        : audienceUserIds.map((id) => audienceUsers.find((user) => user.id === id)?.name).filter(Boolean).join(", ") || "the selected users";
       setMessage(editingId ? "User manual updated." : isPublished ? `User manual published to ${audienceLabel}.` : "User manual saved as a draft.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save this user manual."); }
     finally { setSaving(false); }
@@ -2421,17 +2421,17 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
         <label>Audio or video file (optional)<input type="file" accept="audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/ogg,video/mp4,video/webm,.mp3,.m4a,.wav,.ogg,.mp4,.webm" onChange={(event) => { setMedia(event.target.files?.[0] || null); if (event.target.files?.[0]) setRemoveMedia(false); }} /><small>MP3, M4A, WAV, OGG, MP4, or WebM; up to 200 MB.</small></label>
         {media && <div className="manual-file-selected"><Paperclip size={13} />{media.name} · {formatBytes(media.size)}</div>}
         {editingId && manuals.find((manual) => manual.id === editingId)?.mediaName && !media && <div className="manual-current-media"><span>Current file: {manuals.find((manual) => manual.id === editingId)?.mediaName}</span><label><input type="checkbox" checked={removeMedia} onChange={(event) => setRemoveMedia(event.target.checked)} /> Remove current file</label></div>}
-        <label>Publish to<select value={audienceType} onChange={(event) => { setAudienceType(event.target.value as "all" | "company" | "user"); setAudienceCompanyId(""); setAudienceUserId(""); }}><option value="all">All users</option><option value="company">Specific company</option><option value="user">Specific user</option></select></label>
+        <label>Publish to<select value={audienceType} onChange={(event) => { setAudienceType(event.target.value as "all" | "company" | "user"); setAudienceCompanyId(""); setAudienceUserIds([]); }}><option value="all">All users</option><option value="company">Specific company</option><option value="user">Specific users</option></select></label>
         {audienceType === "company" && <label>Select company<select value={audienceCompanyId} onChange={(event) => setAudienceCompanyId(event.target.value)} required><option value="">Choose a company</option>{audienceCompanies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></label>}
-        {audienceType === "user" && <label>Select user<select value={audienceUserId} onChange={(event) => setAudienceUserId(event.target.value)} required><option value="">Choose a user</option>{audienceUsers.map((user) => <option key={user.id} value={user.id}>{user.name} ({user.username}) · {user.role === "customer" ? "Customer" : "Consultant"}</option>)}</select></label>}
+        {audienceType === "user" && <div className="manual-user-picker"><strong>Select users</strong><small>Choose one or more customers or consultants.</small><div className="manual-user-options">{audienceUsers.map((user) => <label className="manual-user-option" key={user.id}><input type="checkbox" checked={audienceUserIds.includes(user.id)} onChange={(event) => setAudienceUserIds((current) => event.target.checked ? [...current, user.id] : current.filter((id) => id !== user.id))} /><span>{user.name} ({user.username})</span><small>{user.role === "customer" ? "Customer" : "Consultant"}</small></label>)}</div></div>}
         <label className="manual-publish-toggle"><input type="checkbox" checked={isPublished} onChange={(event) => setIsPublished(event.target.checked)} /> Publish this guide now</label>
-        <div className="information-editor-actions"><button className="button button-quiet" type="button" onClick={() => setShowEditor(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={saving || title.trim().length < 3 || (audienceType === "company" && !audienceCompanyId) || (audienceType === "user" && !audienceUserId) || (!summary.trim() && !content.trim() && !media && !(editingId && manuals.find((manual) => manual.id === editingId)?.mediaName && !removeMedia))}>{saving ? "Saving…" : editingId ? "Save guide" : isPublished ? "Publish guide" : "Save draft"}</button></div>
+        <div className="information-editor-actions"><button className="button button-quiet" type="button" onClick={() => setShowEditor(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={saving || title.trim().length < 3 || (audienceType === "company" && !audienceCompanyId) || (audienceType === "user" && !audienceUserIds.length) || (!summary.trim() && !content.trim() && !media && !(editingId && manuals.find((manual) => manual.id === editingId)?.mediaName && !removeMedia))}>{saving ? "Saving…" : editingId ? "Save guide" : isPublished ? "Publish guide" : "Save draft"}</button></div>
       </form>
     </section>}
     {loading ? <div className="report-empty" role="status">Loading user guides…</div> : visibleManuals.length === 0
       ? <div className="empty-list"><BookOpen size={27} /><strong>No user guides yet</strong><span>{query ? "Try another search." : "Published instructions and tutorials will appear here."}</span></div>
       : <div className="manual-list">{visibleManuals.map((manual) => <article className="manual-card" key={manual.id}>
-        <div className="manual-card-heading"><div><h2>{manual.title}</h2>{manual.summary && <p>{manual.summary}</p>}{isSuperAdmin && <small className="manual-audience-label">Audience: {manual.audienceType === "company" ? manual.audienceCompanyName || "Selected company" : manual.audienceType === "user" ? manual.audienceUserName || "Selected user" : "All users"}</small>}</div>{isSuperAdmin && <div className="manual-card-actions"><span className={`team-state ${Boolean(manual.isPublished) ? "" : "team-disabled"}`}>{Boolean(manual.isPublished) ? "Published" : "Draft"}</span><button type="button" className="button button-quiet" onClick={() => startEditing(manual)}><Pencil size={13} /> Edit</button><button type="button" className="button button-quiet" onClick={() => deleteManual(manual)}>Delete</button></div>}</div>
+        <div className="manual-card-heading"><div><h2>{manual.title}</h2>{manual.summary && <p>{manual.summary}</p>}{isSuperAdmin && <small className="manual-audience-label">Audience: {manual.audienceType === "company" ? manual.audienceCompanyName || "Selected company" : manual.audienceType === "user" ? (manual.audienceUserNames || (manual.audienceUserName ? [manual.audienceUserName] : [])).join(", ") || "Selected users" : "All users"}</small>}</div>{isSuperAdmin && <div className="manual-card-actions"><span className={`team-state ${Boolean(manual.isPublished) ? "" : "team-disabled"}`}>{Boolean(manual.isPublished) ? "Published" : "Draft"}</span><button type="button" className="button button-quiet" onClick={() => startEditing(manual)}><Pencil size={13} /> Edit</button><button type="button" className="button button-quiet" onClick={() => deleteManual(manual)}>Delete</button></div>}</div>
         {manual.content && <div className="manual-content">{manual.content}</div>}
         {manual.mediaName && manual.mediaKind === "audio" && <div className="manual-media"><div><strong>{manual.mediaName}</strong><small>Audio guide{manual.mediaSizeBytes ? ` · ${formatBytes(manual.mediaSizeBytes)}` : ""}</small></div><audio controls preload="metadata" src={`/api/user-manuals/${manual.id}/media`} /></div>}
         {manual.mediaName && manual.mediaKind === "video" && <div className="manual-video"><video controls preload="metadata" src={`/api/user-manuals/${manual.id}/media`} /><span>{manual.mediaName}{manual.mediaSizeBytes ? ` · ${formatBytes(manual.mediaSizeBytes)}` : ""}</span></div>}
