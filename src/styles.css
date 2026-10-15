@@ -453,10 +453,20 @@ h1, h2, p { margin-top: 0; }
 .company-create-form label { min-width: 0; display: flex; flex-direction: column; gap: 6px; color: #667386; font-size: 9px; font-weight: 600; }
 .company-create-form input { min-width: 0; padding: 9px 10px; border: 1px solid #e3e8ee; border-radius: 5px; color: #425064; font-size: 10px; font-weight: 400; }
 .company-create-form .button { grid-column: 1 / -1; justify-self: end; }
-.historical-import-form .settings-hint { grid-column: 1 / -1; margin: 0; }
-.historical-import-form input[type="file"] { padding: 7px; }
-.historical-import-preview { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid #dce8fb; border-radius: 6px; color: #38547b; background: #f5f8ff; font-size: 10px; }
-.historical-import-preview span { color: #77869a; font-size: 9px; }
+.manual-ticket-page { display: flex; flex-direction: column; gap: 14px; }
+.manual-ticket-page .page-heading { margin-bottom: 5px; }
+.manual-ticket-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 12px; }
+.manual-ticket-form label { min-width: 0; display: flex; flex-direction: column; gap: 6px; color: #667386; font-size: 9px; font-weight: 600; }
+.manual-ticket-form input, .manual-ticket-form select, .manual-ticket-form textarea { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid #e3e8ee; border-radius: 5px; color: #425064; background: #fff; font: 400 10px "Manrope", sans-serif; }
+.manual-ticket-form textarea { resize: vertical; line-height: 1.6; }
+.manual-ticket-form input[readonly] { background: #f6f8fb; color: #738096; }
+.manual-ticket-form input:disabled { background: #f1f3f6; color: #98a2b1; }
+.manual-ticket-wide { grid-column: 1 / -1; }
+.manual-ticket-optional { color: #8994a2; font-size: 8px; font-weight: 400; }
+.manual-ticket-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; }
+.ticket-solution { margin: 12px 0; padding: 12px; border: 1px solid #dce8fb; border-radius: 7px; background: #f5f8ff; color: #435166; }
+.ticket-solution strong { font-size: 10px; }
+.ticket-solution p { margin: 7px 0 0; color: #56657a; font-size: 10px; line-height: 1.6; white-space: pre-wrap; }
 .support-contract-form { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; margin-bottom: 15px; padding: 12px; border: 1px solid #e8edf4; border-radius: 6px; background: #fafbfd; }
 .support-contract-form label { min-width: 180px; display: flex; flex-direction: column; gap: 6px; color: #667386; font-size: 9px; font-weight: 600; }
 .support-contract-form input { padding: 8px 9px; border: 1px solid #e3e8ee; border-radius: 5px; color: #425064; background: #fff; font-size: 10px; }
@@ -681,6 +691,8 @@ h1, h2, p { margin-top: 0; }
   .settings-card { padding: 14px; }
   .team-create-form { grid-template-columns: minmax(0, 1fr); }
   .manual-client-form { grid-template-columns: minmax(0, 1fr); }
+  .manual-ticket-form { grid-template-columns: minmax(0, 1fr); }
+  .manual-ticket-wide, .manual-ticket-actions { grid-column: auto; }
   .client-invite-form { grid-template-columns: minmax(0, 1fr); }
   .client-invite-form .button { justify-self: start; }
   .invite-form, .sla-form { align-items: stretch; flex-direction: column; }

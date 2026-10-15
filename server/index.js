@@ -294,6 +294,9 @@ async function ticketSummary(row) {
     priority: row.priority,
     source: row.source,
     isHistoricalImport: Boolean(row.import_key),
+    isManualEntry: Boolean(parseJsonObject(row.custom_fields_json).manualEntry),
+    solution: row.historical_solution || null,
+    solutionConsultantName: row.historical_consultant_name || null,
     category: row.import_key ? "" : row.category || "Other",
     tags: parseJsonArray(row.tags_json),
     customFields: parseJsonObject(row.custom_fields_json),
@@ -1300,6 +1303,93 @@ app.get("/api/admin/companies", requireAuth, requireAdmin, async (_req, res) => 
     GROUP BY c.id ORDER BY c.name
   `).all();
   res.json({ companies });
+});
+
+app.get("/api/admin/companies/:id/ticket-clients", requireAuth, requireAdmin, async (req, res) => {
+  const companyId = Number(req.params.id);
+  if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose a valid company." });
+  const company = await db.prepare("SELECT id FROM companies WHERE id = ? AND is_active = 1").get(companyId);
+  if (!company) return res.status(404).json({ error: "Active company not found." });
+  const clients = await db.prepare(`
+    SELECT u.id, u.name, u.username, u.contact_number AS contactNumber
+    FROM users u JOIN company_memberships m ON m.user_id = u.id
+    WHERE m.company_id = ? AND u.role = 'customer' AND u.approval_status = 'approved'
+      AND u.disabled_at IS NULL
+    ORDER BY u.name, u.id
+  `).all(companyId);
+  res.json({ clients });
+});
+
+app.post("/api/admin/manual-tickets", requireAuth, requireAdmin, async (req, res) => {
+  const companyId = Number(req.body.companyId);
+  const clientId = Number(req.body.clientId);
+  const consultantId = Number(req.body.consultantId);
+  const subject = typeof req.body.subject === "string" ? req.body.subject.trim() : "";
+  const description = typeof req.body.description === "string" ? req.body.description.trim() : "";
+  const solution = typeof req.body.solution === "string" ? req.body.solution.trim() : "";
+  const raisedDate = req.body.raisedDate;
+  const requestedStatus = req.body.status;
+  const status = requestedStatus === "closed" ? "resolved" : requestedStatus;
+  const closedDate = req.body.closedDate;
+
+  if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose a valid company." });
+  if (!Number.isInteger(clientId) || clientId < 1) return res.status(400).json({ error: "Choose a client." });
+  if (!Number.isInteger(consultantId) || consultantId < 1) return res.status(400).json({ error: "Choose a Consultant." });
+  if (subject.length < 4 || subject.length > 160) return res.status(400).json({ error: "Ticket subject must be between 4 and 160 characters." });
+  if (description.length < 10 || description.length > 5000) return res.status(400).json({ error: "Ticket description must be between 10 and 5,000 characters." });
+  if (solution.length > 5000) return res.status(400).json({ error: "Consultant solution must be 5,000 characters or fewer." });
+  if (!validDateOnly(raisedDate)) return res.status(400).json({ error: "Choose a valid ticket raised date." });
+  if (!["open", "in_progress", "waiting", "resolved"].includes(status)) return res.status(400).json({ error: "Choose Open, In progress, Waiting, or Closed as the ticket status." });
+  if (status === "resolved" && !validDateOnly(closedDate)) return res.status(400).json({ error: "Choose a valid closed date for a Closed ticket." });
+  if (status === "resolved" && closedDate < raisedDate) return res.status(400).json({ error: "Closed date cannot be before the ticket raised date." });
+
+  const company = await db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(companyId);
+  if (!company) return res.status(404).json({ error: "Active company not found." });
+  const client = await db.prepare(`
+    SELECT u.id, u.name, u.contact_number AS contactNumber
+    FROM users u JOIN company_memberships m ON m.user_id = u.id
+    WHERE u.id = ? AND m.company_id = ? AND u.role = 'customer' AND u.approval_status = 'approved'
+      AND u.disabled_at IS NULL
+  `).get(clientId, companyId);
+  if (!client) return res.status(400).json({ error: "Choose an active client in the selected company." });
+  const consultant = await db.prepare("SELECT id, name FROM users WHERE id = ? AND role = 'agent' AND disabled_at IS NULL").get(consultantId);
+  if (!consultant) return res.status(400).json({ error: "Choose an active Consultant." });
+
+  const raisedAt = `${raisedDate} 00:00:00`;
+  const resolvedAt = status === "resolved" ? `${closedDate} 00:00:00` : null;
+  const updatedAt = resolvedAt || raisedAt;
+  const ticketId = await db.transaction(async () => {
+    const created = await db.prepare(`
+      INSERT INTO tickets (
+        subject, description, status, priority, customer_id, company_id, assignee_id, source,
+        category, tags_json, custom_fields_json, created_at, updated_at, resolved_at, resolved_by,
+        reported_client_name, reported_client_contact, historical_solution, historical_consultant_name
+      ) VALUES (?, ?, ?, 'normal', ?, ?, ?, 'portal', 'Other', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      RETURNING id
+    `).run(
+      subject, description, status, client.id, company.id, consultant.id,
+      JSON.stringify({ manualEntry: true, enteredBy: req.user.name }),
+      raisedAt, updatedAt, resolvedAt, status === "resolved" ? consultant.id : null,
+      client.name, client.contactNumber, solution || null, consultant.name,
+    );
+    const id = Number(created.lastInsertRowid);
+    await db.prepare("INSERT INTO messages (ticket_id, author_id, body, created_at) VALUES (?, ?, ?, ?)")
+      .run(id, client.id, description, raisedAt);
+    await db.prepare(`
+      INSERT INTO ticket_assignment_history (ticket_id, agent_id, assigned_by, source, created_at)
+      VALUES (?, ?, ?, 'manual_entry', ?)
+    `).run(id, consultant.id, req.user.id, raisedAt);
+    if (status !== "resolved") {
+      await db.prepare(`
+        INSERT INTO notifications (user_id, ticket_id, kind, message)
+        VALUES (?, ?, 'ticket_created', ?)
+        ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
+      `).run(consultant.id, id, `Manually entered ticket from ${client.name}: ${subject}`);
+    }
+    return id;
+  })();
+  const ticket = await db.prepare(`${ticketSelect} WHERE t.id = ?`).get(ticketId);
+  res.status(201).json({ ticket: await ticketSummary(ticket) });
 });
 
 function historicalAccountMatch(accounts, record) {

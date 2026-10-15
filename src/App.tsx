@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowUp, BarChart3, Bell, Check,
-  CheckCheck, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2,
+  CheckCheck, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2, ClipboardPlus,
   Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
@@ -20,7 +20,8 @@ type Company = { id: number; name: string; domain?: string | null; supportValidU
 type Ticket = {
   id: number; subject: string; description: string; status: Status; priority: Priority;
   category: TicketCategory; tags: string[]; customFields: Record<string, string>;
-  source: "portal" | "email"; isHistoricalImport?: boolean; createdAt: string; updatedAt: string;
+  source: "portal" | "email"; isHistoricalImport?: boolean; isManualEntry?: boolean;
+  solution?: string | null; solutionConsultantName?: string | null; createdAt: string; updatedAt: string;
   customer: { id: number | null; name: string; email: string | null; contactNumber: string | null };
   company: Company | null;
   assignee: { id: number; name: string; email: string | null; contactNumber: string | null } | null;
@@ -706,6 +707,9 @@ function App() {
           {isSuperAdmin && <button aria-label="Companies" title="Companies" className={`nav-item ${activeView === "companies" ? "active" : ""}`} onClick={() => setActiveView("companies")}>
             <Users size={17} /><span>Companies</span>
           </button>}
+          {isSuperAdmin && <button aria-label="Raise Ticket Manually" title="Raise Ticket Manually" className={`nav-item ${activeView === "manual-ticket" ? "active" : ""}`} onClick={() => setActiveView("manual-ticket")}>
+            <ClipboardPlus size={17} /><span>Raise Ticket Manually</span>
+          </button>}
           {(isSuperAdmin || isCompanyAdmin) && <button aria-label="Reports" title="Reports" className={`nav-item ${activeView === "reports" ? "active" : ""}`} onClick={() => setActiveView("reports")}>
             <BarChart3 size={17} /><span>Reports</span>
           </button>}
@@ -723,7 +727,7 @@ function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
+          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
           <div className="topbar-actions">
             {user.role === "customer" && availableCompanies.length > 1 && <button type="button" className="company-switcher" onClick={() => setShowCompanySelection(true)}><Building2 size={14} /><span>{user.companyName || "Select a company"}</span><ArrowDown size={13} /></button>}
             {(activeView === "inbox" || activeView === "assigned") && <div className="search-box"><Search size={15} /><input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tickets…" /><kbd>Ctrl K</kbd></div>}
@@ -817,7 +821,7 @@ function App() {
                       : <div className="detail-person"><div className="avatar avatar-agent"><UserRound size={14} /></div><div><strong>Consultant</strong><span>Unassigned</span></div></div>}
                   <div className="detail-info-item"><span>Created</span><strong>{timeAgo(selectedTicket.createdAt)}</strong></div>
                   {selectedTicket.company && <div className="detail-info-item"><span>Company</span><strong>{selectedTicket.company.name}</strong></div>}
-                  <div className="detail-info-item"><span>Source</span><strong><span className={`source-icon ${selectedTicket.source}`} />{selectedTicket.isHistoricalImport ? "Imported record" : selectedTicket.source === "email" ? "Email" : "Portal"}</strong></div>
+                  <div className="detail-info-item"><span>Source</span><strong><span className={`source-icon ${selectedTicket.source}`} />{selectedTicket.isHistoricalImport ? "Imported record" : selectedTicket.isManualEntry ? "Manual entry" : selectedTicket.source === "email" ? "Email" : "Portal"}</strong></div>
                   {canChangeAssignment ? <label className="detail-assignee"><div className="assignee-avatar">{selectedTicket.assignee ? initials(selectedTicket.assignee.name) : <UserRound size={14} />}</div><select aria-label="Assign ticket to consultant" value={selectedTicket.assignee?.id ?? ""} onChange={(event) => updateTicket({ assigneeId: event.target.value ? Number(event.target.value) : null })}><option value="">Unassigned</option>{agents.filter((agent) => consultantSupportsCategory(agent, selectedTicket.category)).map((agent) => <option key={agent.id} value={agent.id}>{agent.priorityLabel} · {agent.name}</option>)}</select></label>
                     : <div className="detail-assignee"><div className="assignee-avatar">{selectedTicket.assignee ? initials(selectedTicket.assignee.name) : <UserRound size={14} />}</div><span>{selectedTicket.assignee?.name || "Unassigned"}</span></div>}
                 </div>
@@ -830,6 +834,7 @@ function App() {
                   <Clock3 size={14} /><span>First response by {new Date(selectedTicket.firstResponseDueAt).toLocaleString()}</span><span>Resolve by {new Date(selectedTicket.resolutionDueAt).toLocaleString()}</span>
                 </div>}
                 {detail?.assignmentHistory.length ? <AssignmentHistorySection key={selectedTicket.id} entries={detail.assignmentHistory} /> : null}
+                {selectedTicket.solution && <section className="ticket-solution"><strong>Consultant solution{selectedTicket.solutionConsultantName ? ` · ${selectedTicket.solutionConsultantName}` : ""}</strong><p>{selectedTicket.solution}</p></section>}
                 {detail?.attachments.length ? <div className="attachment-list" aria-label="Ticket attachments">
                   <strong className="attachment-heading">Attachments</strong>
                   {detail.attachments.map((attachment) => <a key={attachment.id} className="ticket-attachment" href={`/api/tickets/${selectedTicket.id}/attachments/${attachment.id}`} target="_blank" rel="noreferrer">
@@ -892,6 +897,13 @@ function App() {
               />
               : activeView === "reports" && (isSuperAdmin || isCompanyAdmin)
                 ? <AnalyticsDashboard workspaceWide={isSuperAdmin} />
+              : activeView === "manual-ticket" && isSuperAdmin
+                ? <ManualTicketEntry onCreated={async (ticketId) => {
+                  await refreshTickets();
+                  setFilter("all");
+                  setActiveView("inbox");
+                  setSelectedId(ticketId);
+                }} />
               : activeView === "settings" && isSuperAdmin
                 ? <AdminSettings onChanged={async () => {
                   await refreshTickets();
@@ -1295,6 +1307,97 @@ function Metric({ icon, label, value, tone }: { icon: ReactNode; label: string; 
   return <div className="metric-card"><div className={`metric-icon ${tone}`}>{icon}</div><div><span>{label}</span><strong>{String(value).padStart(2, "0")}</strong></div></div>;
 }
 
+function ManualTicketEntry({ onCreated }: { onCreated: (ticketId: number) => Promise<void> }) {
+  type ManualCompany = { id: number; name: string; isActive?: boolean | number };
+  type ManualClient = { id: number; name: string; username: string; contactNumber: string | null };
+  type ManualConsultant = { id: number; name: string; priorityLabel?: string };
+  const [companies, setCompanies] = useState<ManualCompany[]>([]);
+  const [clients, setClients] = useState<ManualClient[]>([]);
+  const [consultants, setConsultants] = useState<ManualConsultant[]>([]);
+  const [companyId, setCompanyId] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [consultantId, setConsultantId] = useState("");
+  const [status, setStatus] = useState<Status>("open");
+  const [raisedDate, setRaisedDate] = useState(() => new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10));
+  const [closedDate, setClosedDate] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const selectedClient = clients.find((client) => String(client.id) === clientId);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      api<{ companies: ManualCompany[] }>("/admin/companies"),
+      api<{ agents: ManualConsultant[] }>("/agents"),
+    ]).then(([companyResult, consultantResult]) => {
+      if (!active) return;
+      const activeCompanies = companyResult.companies.filter((company) => Boolean(company.isActive));
+      setCompanies(activeCompanies);
+      setConsultants(consultantResult.agents);
+      if (activeCompanies.length) setCompanyId(String(activeCompanies[0].id));
+    }).catch((reason: Error) => setError(reason.message)).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!companyId) { setClients([]); setClientId(""); return; }
+    let active = true;
+    setClients([]);
+    setClientId("");
+    api<{ clients: ManualClient[] }>(`/admin/companies/${companyId}/ticket-clients`)
+      .then((result) => { if (active) setClients(result.clients); })
+      .catch((reason: Error) => { if (active) setError(reason.message); });
+    return () => { active = false; };
+  }, [companyId]);
+
+  async function submitManualTicket(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(""); setMessage(""); setSaving(true);
+    const form = new FormData(event.currentTarget);
+    try {
+      const result = await api<{ ticket: { id: number } }>("/admin/manual-tickets", {
+        method: "POST",
+        body: JSON.stringify({
+          companyId: Number(companyId), clientId: Number(clientId), consultantId: Number(consultantId),
+          subject: form.get("subject"), description: form.get("description"), raisedDate,
+          solution: form.get("solution"), status, closedDate: status === "resolved" ? closedDate : "",
+        }),
+      });
+      setMessage("Ticket saved. Opening it in the inbox…");
+      await onCreated(result.ticket.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not save this ticket.");
+    } finally { setSaving(false); }
+  }
+
+  return <section className="feature-page manual-ticket-page">
+    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />JISHNU INFOTECH ADMINISTRATION</div><h1>Raise Ticket Manually</h1><p>Record a ticket for a client and assign it to a Consultant.</p></div></div>
+    {error && <div className="inline-error" role="alert">{error}<button type="button" onClick={() => setError("")}><X size={13} /></button></div>}
+    {message && <div className="inline-success" role="status">{message}<button type="button" onClick={() => setMessage("")}><X size={13} /></button></div>}
+    <section className="settings-card manual-ticket-card">
+      <div className="settings-card-heading"><div><h2>Ticket details</h2><p>Saved tickets are linked to the selected company, client, and Consultant.</p></div><ClipboardPlus size={18} /></div>
+      {loading ? <div className="report-loading" role="status">Loading companies and Consultants…</div> : <form className="manual-ticket-form" onSubmit={submitManualTicket}>
+        <label>Company<select value={companyId} onChange={(event) => setCompanyId(event.target.value)} required><option value="">Select a company</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></label>
+        <label>Client name<select value={clientId} onChange={(event) => setClientId(event.target.value)} required disabled={!companyId || clients.length === 0}><option value="">{companyId ? "Select a client" : "Select a company first"}</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.name} · {client.username}</option>)}</select></label>
+        <label>Client mobile number<input value={selectedClient?.contactNumber || ""} placeholder="Fetched from client details" readOnly /></label>
+        <label>Consultant name<select value={consultantId} onChange={(event) => setConsultantId(event.target.value)} required><option value="">Select a Consultant</option>{consultants.map((consultant) => <option key={consultant.id} value={consultant.id}>{consultant.name}</option>)}</select></label>
+        <label>Ticket subject<input name="subject" minLength={4} maxLength={160} required /></label>
+        <label>Ticket raised date<input type="date" value={raisedDate} onChange={(event) => setRaisedDate(event.target.value)} required /></label>
+        <label className="manual-ticket-wide">Ticket description<textarea name="description" minLength={10} maxLength={5000} rows={5} required /></label>
+        <label className="manual-ticket-wide">Consultant solution <span className="manual-ticket-optional">(optional while unresolved)</span><textarea name="solution" maxLength={5000} rows={4} /></label>
+        <label>Status<select value={status} onChange={(event) => { const value = event.target.value as Status; setStatus(value); if (value !== "resolved") setClosedDate(""); }} required><option value="open">Open</option><option value="in_progress">In progress</option><option value="waiting">Waiting</option><option value="resolved">Closed</option></select></label>
+        <label>Closed date{status !== "resolved" && <span className="manual-ticket-optional">(required when status is Closed)</span>}<input type="date" value={closedDate} onChange={(event) => setClosedDate(event.target.value)} required={status === "resolved"} disabled={status !== "resolved"} /></label>
+        <div className="manual-ticket-actions"><button className="button button-primary" type="submit" disabled={saving || loading || !companies.length || !clients.length || !consultants.length}><ClipboardPlus size={15} />{saving ? "Saving ticket…" : "Save ticket"}</button></div>
+      </form>}
+      {!loading && companies.length === 0 && <p className="settings-hint">No active companies are available.</p>}
+      {!loading && companyId && clients.length === 0 && <p className="settings-hint">No active client accounts were found in this company.</p>}
+      {!loading && consultants.length === 0 && <p className="settings-hint">No active Consultants are available.</p>}
+    </section>
+  </section>;
+}
+
 function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   workspaceAdmin: boolean;
   initialCompanyId: number | null;
@@ -1320,12 +1423,6 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   const [createdJoinCode, setCreatedJoinCode] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [historyImporting, setHistoryImporting] = useState(false);
-  const [historyImportMode, setHistoryImportMode] = useState<"preview" | "import" | null>(null);
-  const [historyPreview, setHistoryPreview] = useState<{
-    file: File; companyName: string; total: number; clientTickets: number; consultantTickets: number;
-    linkedClientTickets: number; assignedConsultantTickets: number; skipped: number;
-  } | null>(null);
 
   const loadCompanies = useCallback(async () => {
     if (!workspaceAdmin) return;
@@ -1494,57 +1591,10 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update support contract validity."); }
   }
 
-  async function importHistoricalTickets(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const workbook = (new FormData(form).get("workbook")) as File | null;
-    if (!workbook || workbook.size === 0) { setError("Choose the historical ticket workbook first."); return; }
-    if (workbook.size > 5 * 1024 * 1024) { setError("The workbook must be 5 MB or smaller."); return; }
-    const isReviewed = Boolean(historyPreview
-      && historyPreview.file.name === workbook.name
-      && historyPreview.file.size === workbook.size
-      && historyPreview.file.lastModified === workbook.lastModified);
-    if (isReviewed && !window.confirm(
-      `Import ${historyPreview?.total ?? 0} tickets into ${historyPreview?.companyName ?? "Steel Center"}? Matching imported rows will be updated. Other tickets will remain untouched.`,
-    )) return;
-    setError(""); setMessage(""); setHistoryImporting(true); setHistoryImportMode(isReviewed ? "import" : "preview");
-    try {
-      const body = new FormData();
-      body.append("workbook", workbook);
-      body.append("mode", isReviewed ? "import" : "preview");
-      if (!isReviewed) {
-        const preview = await api<{ companyName: string; total: number; clientTickets: number; consultantTickets: number; linkedClientTickets: number; assignedConsultantTickets: number; skipped: number }>(
-          "/admin/historical-tickets/import", { method: "POST", body },
-        );
-        setHistoryPreview({ file: workbook, ...preview });
-        setMessage(`Review ready: ${preview.total} tickets for ${preview.companyName} (${preview.linkedClientTickets} matched to client accounts, ${preview.assignedConsultantTickets} matched to consultants).`);
-        return;
-      }
-      const result = await api<{ companyName: string; imported: number; updated: number; linkedClientTickets: number; assignedConsultantTickets: number; skipped: number }>(
-        "/admin/historical-tickets/import", { method: "POST", body },
-      );
-      form.reset();
-      setHistoryPreview(null);
-      setMessage(`Historical import complete for ${result.companyName}: ${result.imported} new, ${result.updated} updated, ${result.linkedClientTickets} linked to client accounts, ${result.assignedConsultantTickets} assigned to consultants, ${result.skipped} blank rows skipped.`);
-      await Promise.all([loadCompanies(), onChanged()]);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not import this workbook.");
-    } finally { setHistoryImporting(false); setHistoryImportMode(null); }
-  }
-
   return <section className="feature-page company-management">
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />{workspaceAdmin ? "JISHNU INFOTECH ADMINISTRATION" : "COMPANY ADMINISTRATION"}</div><h1>{workspaceAdmin ? "Client companies" : "Company users"}</h1><p>{workspaceAdmin ? "Create isolated client workspaces and manage their access." : `Manage users and enrollment for ${companies.find((company) => company.id === selectedCompanyId)?.name || "your company"}.`}</p></div></div>
     {error && <div className="inline-error" role="alert">{error}<button onClick={() => setError("")}><X size={13} /></button></div>}
     {message && <div className="inline-success" role="status">{message}<button onClick={() => setMessage("")}><X size={13} /></button></div>}
-    {workspaceAdmin && <section className="settings-card historical-import-card">
-      <div className="settings-card-heading"><div><h2>Import historical tickets</h2><p>Upload the client and consultant ticket sheets into the Steel Center workspace.</p></div><Download size={18} /></div>
-      <form className="company-create-form historical-import-form" onSubmit={importHistoricalTickets}>
-        <label>Excel workbook (.xlsx)<input name="workbook" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required disabled={historyImporting} onChange={() => { setHistoryPreview(null); setMessage(""); }} /></label>
-        <p className="settings-hint">Maps reporter name and mobile, ticket issue, raised date, solution, and close date. Blank close dates use the opening date. Imported rows appear in the workspace inbox and reports. Existing client and consultant accounts are linked by mobile number, then exact name, so matched rows also appear in their personal ticket views. No login accounts are created.</p>
-        {historyPreview && <div className="historical-import-preview" role="status"><strong>{historyPreview.total} tickets · {historyPreview.companyName}</strong><span>{historyPreview.clientTickets} client · {historyPreview.consultantTickets} consultant · {historyPreview.linkedClientTickets} matched to client accounts · {historyPreview.assignedConsultantTickets} matched to consultants{historyPreview.skipped ? ` · ${historyPreview.skipped} blank rows skipped` : ""}</span></div>}
-        <button className="button button-primary" type="submit" disabled={historyImporting}><Download size={15} /> {historyImporting ? (historyImportMode === "import" ? "Importing…" : "Reviewing…") : historyPreview ? `Import ${historyPreview.total} tickets` : "Review workbook"}</button>
-      </form>
-    </section>}
     {workspaceAdmin && <section className="settings-card company-create-section">
       <div className="settings-card-heading"><div><h2>Create a company</h2><p>Set up the workspace and create its first administrator login.</p></div><Plus size={18} /></div>
       <form className="company-create-form" onSubmit={createCompany}>
