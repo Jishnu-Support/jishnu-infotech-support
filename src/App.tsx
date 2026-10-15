@@ -1623,12 +1623,14 @@ function ConsultantNewTicketPopup({ notification, onDismiss, onOpen }: {
 }
 
 function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
-  const [agents, setAgents] = useState<Array<{ id: number; name: string; username: string; email: string | null; isAdmin: boolean; routingPriority: number; specialty: ConsultantSpecialty; disabledAt: string | null }>>([]);
+  const [agents, setAgents] = useState<Array<{ id: number; name: string; username: string; email: string | null; contactNumber: string | null; isAdmin: boolean; routingPriority: number; specialty: ConsultantSpecialty; disabledAt: string | null }>>([]);
   const [sla, setSla] = useState({ firstResponseHours: 4, resolutionHours: 48 });
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [editingSpecialty, setEditingSpecialty] = useState<number | null>(null);
   const [specialtyDraft, setSpecialtyDraft] = useState<ConsultantSpecialty>("both");
+  const [editingAgentId, setEditingAgentId] = useState<number | null>(null);
+  const [agentDetailsDraft, setAgentDetailsDraft] = useState({ name: "", username: "", email: "", contactNumber: "" });
 
   const load = useCallback(async () => {
     const [team, slaResult] = await Promise.all([
@@ -1719,6 +1721,18 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update Consultant specialty."); }
   }
 
+  async function saveAgentDetails(event: FormEvent<HTMLFormElement>, agent: typeof agents[number]) {
+    event.preventDefault();
+    setError(""); setMessage("");
+    try {
+      await api(`/agents/${agent.id}`, { method: "PATCH", body: JSON.stringify(agentDetailsDraft) });
+      await load();
+      await onChanged();
+      setEditingAgentId(null);
+      setMessage(`${agent.username}'s details were updated.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update Consultant details."); }
+  }
+
   return <section className="feature-page admin-settings">
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />WORKSPACE ADMINISTRATION</div><h1>Settings</h1><p>Manage your support team and service targets.</p></div></div>
     {error && <div className="inline-error" role="alert">{error}<button onClick={() => setError("")}><X size={13} /></button></div>}
@@ -1738,7 +1752,26 @@ function AdminSettings({ onChanged }: { onChanged: () => Promise<void> }) {
       </form>
       <p className="settings-hint">Automatic tickets follow Primary-to-secondary priority; Consultants with the same priority are balanced by active unresolved workload. Use the arrows to change priority.</p>
       <div className="admin-team-list">
-        {agents.map((agent) => <div className="admin-team-row" key={agent.id}><div className="avatar avatar-agent">{initials(agent.name)}</div><div className="directory-customer"><strong>{agent.name}{Boolean(agent.isAdmin) && <span className="admin-badge">SUPER ADMIN</span>}</strong><span>{agent.username}{agent.email ? ` · ${agent.email}` : ""}</span></div>{editingSpecialty === agent.id ? <><select aria-label={`Specialty for ${agent.name}`} className="consultant-specialty-edit" value={specialtyDraft} onChange={(event) => setSpecialtyDraft(event.target.value as ConsultantSpecialty)}><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Both</option></select><button className="button button-quiet" onClick={() => saveSpecialty(agent)}>Save</button><button className="button button-quiet" onClick={() => setEditingSpecialty(null)}>Cancel</button></> : <><span className="consultant-specialty-label">{agent.specialty === "both" ? "Functional + Technical" : agent.specialty[0].toUpperCase() + agent.specialty.slice(1)}</span><button className="button button-quiet" onClick={() => { setEditingSpecialty(agent.id); setSpecialtyDraft(agent.specialty); }}>Edit type</button></>}<span className="agent-routing-priority">{agent.routingPriority === 1 ? "Primary" : agent.routingPriority === 2 ? "Secondary" : `#${agent.routingPriority}`}</span><button className="button button-quiet" aria-label={`Move ${agent.name} up in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority <= 1} onClick={() => moveAgent(agent, -1)}><ArrowUp size={13} /></button><button className="button button-quiet" aria-label={`Move ${agent.name} down in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority >= agents.filter((item) => !item.disabledAt).length} onClick={() => moveAgent(agent, 1)}><ArrowDown size={13} /></button><span className={`team-state ${agent.disabledAt ? "team-disabled" : ""}`}>{agent.disabledAt ? "Disabled" : "Active"}</span><button className="button button-quiet" onClick={() => resetAgentPassword(agent)}>Reset password</button><button className="button button-quiet" disabled={Boolean(agent.isAdmin) && !agent.disabledAt} onClick={() => toggleAgent(agent)}>{agent.disabledAt ? "Enable" : "Disable"}</button></div>)}
+        {agents.map((agent) => <div className="admin-team-row" key={agent.id}>
+          <div className="avatar avatar-agent">{initials(agent.name)}</div>
+          {editingAgentId === agent.id ? <form className="consultant-profile-edit" onSubmit={(event) => saveAgentDetails(event, agent)}>
+            <label>Full name<input value={agentDetailsDraft.name} onChange={(event) => setAgentDetailsDraft((current) => ({ ...current, name: event.target.value }))} minLength={2} maxLength={120} required /></label>
+            <label>Username<input value={agentDetailsDraft.username} onChange={(event) => setAgentDetailsDraft((current) => ({ ...current, username: event.target.value }))} minLength={3} maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" autoCapitalize="none" spellCheck={false} required /></label>
+            <label>Work email (optional)<input type="email" value={agentDetailsDraft.email} onChange={(event) => setAgentDetailsDraft((current) => ({ ...current, email: event.target.value }))} maxLength={254} /></label>
+            <label>Mobile number<input type="tel" value={agentDetailsDraft.contactNumber} onChange={(event) => setAgentDetailsDraft((current) => ({ ...current, contactNumber: event.target.value }))} maxLength={25} required /></label>
+            <div className="consultant-profile-actions"><button className="button button-primary" type="submit">Save details</button><button className="button button-quiet" type="button" onClick={() => setEditingAgentId(null)}>Cancel</button></div>
+          </form> : <>
+            <div className="directory-customer"><strong>{agent.name}{Boolean(agent.isAdmin) && <span className="admin-badge">SUPER ADMIN</span>}</strong><span>{agent.username}{agent.email ? ` · ${agent.email}` : ""}{agent.contactNumber ? ` · ${agent.contactNumber}` : ""}</span></div>
+            {editingSpecialty === agent.id ? <><select aria-label={`Specialty for ${agent.name}`} className="consultant-specialty-edit" value={specialtyDraft} onChange={(event) => setSpecialtyDraft(event.target.value as ConsultantSpecialty)}><option value="functional">Functional</option><option value="technical">Technical</option><option value="both">Both</option></select><button className="button button-quiet" onClick={() => saveSpecialty(agent)}>Save</button><button className="button button-quiet" onClick={() => setEditingSpecialty(null)}>Cancel</button></> : <><span className="consultant-specialty-label">{agent.specialty === "both" ? "Functional + Technical" : agent.specialty[0].toUpperCase() + agent.specialty.slice(1)}</span><button className="button button-quiet" onClick={() => { setEditingSpecialty(agent.id); setSpecialtyDraft(agent.specialty); }}>Edit type</button></>}
+            <button className="button button-quiet" onClick={() => { setEditingAgentId(agent.id); setAgentDetailsDraft({ name: agent.name, username: agent.username, email: agent.email || "", contactNumber: agent.contactNumber || "" }); }}>Edit details</button>
+            <span className="agent-routing-priority">{agent.routingPriority === 1 ? "Primary" : agent.routingPriority === 2 ? "Secondary" : `#${agent.routingPriority}`}</span>
+            <button className="button button-quiet" aria-label={`Move ${agent.name} up in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority <= 1} onClick={() => moveAgent(agent, -1)}><ArrowUp size={13} /></button>
+            <button className="button button-quiet" aria-label={`Move ${agent.name} down in routing priority`} disabled={Boolean(agent.disabledAt) || agent.routingPriority >= agents.filter((item) => !item.disabledAt).length} onClick={() => moveAgent(agent, 1)}><ArrowDown size={13} /></button>
+            <span className={`team-state ${agent.disabledAt ? "team-disabled" : ""}`}>{agent.disabledAt ? "Disabled" : "Active"}</span>
+            <button className="button button-quiet" onClick={() => resetAgentPassword(agent)}>Reset password</button>
+            <button className="button button-quiet" disabled={Boolean(agent.isAdmin) && !agent.disabledAt} onClick={() => toggleAgent(agent)}>{agent.disabledAt ? "Enable" : "Disable"}</button>
+          </>}
+        </div>)}
       </div>
     </section>
 

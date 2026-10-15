@@ -118,7 +118,7 @@ The Super Admin can link an existing client account to an additional company. Th
 
 ### Consultant team and routing
 
-From **Settings**, create Consultant accounts with a name, username, mobile number, specialty, and initial password. Work email is optional. Specialty can be Functional, Technical, or Both. Accounts can be enabled or disabled, and passwords can be reset.
+From **Settings**, create Consultant accounts with a name, username, mobile number, specialty, and initial password. Work email is optional. Super Admins can edit a Consultant's name, username, mobile number, and optional email, change their specialty, reset passwords, and enable or disable accounts. Specialty can be Functional, Technical, or Both.
 
 Automatic assignment follows Consultant routing priority (Primary before Secondary and later priorities), then uses unresolved workload to break ties. Consultants who do not support the ticket category are not eligible for that assignment. Use the routing controls in Settings to change order.
 

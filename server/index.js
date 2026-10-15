@@ -1106,12 +1106,48 @@ app.patch("/api/agents/:id", requireAuth, requireAdmin, async (req, res) => {
   const hasRoutingPriority = req.body.routingPriority !== undefined;
   const hasSpecialty = req.body.specialty !== undefined;
   const hasPassword = req.body.password !== undefined;
-  if ((!hasDisabled && !hasRoutingPriority && !hasSpecialty && !hasPassword)
+  const hasName = req.body.name !== undefined;
+  const hasUsername = req.body.username !== undefined;
+  const hasEmail = req.body.email !== undefined;
+  const hasContactNumber = req.body.contactNumber !== undefined;
+  if ((!hasDisabled && !hasRoutingPriority && !hasSpecialty && !hasPassword && !hasName && !hasUsername && !hasEmail && !hasContactNumber)
     || (hasDisabled && typeof req.body.disabled !== "boolean")
     || (hasRoutingPriority && (!Number.isInteger(req.body.routingPriority) || req.body.routingPriority < 1))
     || (hasSpecialty && !["functional", "technical", "both"].includes(req.body.specialty))
     || (hasPassword && (typeof req.body.password !== "string" || req.body.password.length < 8 || req.body.password.length > 128))) {
     return res.status(400).json({ error: "Choose a valid Consultant access or routing-priority update." });
+  }
+  const profileUpdates = [];
+  const profileValues = [];
+  if (hasName) {
+    const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+    if (name.length < 2 || name.length > 120) return res.status(400).json({ error: "Enter a name between 2 and 120 characters." });
+    profileUpdates.push("name = ?");
+    profileValues.push(name);
+  }
+  if (hasUsername) {
+    const username = normalizeUsername(req.body.username);
+    if (!validUsername(username)) return res.status(400).json({ error: "Username must be 3 to 32 characters and use letters, numbers, dots, underscores, or hyphens." });
+    if (await db.prepare("SELECT 1 FROM users WHERE role = 'agent' AND username = ? AND id <> ?").get(username, agentId)) {
+      return res.status(409).json({ error: "That Consultant username is already in use." });
+    }
+    profileUpdates.push("username = ?");
+    profileValues.push(username);
+  }
+  if (hasEmail) {
+    const email = optionalEmail(req.body.email);
+    if (email === false) return res.status(400).json({ error: "Enter a valid email address or leave it blank." });
+    if (email && await db.prepare("SELECT 1 FROM users WHERE lower(email) = ? AND id <> ?").get(email, agentId)) {
+      return res.status(409).json({ error: "That email address is already in use." });
+    }
+    profileUpdates.push("email = ?");
+    profileValues.push(email);
+  }
+  if (hasContactNumber) {
+    const contactNumber = optionalContactNumber(req.body.contactNumber);
+    if (!contactNumber) return res.status(400).json({ error: "Enter a valid mobile number (7 to 15 digits)." });
+    profileUpdates.push("contact_number = ?");
+    profileValues.push(contactNumber);
   }
   const agent = await db.prepare("SELECT id, is_admin, disabled_at, routing_priority FROM users WHERE id = ? AND role = 'agent'").get(agentId);
   if (!agent) return res.status(404).json({ error: "Consultant not found." });
@@ -1153,7 +1189,15 @@ app.patch("/api/agents/:id", requireAuth, requireAdmin, async (req, res) => {
   }
   if (hasSpecialty) await db.prepare("UPDATE users SET specialty = ? WHERE id = ?").run(req.body.specialty, agentId);
   if (hasPassword) await db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(bcrypt.hashSync(req.body.password, 12), agentId);
-  res.json({ agent: await db.prepare("SELECT id, name, username, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty, disabled_at AS disabledAt FROM users WHERE id = ?").get(agentId) });
+  if (profileUpdates.length) {
+    try {
+      await db.prepare(`UPDATE users SET ${profileUpdates.join(", ")} WHERE id = ?`).run(...profileValues, agentId);
+    } catch (error) {
+      if (error.code === "23505") return res.status(409).json({ error: "That Consultant username or email address is already in use." });
+      throw error;
+    }
+  }
+  res.json({ agent: await db.prepare("SELECT id, name, username, email, contact_number AS contactNumber, is_admin AS isAdmin, routing_priority AS routingPriority, specialty, disabled_at AS disabledAt FROM users WHERE id = ?").get(agentId) });
 });
 
 app.get("/api/admin/sla-settings", requireAuth, requireAdmin, async (_req, res) => {
@@ -1195,7 +1239,8 @@ app.get("/api/admin/email-status", requireAuth, requireAdmin, async (_req, res) 
 
 app.get("/api/admin/agents", requireAuth, requireAdmin, async (_req, res) => {
   const agents = await db.prepare(`
-    SELECT id, name, username, email, is_admin AS isAdmin, routing_priority AS routingPriority, specialty,
+    SELECT id, name, username, email, contact_number AS contactNumber,
+           is_admin AS isAdmin, routing_priority AS routingPriority, specialty,
            disabled_at AS disabledAt
     FROM users WHERE role = 'agent' ORDER BY disabled_at IS NOT NULL, routing_priority, id
   `).all();
