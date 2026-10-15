@@ -335,6 +335,15 @@ h1, h2, p { margin-top: 0; }
 .manual-user-option input { flex: 0 0 auto; accent-color: #2864dc; }
 .manual-user-option span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .manual-user-option small { margin-left: auto; white-space: nowrap; }
+.manual-new-attachments, .manual-existing-attachments, .manual-attachments { display: grid; gap: 6px; }
+.manual-new-attachments > div, .manual-existing-attachments > div, .manual-attachment { display: flex; align-items: center; gap: 8px; min-width: 0; color: #66758a; font-size: 9px; }
+.manual-new-attachments span, .manual-existing-attachments span { min-width: 0; overflow-wrap: anywhere; }
+.manual-existing-attachments > strong, .manual-attachments > strong { color: #536278; font-size: 10px; }
+.manual-attachment { padding: 7px 9px; border: 1px solid #e8edf3; border-radius: 6px; background: #fafbfd; }
+.manual-attachment img { width: 42px; height: 42px; object-fit: cover; border-radius: 4px; }
+.manual-attachment a { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; color: #526b94; text-decoration: none; }
+.manual-attachment a span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.manual-attachment a small { margin-left: auto; white-space: nowrap; }
 .manual-file-selected, .manual-current-media { display: flex; align-items: center; gap: 8px; color: #728098; font-size: 9px; }
 .manual-current-media { justify-content: space-between; flex-wrap: wrap; }
 .manual-list { display: grid; gap: 12px; }

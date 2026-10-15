@@ -38,7 +38,7 @@ Generate `JWT_SECRET` with `openssl rand -hex 32` on a trusted machine. Never co
 
 SMTP and IMAP variables are optional. The Super Admin signs in with the configured username and password. Company and Consultant accounts can be created directly with usernames and initial passwords, and administrators can reset passwords without email. Configure SMTP only for optional outbound ticket email, legacy invitations, and self-service email recovery. Configure IMAP only if inbound mailbox-to-ticket processing is needed.
 
-In the App service's **Storage** settings, add a persistent **Volume** mounted at `/app/data/attachments`. Ticket attachments and User Manual audio/video uploads are stored on this same volume; User Manual files use its `user-manuals` subfolder. Keep the app at one replica because attachment storage and IMAP polling are not coordinated across multiple replicas.
+In the App service's **Storage** settings, add a persistent **Volume** mounted at `/app/data/attachments`. Ticket attachments and User Manual audio/video uploads and guide documents are stored on this same volume; User Manual files use its `user-manuals` subfolder. Keep the app at one replica because attachment storage and IMAP polling are not coordinated across multiple replicas.
 
 Deploy the app and review its logs. On the first startup with an empty database, it creates the Super Admin account. After confirming that account can sign in, remove the `SEED_CONSULTANT_*` variables and redeploy; they are bootstrap-only settings.
 

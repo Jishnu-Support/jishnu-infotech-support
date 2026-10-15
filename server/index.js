@@ -69,16 +69,34 @@ const permittedManualMediaTypes = new Map([
   ["video/mp4", { extension: ".mp4", kind: "video" }],
   ["video/webm", { extension: ".webm", kind: "video" }],
 ]);
-const manualMediaUpload = multer({
+const permittedManualAttachmentTypes = new Map([
+  ["image/jpeg", [".jpg", ".jpeg"]], ["image/png", [".png"]], ["image/webp", [".webp"]],
+  ["image/gif", [".gif"]], ["image/bmp", [".bmp"]], ["application/pdf", [".pdf"]],
+  ["text/csv", [".csv"]], ["application/csv", [".csv"]], ["application/vnd.ms-excel", [".xls", ".csv"]],
+  ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", [".xlsx"]],
+  ["application/msword", [".doc"]], ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", [".docx"]],
+  ["application/vnd.ms-powerpoint", [".ppt"]], ["application/vnd.openxmlformats-officedocument.presentationml.presentation", [".pptx"]],
+  ["text/plain", [".txt", ".csv"]], ["application/rtf", [".rtf"]], ["text/rtf", [".rtf"]],
+  ["application/vnd.oasis.opendocument.text", [".odt"]],
+  ["application/vnd.oasis.opendocument.spreadsheet", [".ods"]],
+  ["application/vnd.oasis.opendocument.presentation", [".odp"]],
+  ["application/zip", [".zip"]], ["application/x-zip-compressed", [".zip"]],
+]);
+const manualUpload = multer({
   storage: multer.diskStorage({
     destination: manualsRoot,
     filename: (_req, _file, callback) => callback(null, randomUUID()),
   }),
-  limits: { files: 1, fields: 8, parts: 10, fileSize: 200 * 1024 * 1024 },
-  fileFilter: (_req, file, callback) => callback(
-    permittedManualMediaTypes.has(file.mimetype) ? null : new Error("Upload an MP3, M4A, WAV, OGG, MP4, or WebM audio/video file."),
-    permittedManualMediaTypes.has(file.mimetype),
-  ),
+  limits: { files: 11, fields: 12, parts: 23, fileSize: 200 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    if (file.fieldname === "media" && permittedManualMediaTypes.has(file.mimetype)) return callback(null, true);
+    const extensions = permittedManualAttachmentTypes.get(file.mimetype);
+    const extension = extname(file.originalname).toLowerCase();
+    if (file.fieldname === "attachments" && extensions?.includes(extension)) return callback(null, true);
+    callback(new Error(file.fieldname === "media"
+      ? "Upload an MP3, M4A, WAV, OGG, MP4, or WebM audio/video file."
+      : "This file type is not supported for user guide attachments."), false);
+  },
 });
 const historicalWorkbookUpload = multer({
   storage: multer.memoryStorage(),
@@ -1099,6 +1117,9 @@ async function userManualList(user) {
            m.audience_user_id AS audienceUserId, u.name AS audienceUserName,
            ARRAY(SELECT mr.user_id FROM user_manual_recipients mr WHERE mr.manual_id = m.id ORDER BY mr.user_id) AS audienceUserIds,
            ARRAY(SELECT ru.name FROM user_manual_recipients mr JOIN users ru ON ru.id = mr.user_id WHERE mr.manual_id = m.id ORDER BY ru.name) AS audienceUserNames,
+           COALESCE((SELECT json_agg(json_build_object(
+             'id', ma.id, 'name', ma.original_name, 'mimeType', ma.mime_type, 'sizeBytes', ma.size_bytes
+           ) ORDER BY ma.id) FROM user_manual_attachments ma WHERE ma.manual_id = m.id), '[]'::json) AS attachments,
            m.created_at AS createdAt, m.updated_at AS updatedAt
     FROM user_manuals m
     LEFT JOIN companies c ON c.id = m.audience_company_id
@@ -1125,10 +1146,29 @@ app.get("/api/user-manual-audience", requireAuth, requireAdmin, async (_req, res
   res.json({ companies, users });
 });
 
+function receiveUserManualFiles(req, res, next) {
+  manualUpload.fields([{ name: "media", maxCount: 1 }, { name: "attachments", maxCount: 10 }])(req, res, (error) => {
+    const files = Object.values(req.files || {}).flat();
+    if (error) {
+      discardUploadedFiles(files);
+      const message = error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE"
+        ? "Audio/video can be up to 200 MB; each document attachment must be 10 MB or smaller."
+        : error instanceof multer.MulterError && error.code === "LIMIT_FILE_COUNT"
+          ? "Upload one audio/video file and up to 10 document attachments."
+          : error.message;
+      return res.status(400).json({ error: message });
+    }
+    req.file = req.files?.media?.[0];
+    req.manualAttachments = req.files?.attachments || [];
+    next();
+  });
+}
+
 async function saveUserManual(req, res, manualId = null) {
   const file = req.file;
+  const attachments = req.manualAttachments || [];
   const reject = (status, message) => {
-    if (file) discardUploadedFiles([file]);
+    discardUploadedFiles([...(file ? [file] : []), ...attachments]);
     return res.status(status).json({ error: message });
   };
   const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
@@ -1192,7 +1232,21 @@ async function saveUserManual(req, res, manualId = null) {
   const mediaMimeType = detectedMedia?.mimeType || (removeMedia ? null : existing?.mediaMimeType || null);
   const mediaSizeBytes = file?.size || (removeMedia ? null : existing?.mediaSizeBytes || null);
   const storageName = file?.filename || (removeMedia ? null : existing?.storageName || null);
-  if (!summary && !content && !storageName) return reject(400, "Add written instructions or upload an audio/video guide.");
+  if (attachments.some((attachment) => attachment.size > 10 * 1024 * 1024)) return reject(400, "Each document attachment must be 10 MB or smaller.");
+
+  const preparedAttachments = [];
+  for (const attachment of attachments) {
+    const extension = extname(attachment.originalname).toLowerCase();
+    const allowedExtensions = permittedManualAttachmentTypes.get(attachment.mimetype);
+    if (!allowedExtensions?.includes(extension)) return reject(400, "One or more guide attachments have an unsupported file type.");
+    const originalName = basename(attachment.originalname)
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .replace(/[<>:"/\\|?*]/g, "_")
+      .replace(/[. ]+$/, "")
+      .slice(0, 150) || `guide-attachment${extension}`;
+    preparedAttachments.push({ file: attachment, originalName });
+  }
+  if (!summary && !content && !storageName && !preparedAttachments.length) return reject(400, "Add written instructions or upload a guide file.");
 
   try {
     const saveRecord = db.transaction(async () => {
@@ -1222,6 +1276,13 @@ async function saveUserManual(req, res, manualId = null) {
           await db.prepare("INSERT INTO user_manual_recipients (manual_id, user_id) VALUES (?, ?)").run(savedId, userId);
         }
       }
+      const addAttachment = db.prepare(`
+        INSERT INTO user_manual_attachments (manual_id, storage_name, original_name, mime_type, size_bytes)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      for (const item of preparedAttachments) {
+        await addAttachment.run(savedId, item.file.filename, item.originalName, item.file.mimetype, item.file.size);
+      }
       return savedId;
     });
     const savedId = await saveRecord();
@@ -1231,16 +1292,16 @@ async function saveUserManual(req, res, manualId = null) {
     const manuals = await userManualList(req.user);
     res.status(manualId === null ? 201 : 200).json({ manual: manuals.find((item) => Number(item.id) === Number(savedId)) });
   } catch (error) {
-    if (file) discardUploadedFiles([file]);
+    discardUploadedFiles([...(file ? [file] : []), ...attachments]);
     throw error;
   }
 }
 
-app.post("/api/user-manuals", requireAuth, requireAdmin, manualMediaUpload.single("media"), async (req, res) => saveUserManual(req, res));
-app.patch("/api/user-manuals/:id", requireAuth, requireAdmin, manualMediaUpload.single("media"), async (req, res) => {
+app.post("/api/user-manuals", requireAuth, requireAdmin, receiveUserManualFiles, async (req, res) => saveUserManual(req, res));
+app.patch("/api/user-manuals/:id", requireAuth, requireAdmin, receiveUserManualFiles, async (req, res) => {
   const manualId = Number(req.params.id);
   if (!Number.isInteger(manualId) || manualId < 1) {
-    if (req.file) discardUploadedFiles([req.file]);
+    discardUploadedFiles([...(req.file ? [req.file] : []), ...(req.manualAttachments || [])]);
     return res.status(400).json({ error: "Choose a valid user manual." });
   }
   return saveUserManual(req, res, manualId);
@@ -1250,9 +1311,10 @@ app.delete("/api/user-manuals/:id", requireAuth, requireAdmin, async (req, res) 
   if (!Number.isInteger(manualId) || manualId < 1) return res.status(400).json({ error: "Choose a valid user manual." });
   const manual = await db.prepare("SELECT storage_name AS storageName FROM user_manuals WHERE id = ?").get(manualId);
   if (!manual) return res.status(404).json({ error: "User manual not found." });
+  const attachments = await db.prepare("SELECT storage_name AS storageName FROM user_manual_attachments WHERE manual_id = ?").all(manualId);
   await db.prepare("DELETE FROM user_manuals WHERE id = ?").run(manualId);
-  if (manual.storageName) {
-    try { unlinkSync(resolve(manualsRoot, manual.storageName)); } catch { /* The database record is already removed. */ }
+  for (const storageName of [manual.storageName, ...attachments.map((attachment) => attachment.storageName)].filter(Boolean)) {
+    try { unlinkSync(resolve(manualsRoot, storageName)); } catch { /* The database record is already removed. */ }
   }
   res.status(204).end();
 });
@@ -1279,6 +1341,56 @@ app.get("/api/user-manuals/:id/media", requireAuth, async (req, res) => {
   res.sendFile(resolve(manualsRoot, manual.storageName), (error) => {
     if (error && !res.headersSent) res.status(error.code === "ENOENT" ? 404 : 500).json({ error: "Could not retrieve this manual media." });
   });
+});
+
+app.get("/api/user-manuals/:id/attachments/:attachmentId", requireAuth, async (req, res) => {
+  const manualId = Number(req.params.id);
+  const attachmentId = Number(req.params.attachmentId);
+  if (!Number.isInteger(manualId) || manualId < 1 || !Number.isInteger(attachmentId) || attachmentId < 1) {
+    return res.status(400).json({ error: "Choose a valid guide attachment." });
+  }
+  const isSuperAdmin = req.user.role === "agent" && req.user.is_admin;
+  const visibility = isSuperAdmin ? "" : `AND m.is_published = 1 AND (
+    m.audience_type = 'all'
+    OR (m.audience_type = 'user' AND (m.audience_user_id = ? OR EXISTS (
+      SELECT 1 FROM user_manual_recipients mr WHERE mr.manual_id = m.id AND mr.user_id = ?
+    )))
+    OR (m.audience_type = 'company' AND ? = 'customer' AND EXISTS (
+      SELECT 1 FROM company_memberships cm WHERE cm.user_id = ? AND cm.company_id = m.audience_company_id
+    ))
+  )`;
+  const attachment = await db.prepare(`
+    SELECT a.storage_name AS storageName, a.original_name AS originalName, a.mime_type AS mimeType
+    FROM user_manual_attachments a JOIN user_manuals m ON m.id = a.manual_id
+    WHERE m.id = ? AND a.id = ? ${visibility}
+  `).get(...(isSuperAdmin ? [manualId, attachmentId] : [manualId, attachmentId, req.user.id, req.user.id, req.user.role, req.user.id]));
+  if (!attachment) return res.status(404).json({ error: "Guide attachment not found." });
+  res.type(attachment.mimeType);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  if (attachment.mimeType.startsWith("image/")) {
+    res.setHeader("Content-Disposition", "inline");
+    return res.sendFile(resolve(manualsRoot, attachment.storageName), (error) => {
+      if (error && !res.headersSent) res.status(error.code === "ENOENT" ? 404 : 500).json({ error: "Could not retrieve this guide attachment." });
+    });
+  }
+  res.download(resolve(manualsRoot, attachment.storageName), attachment.originalName, (error) => {
+    if (error && !res.headersSent) res.status(error.code === "ENOENT" ? 404 : 500).json({ error: "Could not retrieve this guide attachment." });
+  });
+});
+
+app.delete("/api/user-manuals/:id/attachments/:attachmentId", requireAuth, requireAdmin, async (req, res) => {
+  const manualId = Number(req.params.id);
+  const attachmentId = Number(req.params.attachmentId);
+  if (!Number.isInteger(manualId) || manualId < 1 || !Number.isInteger(attachmentId) || attachmentId < 1) {
+    return res.status(400).json({ error: "Choose a valid guide attachment." });
+  }
+  const attachment = await db.prepare(`
+    SELECT storage_name AS storageName FROM user_manual_attachments WHERE id = ? AND manual_id = ?
+  `).get(attachmentId, manualId);
+  if (!attachment) return res.status(404).json({ error: "Guide attachment not found." });
+  await db.prepare("DELETE FROM user_manual_attachments WHERE id = ? AND manual_id = ?").run(attachmentId, manualId);
+  try { unlinkSync(resolve(manualsRoot, attachment.storageName)); } catch { /* The database row is already removed. */ }
+  res.status(204).end();
 });
 
 async function informationCenterPayload(user, search) {
