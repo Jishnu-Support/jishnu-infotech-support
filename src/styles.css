@@ -403,7 +403,7 @@ h1, h2, p { margin-top: 0; }
 .feature-page.company-management .page-heading { margin-bottom: 5px; }
 .company-directory-section .company-list { margin-top: 2px; }
 .company-directory-section .company-select-row { min-height: 54px; padding: 11px 10px; }
-.company-directory-section .company-select-row:last-child { border-bottom: 0; }
+.company-directory-section .company-directory-row:last-child { border-bottom: 0; }
 .settings-card { padding: 19px; border: 1px solid #e9edf1; border-radius: 8px; background: #fff; }
 .company-mail-invite-card { border-color: #dfe8f6; box-shadow: 0 3px 12px #25364b05; }
 .company-mail-invite-card .settings-card-heading { align-items: center; }
@@ -530,7 +530,9 @@ h1, h2, p { margin-top: 0; }
 .company-status-control span { color: #8491a3; font-size: 9px; }
 .contract-renewal-modal > p { margin: 0; color: #758196; font-size: 10px; line-height: 1.7; }
 .company-list { border-top: 1px solid #edf0f3; }
-.company-select-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 8px; border: 0; border-bottom: 1px solid #edf0f3; color: #7f8b9c; background: #fff; text-align: left; }
+.company-directory-row { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #edf0f3; }
+.company-select-row { flex: 1; width: auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 8px; border: 0; color: #7f8b9c; background: #fff; text-align: left; }
+.company-list-status-button { flex: none; margin-right: 8px; }
 .company-select-row:hover, .company-select-row.selected { background: #f5f8ff; }
 .company-select-row > span { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .company-select-row strong { color: #405067; font-size: 10px; }

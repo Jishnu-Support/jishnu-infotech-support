@@ -1648,15 +1648,14 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update company details."); }
   }
 
-  async function toggleCompanyStatus() {
-    if (!selectedCompany) return;
-    const nextIsActive = !Boolean(selectedCompany.isActive);
+  async function toggleCompanyStatus(company: Company) {
+    const nextIsActive = !Boolean(company.isActive);
     const action = nextIsActive ? "enable" : "disable";
-    if (!window.confirm(`${nextIsActive ? "Enable" : "Disable"} ${selectedCompany.name}? ${nextIsActive ? "Its users will be able to sign in again." : "Users will be blocked from signing in to this company."}`)) return;
+    if (!window.confirm(`${nextIsActive ? "Enable" : "Disable"} ${company.name}? ${nextIsActive ? "Its users will be able to sign in again." : "Users will be blocked from signing in to this company."}`)) return;
     setError("");
     setMessage("");
     try {
-      const result = await api<{ company: Company; message: string }>(`/admin/companies/${selectedCompany.id}/status`, {
+      const result = await api<{ company: Company; message: string }>(`/admin/companies/${company.id}/status`, {
         method: "PATCH", body: JSON.stringify({ isActive: nextIsActive }),
       });
       setCompanies((current) => current.map((company) => company.id === result.company.id
@@ -1686,9 +1685,12 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     {workspaceAdmin && <section className="settings-card company-directory-section">
       <div className="settings-card-heading"><div><h2>Companies</h2><p>Select a company to manage its users, invitations, and support contract.</p></div><Building2 size={18} /></div>
       <div className="company-list">
-        {companies.map((company) => <button type="button" className={`company-select-row ${company.id === selectedCompanyId ? "selected" : ""}`} key={company.id} onClick={() => setSelectedCompanyId(company.id)}>
-          <span><strong>{company.name}{!Boolean(company.isActive) && <span className="team-state team-disabled">Disabled</span>}</strong><small>{company.domain || "No email domain mapped"} · {company.userCount} users · {company.pendingCount} pending · Support valid until {company.supportValidUntil ? dateLabel(company.supportValidUntil) : "Not set"}</small></span><ArrowRight size={15} />
-        </button>)}
+        {companies.map((company) => <div className="company-directory-row" key={company.id}>
+          <button type="button" className={`company-select-row ${company.id === selectedCompanyId ? "selected" : ""}`} onClick={() => setSelectedCompanyId(company.id)}>
+            <span><strong>{company.name}{!Boolean(company.isActive) && <span className="team-state team-disabled">Disabled</span>}</strong><small>{company.domain || "No email domain mapped"} · {company.userCount} users · {company.pendingCount} pending · Support valid until {company.supportValidUntil ? dateLabel(company.supportValidUntil) : "Not set"}</small></span><ArrowRight size={15} />
+          </button>
+          <button type="button" className="button button-quiet company-list-status-button" onClick={() => toggleCompanyStatus(company)}>{Boolean(company.isActive) ? "Disable" : "Enable"}</button>
+        </div>)}
         {companies.length === 0 && <p className="settings-hint">No companies yet. Create a company above to get started.</p>}
       </div>
     </section>}
@@ -1704,7 +1706,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       </form>}
       {workspaceAdmin && selectedCompany && <div className="company-status-control">
         <div><strong>Company access</strong><span>{Boolean(selectedCompany.isActive) ? "Active — company users can sign in." : "Disabled — company users cannot sign in."}</span></div>
-        <button className="button button-quiet" type="button" onClick={toggleCompanyStatus}>{Boolean(selectedCompany.isActive) ? "Disable company" : "Enable company"}</button>
+        <button className="button button-quiet" type="button" onClick={() => toggleCompanyStatus(selectedCompany)}>{Boolean(selectedCompany.isActive) ? "Disable company" : "Enable company"}</button>
       </div>}
       {!workspaceAdmin && <div className="client-access-method">
         <h3>Create a Customer login</h3>
