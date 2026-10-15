@@ -477,6 +477,11 @@ h1, h2, p { margin-top: 0; }
 .company-users-section .settings-card-heading h3 { margin: 0 0 5px; color: #435166; font: 700 11px "Manrope", sans-serif; }
 .company-users-section .admin-team-row { padding: 5px 0; }
 .company-users-section .admin-team-row .button { padding: 0 8px; }
+.client-user-edit-form { min-width: 0; flex: 1 1 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 8px 0; }
+.client-user-edit-form label { min-width: 0; display: flex; flex-direction: column; gap: 4px; color: #667386; font-size: 9px; font-weight: 600; }
+.client-user-edit-form input { min-width: 0; height: 30px; padding: 0 8px; border: 1px solid #dfe5ed; border-radius: 5px; color: #34435b; background: #fff; font: inherit; font-weight: 400; }
+.client-user-edit-actions { display: flex; align-items: end; gap: 6px; }
+.client-user-edit-actions .button { height: 30px; }
 .checkbox-label { display: inline-flex !important; align-items: center; gap: 5px !important; color: #708096 !important; font-size: 8px !important; white-space: nowrap; }
 .checkbox-label input { width: 13px; height: 13px; margin: 0; }
 .join-code-copy { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin-bottom: 10px; padding: 9px; border: 1px solid #dce8fb; border-radius: 5px; background: #f5f8ff; font-size: 9px; }
@@ -690,6 +695,8 @@ h1, h2, p { margin-top: 0; }
   .support-contract-form { align-items: stretch; flex-direction: column; }
   .support-contract-form label { min-width: 0; }
   .company-users-section .admin-team-row { flex-wrap: wrap; }
+  .client-user-edit-form { grid-template-columns: minmax(0, 1fr); }
+  .client-user-edit-actions { flex-wrap: wrap; }
 }
 
 .company-picker-screen { min-height: 100vh; display: grid; place-items: center; padding: 28px 16px; background: #f5f7fa; }

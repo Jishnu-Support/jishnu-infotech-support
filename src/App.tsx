@@ -1311,6 +1311,8 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   const [newCompanySupportValidUntil, setNewCompanySupportValidUntil] = useState("");
   const [editSupportValidUntil, setEditSupportValidUntil] = useState("");
   const [companyUsers, setCompanyUsers] = useState<CompanyUser[]>([]);
+  const [editingClientId, setEditingClientId] = useState<number | null>(null);
+  const [clientDetailsDraft, setClientDetailsDraft] = useState({ name: "", contactNumber: "", email: "" });
   const [linkableClients, setLinkableClients] = useState<Array<{ id: number; name: string; username: string; email: string | null; companies: Array<{ id: number; name: string }> }>>([]);
   const [linkClientId, setLinkClientId] = useState("");
   const [invitations, setInvitations] = useState<Array<{ id: number; email: string; isCompanyAdmin: boolean; expiresAt: string }>>([]);
@@ -1442,6 +1444,21 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not reset this password."); }
   }
 
+  async function saveClientDetails(event: FormEvent<HTMLFormElement>, user: CompanyUser) {
+    event.preventDefault();
+    if (!selectedCompanyId) return;
+    setError(""); setMessage("");
+    try {
+      await api(`/company/users/${user.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...clientDetailsDraft, companyId: selectedCompanyId }),
+      });
+      setEditingClientId(null);
+      await loadCompanyUsers();
+      setMessage(`${user.username}'s details were updated.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update client details."); }
+  }
+
   async function revokeCode(code: JoinCode) {
     setError("");
     try {
@@ -1541,11 +1558,19 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       <div className="company-users-section"><h3>Company members</h3>
         {companyUsers.filter((user) => user.approvalStatus !== "pending").map((user) => <div className="admin-team-row" key={user.id}>
           <div className="avatar customer-avatar">{initials(user.name)}</div>
-          <div className="directory-customer"><strong>{user.name}{Boolean(user.isCompanyAdmin) && <span className="admin-badge">COMPANY ADMIN</span>}</strong><span>{user.username}{user.email ? ` · ${user.email}` : ""}{user.contactNumber ? ` · ${user.contactNumber}` : ""}</span></div>
-          {user.approvalStatus === "approved" && <button className="button button-quiet" onClick={() => resetClientPassword(user)}>Reset password</button>}
-          <span className={`team-state ${user.disabledAt || user.approvalStatus === "rejected" ? "team-disabled" : ""}`}>{user.approvalStatus === "rejected" ? "Declined" : user.disabledAt ? "Disabled" : "Active"}</span>
-          {(workspaceAdmin || !user.isCompanyAdmin) && user.approvalStatus === "approved" && <button className="button button-quiet" onClick={() => updateUser(user, { isCompanyAdmin: !user.isCompanyAdmin })}>{user.isCompanyAdmin ? "Remove admin" : "Make admin"}</button>}
-          <button className="button button-quiet" onClick={() => updateUser(user, { disabled: !user.disabledAt })}>{user.disabledAt ? "Enable" : "Disable"}</button>
+          {editingClientId === user.id ? <form className="client-user-edit-form" onSubmit={(event) => saveClientDetails(event, user)}>
+            <label>Name<input value={clientDetailsDraft.name} onChange={(event) => setClientDetailsDraft((current) => ({ ...current, name: event.target.value }))} minLength={2} maxLength={100} required /></label>
+            <label>Mobile number<input type="tel" value={clientDetailsDraft.contactNumber} onChange={(event) => setClientDetailsDraft((current) => ({ ...current, contactNumber: event.target.value }))} maxLength={25} required /></label>
+            <label>Email (optional)<input type="email" value={clientDetailsDraft.email} onChange={(event) => setClientDetailsDraft((current) => ({ ...current, email: event.target.value }))} maxLength={254} /></label>
+            <div className="client-user-edit-actions"><button className="button button-primary" type="submit">Save details</button><button className="button button-quiet" type="button" onClick={() => setEditingClientId(null)}>Cancel</button></div>
+          </form> : <div className="directory-customer"><strong>{user.name}{Boolean(user.isCompanyAdmin) && <span className="admin-badge">COMPANY ADMIN</span>}</strong><span>{user.username}{user.email ? ` · ${user.email}` : ""}{user.contactNumber ? ` · ${user.contactNumber}` : ""}</span></div>}
+          {editingClientId !== user.id && <button className="button button-quiet" onClick={() => { setEditingClientId(user.id); setClientDetailsDraft({ name: user.name, contactNumber: user.contactNumber || "", email: user.email || "" }); }}>Edit details</button>}
+          {editingClientId !== user.id && <>
+            {user.approvalStatus === "approved" && <button className="button button-quiet" onClick={() => resetClientPassword(user)}>Reset password</button>}
+            <span className={`team-state ${user.disabledAt || user.approvalStatus === "rejected" ? "team-disabled" : ""}`}>{user.approvalStatus === "rejected" ? "Declined" : user.disabledAt ? "Disabled" : "Active"}</span>
+            {(workspaceAdmin || !user.isCompanyAdmin) && user.approvalStatus === "approved" && <button className="button button-quiet" onClick={() => updateUser(user, { isCompanyAdmin: !user.isCompanyAdmin })}>{user.isCompanyAdmin ? "Remove admin" : "Make admin"}</button>}
+            <button className="button button-quiet" onClick={() => updateUser(user, { disabled: !user.disabledAt })}>{user.disabledAt ? "Enable" : "Disable"}</button>
+          </>}
         </div>)}
         {companyUsers.length === 0 && <p className="settings-hint">No client users have joined this company yet.</p>}
       </div>

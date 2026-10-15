@@ -1485,6 +1485,27 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, async (req
   const updates = [];
   const values = [];
   let membershipChanged = false;
+  if (req.body.name !== undefined) {
+    const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+    if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Name must be between 2 and 100 characters." });
+    updates.push("name = ?");
+    values.push(name);
+  }
+  if (req.body.email !== undefined) {
+    const email = optionalEmail(req.body.email);
+    if (email === false) return res.status(400).json({ error: "Enter a valid email address or leave it blank." });
+    if (email && await db.prepare("SELECT 1 FROM users WHERE lower(email) = ? AND id <> ?").get(email, userId)) {
+      return res.status(409).json({ error: "That email address is already in use." });
+    }
+    updates.push("email = ?");
+    values.push(email);
+  }
+  if (req.body.contactNumber !== undefined) {
+    const contactNumber = optionalContactNumber(req.body.contactNumber);
+    if (!contactNumber) return res.status(400).json({ error: "Enter a valid mobile number (7 to 15 digits)." });
+    updates.push("contact_number = ?");
+    values.push(contactNumber);
+  }
   if (req.body.password !== undefined) {
     if (typeof req.body.password !== "string" || req.body.password.length < 8 || req.body.password.length > 128) {
       return res.status(400).json({ error: "Set a password between 8 and 128 characters." });
@@ -1521,11 +1542,19 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, async (req
   }
   if (updates.length === 0 && !membershipChanged) return res.status(400).json({ error: "Choose an account setting to update." });
   values.push(userId);
-  if (updates.length) await db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  if (updates.length) {
+    try {
+      await db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    } catch (error) {
+      if (error.code === "23505") return res.status(409).json({ error: "That email address is already in use." });
+      throw error;
+    }
+  }
   await db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND kind = ?")
     .run(req.user.id, `company_join_request:${userId}`);
   const updatedUser = await db.prepare(`
-    SELECT u.id, u.name, u.username, u.email, m.is_company_admin AS isCompanyAdmin,
+    SELECT u.id, u.name, u.username, u.email, u.contact_number AS contactNumber,
+           m.is_company_admin AS isCompanyAdmin,
            u.approval_status AS approvalStatus, u.disabled_at AS disabledAt
     FROM users u JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ? WHERE u.id = ?
   `).get(companyId, userId);

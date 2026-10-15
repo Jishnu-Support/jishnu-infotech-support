@@ -99,6 +99,7 @@ The Knowledge Base lists resolved/closed tickets and their recorded solutions fo
 Company Admins use **Company users** to manage accounts within their own company:
 
 - Create a client login with full name, username, mobile number, and initial password. Email is optional.
+- Edit an existing client account's name, mobile number, and optional email from the company members list. A Super Admin can edit the same details for any company.
 - Enable/disable users and reset passwords.
 - Promote an eligible user to Company Admin or remove Company Admin access.
 - Review and approve or decline pending registration requests where public registration is enabled.
