@@ -453,6 +453,10 @@ h1, h2, p { margin-top: 0; }
 .company-create-form label { min-width: 0; display: flex; flex-direction: column; gap: 6px; color: #667386; font-size: 9px; font-weight: 600; }
 .company-create-form input { min-width: 0; padding: 9px 10px; border: 1px solid #e3e8ee; border-radius: 5px; color: #425064; font-size: 10px; font-weight: 400; }
 .company-create-form .button { grid-column: 1 / -1; justify-self: end; }
+.historical-import-form .settings-hint { grid-column: 1 / -1; margin: 0; }
+.historical-import-form input[type="file"] { padding: 7px; }
+.historical-import-preview { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid #dce8fb; border-radius: 6px; color: #38547b; background: #f5f8ff; font-size: 10px; }
+.historical-import-preview span { color: #77869a; font-size: 9px; }
 .support-contract-form { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; margin-bottom: 15px; padding: 12px; border: 1px solid #e8edf4; border-radius: 6px; background: #fafbfd; }
 .support-contract-form label { min-width: 180px; display: flex; flex-direction: column; gap: 6px; color: #667386; font-size: 9px; font-weight: 600; }
 .support-contract-form input { padding: 8px 9px; border: 1px solid #e3e8ee; border-radius: 5px; color: #425064; background: #fff; font-size: 10px; }

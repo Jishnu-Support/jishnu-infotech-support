@@ -12,6 +12,7 @@ import { mkdirSync, unlinkSync } from "node:fs";
 import { fileTypeFromFile } from "file-type";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import { parseHistoricalTicketWorkbook } from "./historical-ticket-import.js";
 import { db, initializeDatabase } from "./db.js";
 import { applicationUrl, emailIsConfigured, sendEmail } from "./email.js";
 import { reportAccess, ticketAccessFilter } from "./authz.js";
@@ -56,6 +57,10 @@ const attachmentUpload = multer({
     permittedAttachmentTypes.has(file.mimetype) ? null : new Error("Only PDF, JPEG, PNG, and WebP attachments are allowed."),
     permittedAttachmentTypes.has(file.mimetype),
   ),
+});
+const historicalWorkbookUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { files: 1, fields: 1, parts: 2, fileSize: 5 * 1024 * 1024 },
 });
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
@@ -1295,6 +1300,108 @@ app.get("/api/admin/companies", requireAuth, requireAdmin, async (_req, res) => 
     GROUP BY c.id ORDER BY c.name
   `).all();
   res.json({ companies });
+});
+
+app.post("/api/admin/historical-tickets/import", requireAuth, requireAdmin, historicalWorkbookUpload.single("workbook"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Choose an .xlsx workbook to import." });
+  if (extname(req.file.originalname).toLowerCase() !== ".xlsx") {
+    return res.status(400).json({ error: "Upload an Excel .xlsx workbook." });
+  }
+
+  let parsed;
+  try {
+    parsed = parseHistoricalTicketWorkbook(req.file.buffer);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not read the Excel workbook." });
+  }
+
+  if (req.body.mode === "preview") {
+    const company = await db.prepare("SELECT name FROM companies WHERE lower(name) IN ('steel center', 'steel') ORDER BY CASE lower(name) WHEN 'steel center' THEN 0 ELSE 1 END LIMIT 1").get();
+    return res.json({
+      mode: "preview",
+      companyName: company?.name || "Steel Center",
+      total: parsed.tickets.length,
+      clientTickets: parsed.tickets.filter((ticket) => ticket.reporterType === "client").length,
+      consultantTickets: parsed.tickets.filter((ticket) => ticket.reporterType === "consultant").length,
+      skipped: parsed.skippedRows,
+    });
+  }
+  if (req.body.mode !== "import") return res.status(400).json({ error: "Review the workbook before importing it." });
+
+  const result = await db.transaction(async () => {
+    let company = await db.prepare(`
+      SELECT id, name FROM companies
+      WHERE lower(name) IN ('steel center', 'steel')
+      ORDER BY CASE lower(name) WHEN 'steel center' THEN 0 ELSE 1 END
+      LIMIT 1
+    `).get();
+    if (!company) {
+      company = await db.prepare(`
+        INSERT INTO companies (name, slug, is_active) VALUES ('Steel Center', 'steel-center', 1)
+        ON CONFLICT (name) DO UPDATE SET is_active = 1
+        RETURNING id, name
+      `).get();
+    }
+    if (!company) throw new Error("Could not prepare the Steel Center company for import.");
+    await db.prepare("UPDATE companies SET is_active = 1 WHERE id = ?").run(company.id);
+
+    let inserted = 0;
+    let updated = 0;
+    for (const ticket of parsed.tickets) {
+      const existing = await db.prepare("SELECT id FROM tickets WHERE import_key = ?").get(ticket.importKey);
+      const reporterLabel = ticket.reporterType === "consultant" ? `Consultant-raised: ${ticket.reporterName}` : ticket.reporterName;
+      const customFields = JSON.stringify({
+        importSource: ticket.sourceSheet,
+        sourceRow: String(ticket.sourceRow),
+        reporterType: ticket.reporterType,
+        reporterName: ticket.reporterName,
+        reporterMobile: ticket.reporterContact,
+      });
+      await db.prepare(`
+        INSERT INTO tickets (
+          subject, description, status, priority, customer_id, company_id, assignee_id, source,
+          category, tags_json, custom_fields_json, resolved_at, created_at, updated_at,
+          reported_client_name, reported_client_contact, historical_solution,
+          historical_consultant_name, import_key
+        ) VALUES (?, ?, 'resolved', 'normal', NULL, ?, NULL, 'portal', 'Other', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (import_key) DO UPDATE SET
+          subject = EXCLUDED.subject,
+          description = EXCLUDED.description,
+          status = 'resolved',
+          priority = 'normal',
+          customer_id = NULL,
+          company_id = EXCLUDED.company_id,
+          assignee_id = NULL,
+          source = 'portal',
+          category = 'Other',
+          tags_json = '[]',
+          custom_fields_json = EXCLUDED.custom_fields_json,
+          resolved_at = EXCLUDED.resolved_at,
+          created_at = EXCLUDED.created_at,
+          updated_at = EXCLUDED.updated_at,
+          reported_client_name = EXCLUDED.reported_client_name,
+          reported_client_contact = EXCLUDED.reported_client_contact,
+          historical_solution = EXCLUDED.historical_solution,
+          historical_consultant_name = EXCLUDED.historical_consultant_name
+      `).run(
+        ticket.issue.replace(/\s+/g, " ").slice(0, 120), ticket.issue,
+        company.id, customFields,
+        `${ticket.closedAt} 00:00:00`, `${ticket.openedAt} 00:00:00`, `${ticket.closedAt} 00:00:00`,
+        reporterLabel, ticket.reporterContact || null, ticket.solution || null,
+        ticket.reporterType === "consultant" ? ticket.reporterName : null, ticket.importKey,
+      );
+      if (existing) updated += 1;
+      else inserted += 1;
+    }
+    return { company, inserted, updated };
+  })();
+
+  res.status(200).json({
+    companyName: result.company.name,
+    imported: result.inserted,
+    updated: result.updated,
+    skipped: parsed.skippedRows,
+  });
 });
 
 app.get("/api/admin/client-accounts", requireAuth, requireAdmin, async (_req, res) => {

@@ -1320,6 +1320,11 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   const [createdJoinCode, setCreatedJoinCode] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [historyImporting, setHistoryImporting] = useState(false);
+  const [historyImportMode, setHistoryImportMode] = useState<"preview" | "import" | null>(null);
+  const [historyPreview, setHistoryPreview] = useState<{
+    file: File; companyName: string; total: number; clientTickets: number; consultantTickets: number; skipped: number;
+  } | null>(null);
 
   const loadCompanies = useCallback(async () => {
     if (!workspaceAdmin) return;
@@ -1488,10 +1493,57 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update support contract validity."); }
   }
 
+  async function importHistoricalTickets(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const workbook = (new FormData(form).get("workbook")) as File | null;
+    if (!workbook || workbook.size === 0) { setError("Choose the historical ticket workbook first."); return; }
+    if (workbook.size > 5 * 1024 * 1024) { setError("The workbook must be 5 MB or smaller."); return; }
+    const isReviewed = Boolean(historyPreview
+      && historyPreview.file.name === workbook.name
+      && historyPreview.file.size === workbook.size
+      && historyPreview.file.lastModified === workbook.lastModified);
+    if (isReviewed && !window.confirm(
+      `Import ${historyPreview?.total ?? 0} tickets into ${historyPreview?.companyName ?? "Steel Center"}? Matching imported rows will be updated. Other tickets will remain untouched.`,
+    )) return;
+    setError(""); setMessage(""); setHistoryImporting(true); setHistoryImportMode(isReviewed ? "import" : "preview");
+    try {
+      const body = new FormData();
+      body.append("workbook", workbook);
+      body.append("mode", isReviewed ? "import" : "preview");
+      if (!isReviewed) {
+        const preview = await api<{ companyName: string; total: number; clientTickets: number; consultantTickets: number; skipped: number }>(
+          "/admin/historical-tickets/import", { method: "POST", body },
+        );
+        setHistoryPreview({ file: workbook, ...preview });
+        setMessage(`Review ready: ${preview.total} tickets for ${preview.companyName} (${preview.clientTickets} client, ${preview.consultantTickets} consultant).`);
+        return;
+      }
+      const result = await api<{ companyName: string; imported: number; updated: number; skipped: number }>(
+        "/admin/historical-tickets/import", { method: "POST", body },
+      );
+      form.reset();
+      setHistoryPreview(null);
+      setMessage(`Historical import complete for ${result.companyName}: ${result.imported} new, ${result.updated} updated, ${result.skipped} blank rows skipped.`);
+      await Promise.all([loadCompanies(), onChanged()]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not import this workbook.");
+    } finally { setHistoryImporting(false); setHistoryImportMode(null); }
+  }
+
   return <section className="feature-page company-management">
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />{workspaceAdmin ? "JISHNU INFOTECH ADMINISTRATION" : "COMPANY ADMINISTRATION"}</div><h1>{workspaceAdmin ? "Client companies" : "Company users"}</h1><p>{workspaceAdmin ? "Create isolated client workspaces and manage their access." : `Manage users and enrollment for ${companies.find((company) => company.id === selectedCompanyId)?.name || "your company"}.`}</p></div></div>
     {error && <div className="inline-error" role="alert">{error}<button onClick={() => setError("")}><X size={13} /></button></div>}
     {message && <div className="inline-success" role="status">{message}<button onClick={() => setMessage("")}><X size={13} /></button></div>}
+    {workspaceAdmin && <section className="settings-card historical-import-card">
+      <div className="settings-card-heading"><div><h2>Import historical tickets</h2><p>Upload the client and consultant ticket sheets into the Steel Center workspace.</p></div><Download size={18} /></div>
+      <form className="company-create-form historical-import-form" onSubmit={importHistoricalTickets}>
+        <label>Excel workbook (.xlsx)<input name="workbook" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required disabled={historyImporting} onChange={() => { setHistoryPreview(null); setMessage(""); }} /></label>
+        <p className="settings-hint">Maps reporter name and mobile, ticket issue, raised date, solution, and close date. Blank close dates use the opening date. Rows are stored as resolved historical tickets; no login accounts are created. Review the row counts before import.</p>
+        {historyPreview && <div className="historical-import-preview" role="status"><strong>{historyPreview.total} tickets · {historyPreview.companyName}</strong><span>{historyPreview.clientTickets} client tickets · {historyPreview.consultantTickets} consultant tickets{historyPreview.skipped ? ` · ${historyPreview.skipped} blank rows skipped` : ""}</span></div>}
+        <button className="button button-primary" type="submit" disabled={historyImporting}><Download size={15} /> {historyImporting ? (historyImportMode === "import" ? "Importing…" : "Reviewing…") : historyPreview ? `Import ${historyPreview.total} tickets` : "Review workbook"}</button>
+      </form>
+    </section>}
     {workspaceAdmin && <section className="settings-card company-create-section">
       <div className="settings-card-heading"><div><h2>Create a company</h2><p>Set up the workspace and create its first administrator login.</p></div><Plus size={18} /></div>
       <form className="company-create-form" onSubmit={createCompany}>
