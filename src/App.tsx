@@ -1464,7 +1464,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(initialCompanyId);
   const [companyName, setCompanyName] = useState("");
   const [newCompanySupportValidUntil, setNewCompanySupportValidUntil] = useState("");
-  const [editSupportValidUntil, setEditSupportValidUntil] = useState("");
+  const [companyDetailsDraft, setCompanyDetailsDraft] = useState({ name: "", domain: "", supportValidUntil: "" });
   const [companyUsers, setCompanyUsers] = useState<CompanyUser[]>([]);
   const [editingClientId, setEditingClientId] = useState<number | null>(null);
   const [clientDetailsDraft, setClientDetailsDraft] = useState({ name: "", contactNumber: "", email: "" });
@@ -1625,22 +1625,26 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
 
   const selectedCompany = companies.find((company) => company.id === selectedCompanyId);
   useEffect(() => {
-    setEditSupportValidUntil(selectedCompany?.supportValidUntil?.slice(0, 10) || "");
-  }, [selectedCompany?.id, selectedCompany?.supportValidUntil]);
+    setCompanyDetailsDraft({
+      name: selectedCompany?.name || "",
+      domain: selectedCompany?.domain || "",
+      supportValidUntil: selectedCompany?.supportValidUntil?.slice(0, 10) || "",
+    });
+  }, [selectedCompany?.id, selectedCompany?.name, selectedCompany?.domain, selectedCompany?.supportValidUntil]);
 
-  async function updateSupportValidUntil(event: FormEvent<HTMLFormElement>) {
+  async function updateCompanyDetails(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedCompanyId) return;
     setError("");
     setMessage("");
     try {
-      const result = await api<{ company: Company }>(`/admin/companies/${selectedCompanyId}/support-valid-until`, {
-        method: "PATCH", body: JSON.stringify({ supportValidUntil: editSupportValidUntil }),
+      const result = await api<{ company: Company }>(`/admin/companies/${selectedCompanyId}`, {
+        method: "PATCH", body: JSON.stringify(companyDetailsDraft),
       });
       setCompanies((current) => current.map((company) => company.id === result.company.id
-        ? { ...company, supportValidUntil: result.company.supportValidUntil } : company));
-      setMessage(`Support contract validity updated for ${result.company.name}.`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update support contract validity."); }
+        ? { ...company, ...result.company } : company));
+      setMessage(`Company details updated for ${result.company.name}.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update company details."); }
   }
 
   return <section className="feature-page company-management">
@@ -1672,11 +1676,13 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     </section>}
 
     {selectedCompanyId && <section className="settings-card">
-      <div className="settings-card-heading"><div><h2>{selectedCompany?.name || "Team access"}</h2><p>Invite colleagues, generate reusable company codes, or review sign-up requests.</p></div><Users size={18} /></div>
-      {workspaceAdmin && <form className="support-contract-form" onSubmit={updateSupportValidUntil}>
-        <label>Support valid until<input type="date" value={editSupportValidUntil} onChange={(event) => setEditSupportValidUntil(event.target.value)} required /></label>
-        <span>Clients can raise tickets through this date. Only the Super Admin can change it.</span>
-        <button className="button button-primary" type="submit" disabled={!editSupportValidUntil}>Save date</button>
+      <div className="settings-card-heading"><div><h2>{workspaceAdmin ? "Company details" : selectedCompany?.name || "Team access"}</h2><p>{workspaceAdmin ? `Edit the profile for ${selectedCompany?.name || "this company"}, then manage its users and invitations.` : "Invite colleagues, generate reusable company codes, or review sign-up requests."}</p></div><Users size={18} /></div>
+      {workspaceAdmin && <form className="support-contract-form company-details-form" onSubmit={updateCompanyDetails}>
+        <label>Company name<input value={companyDetailsDraft.name} onChange={(event) => setCompanyDetailsDraft((current) => ({ ...current, name: event.target.value }))} minLength={2} maxLength={120} required /></label>
+        <label>Company email domain (optional)<input value={companyDetailsDraft.domain} onChange={(event) => setCompanyDetailsDraft((current) => ({ ...current, domain: event.target.value }))} maxLength={253} placeholder="example.com" autoCapitalize="none" /></label>
+        <label>Support valid until (optional)<input type="date" value={companyDetailsDraft.supportValidUntil} onChange={(event) => setCompanyDetailsDraft((current) => ({ ...current, supportValidUntil: event.target.value }))} /></label>
+        <span>Changes here update the company profile, email-domain mapping, and support contract.</span>
+        <button className="button button-primary" type="submit" disabled={companyDetailsDraft.name.trim().length < 2}>Save company details</button>
       </form>}
       {!workspaceAdmin && <div className="client-access-method">
         <h3>Create a client login</h3>

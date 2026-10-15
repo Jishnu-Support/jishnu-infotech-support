@@ -518,6 +518,10 @@ h1, h2, p { margin-top: 0; }
 .support-contract-form input { padding: 8px 9px; border: 1px solid #e3e8ee; border-radius: 5px; color: #425064; background: #fff; font-size: 10px; }
 .support-contract-form > span { flex: 1; color: #8994a2; font-size: 8px; line-height: 1.5; }
 .support-contract-form .button { height: 31px; font-size: 8px; }
+.company-details-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; }
+.company-details-form label { min-width: 0; }
+.company-details-form > span { grid-column: 1 / 4; }
+.company-details-form > .button { grid-column: 4; }
 .contract-renewal-modal > p { margin: 0; color: #758196; font-size: 10px; line-height: 1.7; }
 .company-list { border-top: 1px solid #edf0f3; }
 .company-select-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 8px; border: 0; border-bottom: 1px solid #edf0f3; color: #7f8b9c; background: #fff; text-align: left; }
@@ -770,6 +774,8 @@ h1, h2, p { margin-top: 0; }
   .company-create-form .button { grid-column: auto; justify-self: stretch; }
   .support-contract-form { align-items: stretch; flex-direction: column; }
   .support-contract-form label { min-width: 0; }
+  .company-details-form { grid-template-columns: minmax(0, 1fr); }
+  .company-details-form > span, .company-details-form > .button { grid-column: auto; }
   .company-users-section .admin-team-row { flex-wrap: wrap; }
   .client-user-edit-form { grid-template-columns: minmax(0, 1fr); }
   .client-user-edit-actions { flex-wrap: wrap; }

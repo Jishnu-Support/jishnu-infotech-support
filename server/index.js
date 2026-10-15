@@ -1110,12 +1110,11 @@ app.get("/api/information-center", requireAuth, async (req, res) => {
   if (req.user.role !== "agent") return res.json(result);
   const clients = await db.prepare(`
     SELECT u.id, u.name, u.username, u.contact_number AS contactNumber,
-           string_agg(DISTINCT c.name, ', ' ORDER BY c.name) AS companyNames
+           (SELECT string_agg(c.name, ', ' ORDER BY c.name)
+            FROM company_memberships m JOIN companies c ON c.id = m.company_id
+            WHERE m.user_id = u.id) AS companyNames
     FROM users u
-    LEFT JOIN company_memberships m ON m.user_id = u.id
-    LEFT JOIN companies c ON c.id = m.company_id
     WHERE u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL
-    GROUP BY u.id
     ORDER BY u.name, u.id
   `).all();
   res.json({ ...result, clients });
@@ -1551,6 +1550,33 @@ app.get("/api/admin/companies", requireAuth, requireAdmin, async (_req, res) => 
     GROUP BY c.id ORDER BY c.name
   `).all();
   res.json({ companies });
+});
+
+app.patch("/api/admin/companies/:id", requireAuth, requireAdmin, async (req, res) => {
+  const companyId = Number(req.params.id);
+  const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+  const domain = typeof req.body.domain === "string" ? req.body.domain.trim().toLowerCase().replace(/^@/, "") : "";
+  const supportValidUntil = req.body.supportValidUntil;
+  if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose a valid company." });
+  if (name.length < 2 || name.length > 120) return res.status(400).json({ error: "Company name must be between 2 and 120 characters." });
+  if (domain && (!/^(?=.{1,253}$)(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(domain))) {
+    return res.status(400).json({ error: "Enter a valid company email domain, or leave it blank." });
+  }
+  if (supportValidUntil && !validDateOnly(supportValidUntil)) return res.status(400).json({ error: "Enter a valid Support valid until date." });
+  const slug = name.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 100);
+  if (!slug) return res.status(400).json({ error: "Company name must contain at least one letter or number." });
+  try {
+    const updated = await db.prepare(`
+      UPDATE companies SET name = ?, slug = ?, domain = ?, support_valid_until = ? WHERE id = ?
+    `).run(name, slug, domain || null, supportValidUntil || null, companyId);
+    if (updated.changes !== 1) return res.status(404).json({ error: "Company not found." });
+  } catch (error) {
+    if (error.code === "23505") return res.status(409).json({ error: "That company name, email domain, or URL slug is already in use." });
+    throw error;
+  }
+  res.json({ company: await db.prepare(`
+    SELECT id, name, domain, support_valid_until AS supportValidUntil FROM companies WHERE id = ?
+  `).get(companyId) });
 });
 
 app.get("/api/admin/companies/:id/ticket-clients", requireAuth, requireAdmin, async (req, res) => {
