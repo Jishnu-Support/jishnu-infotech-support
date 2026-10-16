@@ -1131,6 +1131,9 @@ async function userManualList(user) {
            COALESCE((SELECT json_agg(json_build_object(
              'id', ma.id, 'name', ma.original_name, 'mimeType', ma.mime_type, 'sizeBytes', ma.size_bytes, 'kind', ma.file_kind
            ) ORDER BY ma.id) FROM user_manual_attachments ma WHERE ma.manual_id = m.id), '[]'::json) AS attachments,
+           COALESCE((SELECT json_agg(json_build_object(
+             'id', ml.id, 'label', ml.label, 'url', ml.url
+           ) ORDER BY ml.id) FROM user_manual_links ml WHERE ml.manual_id = m.id), '[]'::json) AS links,
            m.created_at AS createdAt, m.updated_at AS updatedAt
     FROM user_manuals m
     LEFT JOIN companies c ON c.id = m.audience_company_id
@@ -1188,6 +1191,11 @@ async function saveUserManual(req, res, manualId = null) {
   const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
   const summary = typeof req.body.summary === "string" ? req.body.summary.trim() : "";
   const content = typeof req.body.content === "string" ? req.body.content.trim() : "";
+  let links = [];
+  try {
+    const parsedLinks = typeof req.body.links === "string" ? JSON.parse(req.body.links) : req.body.links;
+    links = Array.isArray(parsedLinks) ? parsedLinks : [];
+  } catch { links = null; }
   const isPublished = req.body.isPublished !== "false" && req.body.isPublished !== false;
   const audienceType = typeof req.body.audienceType === "string" ? req.body.audienceType : "all";
   const audienceCompanyId = audienceType === "company" ? Number(req.body.audienceCompanyId) : null;
@@ -1203,6 +1211,18 @@ async function saveUserManual(req, res, manualId = null) {
   if (title.length < 3 || title.length > 160) return reject(400, "Title must be between 3 and 160 characters.");
   if (summary.length > 500) return reject(400, "Summary cannot exceed 500 characters.");
   if (content.length > 20000) return reject(400, "Guide content cannot exceed 20,000 characters.");
+  if (!links || links.length > 20) return reject(400, "Add up to 20 valid links to a guide.");
+  const preparedLinks = [];
+  for (const item of links) {
+    const label = typeof item?.label === "string" ? item.label.trim() : "";
+    const url = typeof item?.url === "string" ? item.url.trim() : "";
+    let parsedUrl;
+    try { parsedUrl = new URL(url); } catch { return reject(400, "Enter a valid link URL."); }
+    if (!label || label.length > 120 || url.length > 2048 || !["http:", "https:"].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password) {
+      return reject(400, "Links need a label and a valid HTTP or HTTPS address.");
+    }
+    preparedLinks.push({ label, url: parsedUrl.toString() });
+  }
   if (!["all", "company", "user"].includes(audienceType)) return reject(400, "Choose a valid guide audience.");
   if (audienceType === "company" && (!Number.isInteger(audienceCompanyId) || audienceCompanyId < 1)) return reject(400, "Choose a company for this guide.");
   if (audienceType === "user" && (!audienceUserIds.length || audienceUserIds.some((id) => !Number.isInteger(id) || id < 1))) return reject(400, "Choose one or more users for this guide.");
@@ -1260,7 +1280,7 @@ async function saveUserManual(req, res, manualId = null) {
       .slice(0, 150) || `guide-attachment${extension}`;
     preparedAttachments.push({ file: attachment, originalName });
   }
-  if (!summary && !content && !storageName && !mediaFiles.length && !preparedAttachments.length) return reject(400, "Add written instructions or upload a guide file.");
+  if (!summary && !content && !storageName && !mediaFiles.length && !preparedAttachments.length && !preparedLinks.length) return reject(400, "Add written instructions or upload a guide file or link.");
 
   const preparedMediaFiles = [];
   for (const mediaFile of mediaFiles) {
@@ -1317,6 +1337,9 @@ async function saveUserManual(req, res, manualId = null) {
       for (const item of preparedMediaFiles) {
         await addAttachment.run(savedId, item.file.filename, item.originalName, item.file.mimetype, item.file.size, item.kind);
       }
+      await db.prepare("DELETE FROM user_manual_links WHERE manual_id = ?").run(savedId);
+      const addLink = db.prepare("INSERT INTO user_manual_links (manual_id, label, url) VALUES (?, ?, ?)");
+      for (const link of preparedLinks) await addLink.run(savedId, link.label, link.url);
       return savedId;
     });
     const savedId = await saveRecord();

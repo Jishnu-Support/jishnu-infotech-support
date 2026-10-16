@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import {
   Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowUp, BarChart3, Bell, Check,
   CheckCheck, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2, ClipboardPlus,
-  Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen, Megaphone, Pencil,
+  Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen, Megaphone, Pencil, ExternalLink,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 
@@ -71,8 +71,9 @@ type InformationClient = { id: number; name: string; username: string; contactNu
 type InformationCompany = { id: number; name: string };
 type InformationNotification = { id: number; informationId: number; createdAt: string; postedAt: string; consultantName: string; consultantMobile: string | null; information: string; attachments: InformationAttachment[] };
 type ManualAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; kind: "file" | "audio" | "video" };
+type ManualLink = { id?: number; label: string; url: string };
 type PlatformFilePreview = { name: string; mimeType: string; sizeBytes: number; url: string };
-type UserManualEntry = { id: number; title: string; summary: string; content: string; mediaKind: "audio" | "video" | null; mediaName: string | null; mediaMimeType: string | null; mediaSizeBytes: number | null; attachments?: ManualAttachment[]; isPublished: boolean | number; audienceType: "all" | "company" | "user"; audienceCompanyId: number | null; audienceCompanyName: string | null; audienceUserId: number | null; audienceUserName: string | null; audienceUserIds?: number[]; audienceUserNames?: string[]; createdAt: string; updatedAt: string };
+type UserManualEntry = { id: number; title: string; summary: string; content: string; mediaKind: "audio" | "video" | null; mediaName: string | null; mediaMimeType: string | null; mediaSizeBytes: number | null; attachments?: ManualAttachment[]; links?: ManualLink[]; isPublished: boolean | number; audienceType: "all" | "company" | "user"; audienceCompanyId: number | null; audienceCompanyName: string | null; audienceUserId: number | null; audienceUserName: string | null; audienceUserIds?: number[]; audienceUserNames?: string[]; createdAt: string; updatedAt: string };
 type ManualAudienceUser = { id: number; name: string; username: string; role: Role };
 type PortalMode = "login" | "register";
 type ApiError = { error?: string };
@@ -2364,6 +2365,9 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
   const [media, setMedia] = useState<File | null>(null);
   const [mediaFiles, setMediaFiles] = useState<File[]>([]);
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [links, setLinks] = useState<ManualLink[]>([]);
+  const [linkLabel, setLinkLabel] = useState("");
+  const [linkUrl, setLinkUrl] = useState("");
   const [removeMedia, setRemoveMedia] = useState(false);
   const [isPublished, setIsPublished] = useState(true);
   const [audienceType, setAudienceType] = useState<"all" | "company" | "user">("all");
@@ -2392,14 +2396,14 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
 
   function startNewManual() {
     setEditingId(null);
-    setTitle(""); setSummary(""); setContent(""); setMedia(null); setMediaFiles([]); setAttachments([]); setRemoveMedia(false); setIsPublished(true);
+    setTitle(""); setSummary(""); setContent(""); setMedia(null); setMediaFiles([]); setAttachments([]); setLinks([]); setLinkLabel(""); setLinkUrl(""); setRemoveMedia(false); setIsPublished(true);
     setAudienceType("all"); setAudienceCompanyId(""); setAudienceUserIds([]);
     setError(""); setMessage(""); setShowEditor(true);
   }
 
   function startEditing(manual: UserManualEntry) {
     setEditingId(manual.id);
-    setTitle(manual.title); setSummary(manual.summary); setContent(manual.content); setMedia(null); setMediaFiles([]); setAttachments([]); setRemoveMedia(false);
+    setTitle(manual.title); setSummary(manual.summary); setContent(manual.content); setMedia(null); setMediaFiles([]); setAttachments([]); setLinks(manual.links || []); setLinkLabel(""); setLinkUrl(""); setRemoveMedia(false);
     setIsPublished(Boolean(manual.isPublished)); setAudienceType(manual.audienceType || "all");
     setAudienceCompanyId(manual.audienceCompanyId ? String(manual.audienceCompanyId) : "");
     setAudienceUserIds((manual.audienceUserIds || (manual.audienceUserId ? [manual.audienceUserId] : [])).map(Number));
@@ -2413,6 +2417,7 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
       const body = new FormData();
       body.append("title", title); body.append("summary", summary); body.append("content", content);
       body.append("isPublished", String(isPublished)); body.append("removeMedia", String(removeMedia));
+      body.append("links", JSON.stringify(links));
       body.append("audienceType", audienceType);
       if (audienceType === "company") body.append("audienceCompanyId", audienceCompanyId);
       if (audienceType === "user") body.append("audienceUserIds", JSON.stringify(audienceUserIds));
@@ -2428,6 +2433,19 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
       setMessage(editingId ? "User manual updated." : isPublished ? `User manual published to ${audienceLabel}.` : "User manual saved as a draft.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save this user manual."); }
     finally { setSaving(false); }
+  }
+
+  function addManualLink() {
+    const label = linkLabel.trim();
+    const rawUrl = linkUrl.trim();
+    let parsed: URL;
+    try { parsed = new URL(rawUrl); } catch { setError("Enter a complete link starting with https:// or http://."); return; }
+    if (!label || label.length > 120 || !["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+      setError("Add a link label and a valid HTTP or HTTPS URL."); return;
+    }
+    if (links.length >= 20) { setError("Attach up to 20 links to a guide."); return; }
+    setLinks((current) => [...current, { label, url: parsed.toString() }]);
+    setLinkLabel(""); setLinkUrl(""); setError("");
   }
 
   async function deleteManual(manual: UserManualEntry) {
@@ -2469,13 +2487,14 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
         {media && <div className="manual-file-selected"><Paperclip size={13} />{media.name} · {formatBytes(media.size)}</div>}
         <label>Guide attachments (optional)<input type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,application/pdf,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,application/rtf,application/vnd.oasis.opendocument.text,application/vnd.oasis.opendocument.spreadsheet,application/vnd.oasis.opendocument.presentation,application/zip,.jpg,.jpeg,.png,.webp,.gif,.bmp,.pdf,.csv,.xls,.xlsx,.doc,.docx,.ppt,.pptx,.txt,.rtf,.odt,.ods,.odp,.zip" onChange={(event) => { const selected = Array.from(event.target.files || []); if (attachments.length + selected.length > 10) setError("Attach up to 10 guide files."); else { setError(""); setAttachments((current) => [...current, ...selected]); } event.target.value = ""; }} /><small>Images, PDF, Excel, CSV, Word, PowerPoint, text, OpenDocument, or ZIP. Up to 10 files, 10 MB each.</small></label>
         {attachments.length > 0 && <div className="manual-new-attachments">{attachments.map((attachment, index) => <div key={`${attachment.name}-${index}`}><Paperclip size={12} /><span>{attachment.name} · {formatBytes(attachment.size)}</span><button type="button" className="button button-quiet" onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></div>)}</div>}
+        <fieldset className="manual-link-editor"><legend>Links (optional)</legend><div><label>Link text<input value={linkLabel} onChange={(event) => setLinkLabel(event.target.value)} maxLength={120} placeholder="For example: Open the customer portal" /></label><label>Website URL<input type="url" value={linkUrl} onChange={(event) => setLinkUrl(event.target.value)} maxLength={2048} placeholder="https://example.com" /></label><button className="button button-quiet" type="button" onClick={addManualLink} disabled={!linkLabel.trim() || !linkUrl.trim()}><Plus size={13} /> Add link</button></div>{links.length > 0 && <ul>{links.map((link, index) => <li key={`${link.url}-${index}`}><span><strong>{link.label}</strong><small>{link.url}</small></span><button className="button button-quiet" type="button" onClick={() => setLinks((current) => current.filter((_, linkIndex) => linkIndex !== index))}>Remove</button></li>)}</ul>}<small>Links open in a new browser tab. Use the destination website’s normal sign-in if it requires an account.</small></fieldset>
         {editingId && manuals.find((manual) => manual.id === editingId)?.mediaName && !media && <div className="manual-current-media"><span>Current file: {manuals.find((manual) => manual.id === editingId)?.mediaName}</span><label><input type="checkbox" checked={removeMedia} onChange={(event) => setRemoveMedia(event.target.checked)} /> Remove current file</label></div>}
         {editingId && (manuals.find((manual) => manual.id === editingId)?.attachments || []).length > 0 && <div className="manual-existing-attachments"><strong>Current attachments</strong>{manuals.find((manual) => manual.id === editingId)?.attachments?.map((attachment) => <div key={attachment.id}><span>{attachment.name}</span><button type="button" className="button button-quiet" onClick={() => deleteManualAttachment(manuals.find((item) => item.id === editingId)!, attachment)}>Remove</button></div>)}</div>}
         <label>Publish to<select value={audienceType} onChange={(event) => { setAudienceType(event.target.value as "all" | "company" | "user"); setAudienceCompanyId(""); setAudienceUserIds([]); }}><option value="all">All users</option><option value="company">Specific company</option><option value="user">Specific users</option></select></label>
         {audienceType === "company" && <label>Select company<select value={audienceCompanyId} onChange={(event) => setAudienceCompanyId(event.target.value)} required><option value="">Choose a company</option>{audienceCompanies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></label>}
         {audienceType === "user" && <div className="manual-user-picker"><strong>Select users</strong><small>Choose one or more customers or consultants.</small><div className="manual-user-options">{audienceUsers.map((user) => <label className="manual-user-option" key={user.id}><input type="checkbox" checked={audienceUserIds.includes(user.id)} onChange={(event) => setAudienceUserIds((current) => event.target.checked ? [...current, user.id] : current.filter((id) => id !== user.id))} /><span>{user.name} ({user.username})</span><small>{user.role === "customer" ? "Customer" : "Consultant"}</small></label>)}</div></div>}
         <label className="manual-publish-toggle"><input type="checkbox" checked={isPublished} onChange={(event) => setIsPublished(event.target.checked)} /> Publish this guide now</label>
-        <div className="information-editor-actions"><button className="button button-quiet" type="button" onClick={() => setShowEditor(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={saving || title.trim().length < 3 || (audienceType === "company" && !audienceCompanyId) || (audienceType === "user" && !audienceUserIds.length) || (!summary.trim() && !content.trim() && !media && !mediaFiles.length && !attachments.length && !(editingId && ((manuals.find((manual) => manual.id === editingId)?.mediaName && !removeMedia) || manuals.find((manual) => manual.id === editingId)?.attachments?.length)))}>{saving ? "Saving…" : editingId ? "Save guide" : isPublished ? "Publish guide" : "Save draft"}</button></div>
+        <div className="information-editor-actions"><button className="button button-quiet" type="button" onClick={() => setShowEditor(false)}>Cancel</button><button className="button button-primary" type="submit" disabled={saving || title.trim().length < 3 || (audienceType === "company" && !audienceCompanyId) || (audienceType === "user" && !audienceUserIds.length) || (!summary.trim() && !content.trim() && !media && !mediaFiles.length && !attachments.length && !links.length && !(editingId && ((manuals.find((manual) => manual.id === editingId)?.mediaName && !removeMedia) || manuals.find((manual) => manual.id === editingId)?.attachments?.length)))}>{saving ? "Saving…" : editingId ? "Save guide" : isPublished ? "Publish guide" : "Save draft"}</button></div>
       </form>
     </section>}
     {loading ? <div className="report-empty" role="status">Loading user guides…</div> : visibleManuals.length === 0
@@ -2483,6 +2502,7 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
       : <div className="manual-list">{visibleManuals.map((manual) => <article className="manual-card" key={manual.id}>
         <div className="manual-card-heading"><div><h2>{manual.title}</h2>{manual.summary && <p>{manual.summary}</p>}{isSuperAdmin && <small className="manual-audience-label">Audience: {manual.audienceType === "company" ? manual.audienceCompanyName || "Selected company" : manual.audienceType === "user" ? (manual.audienceUserNames || (manual.audienceUserName ? [manual.audienceUserName] : [])).join(", ") || "Selected users" : "All users"}</small>}</div>{isSuperAdmin && <div className="manual-card-actions"><span className={`team-state ${Boolean(manual.isPublished) ? "" : "team-disabled"}`}>{Boolean(manual.isPublished) ? "Published" : "Draft"}</span><button type="button" className="button button-quiet" onClick={() => startEditing(manual)}><Pencil size={13} /> Edit</button><button type="button" className="button button-quiet" onClick={() => deleteManual(manual)}>Delete</button></div>}</div>
         {manual.content && <div className="manual-content">{manual.content}</div>}
+        {(manual.links || []).length > 0 && <div className="manual-links"><strong>Related links</strong>{manual.links?.map((link, index) => <a key={`${link.id || link.url}-${index}`} href={link.url} target="_blank" rel="noopener noreferrer"><span>{link.label}</span><ExternalLink size={13} /></a>)}</div>}
         {manual.mediaName && manual.mediaKind === "audio" && <div className="manual-media"><div><strong>{manual.mediaName}</strong><small>Audio guide{manual.mediaSizeBytes ? ` · ${formatBytes(manual.mediaSizeBytes)}` : ""}</small></div><audio controls controlsList="nodownload" preload="metadata" src={`/api/user-manuals/${manual.id}/media`} onContextMenu={(event) => event.preventDefault()} /></div>}
         {manual.mediaName && manual.mediaKind === "video" && <div className="manual-video"><video controls controlsList="nodownload" disablePictureInPicture preload="metadata" src={`/api/user-manuals/${manual.id}/media`} onContextMenu={(event) => event.preventDefault()} /><span>{manual.mediaName}{manual.mediaSizeBytes ? ` · ${formatBytes(manual.mediaSizeBytes)}` : ""}</span></div>}
         {(manual.attachments || []).length > 0 && <div className="manual-attachments"><strong>Guide files</strong>{manual.attachments?.map((attachment) => { const url = `/api/user-manuals/${manual.id}/attachments/${attachment.id}`; return <div className="manual-attachment" key={attachment.id}>{attachment.kind === "audio" ? <audio controls controlsList="nodownload" preload="metadata" src={url} onContextMenu={(event) => event.preventDefault()} /> : attachment.kind === "video" ? <video controls controlsList="nodownload" disablePictureInPicture preload="metadata" src={url} onContextMenu={(event) => event.preventDefault()} /> : attachment.mimeType.startsWith("image/") ? <button type="button" className="manual-image-preview" onClick={() => setPreviewFile({ name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, url })} aria-label={`View full image: ${attachment.name}`}><img src={url} alt={attachment.name} loading="lazy" /></button> : <button type="button" className="manual-file-view" onClick={() => setPreviewFile({ name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, url })}><Paperclip size={13} /><span>{attachment.name}</span><small>{formatBytes(attachment.sizeBytes)}</small><strong>View</strong></button>}{(attachment.kind === "audio" || attachment.kind === "video") && <span>{attachment.name} · {formatBytes(attachment.sizeBytes)}</span>}{isSuperAdmin && <button type="button" className="button button-quiet" onClick={() => deleteManualAttachment(manual, attachment)}>Remove</button>}</div>;})}</div>}
