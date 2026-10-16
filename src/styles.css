@@ -341,9 +341,19 @@ h1, h2, p { margin-top: 0; }
 .manual-existing-attachments > strong, .manual-attachments > strong { color: #536278; font-size: 10px; }
 .manual-attachment { padding: 7px 9px; border: 1px solid #e8edf3; border-radius: 6px; background: #fafbfd; }
 .manual-attachment img { width: 42px; height: 42px; object-fit: cover; border-radius: 4px; }
+.manual-attachment audio { flex: 1; min-width: 0; }
+.manual-attachment video { width: min(420px, 100%); max-height: 320px; border-radius: 5px; background: #101828; }
 .manual-attachment a { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; color: #526b94; text-decoration: none; }
 .manual-attachment a span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .manual-attachment a small { margin-left: auto; white-space: nowrap; }
+.manual-file-view { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; border: 0; padding: 0; color: #526b94; background: transparent; text-align: left; cursor: pointer; }
+.manual-file-view span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.manual-file-view small { margin-left: auto; white-space: nowrap; }
+.manual-preview-backdrop { position: fixed; z-index: 1200; inset: 0; display: grid; place-items: center; padding: 24px; background: #17243bb8; }
+.manual-preview-dialog { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(1100px, 100%); height: min(820px, 92vh); overflow: hidden; border: 1px solid #dce3ed; border-radius: 10px; background: #fff; box-shadow: 0 20px 70px #14233b44; }
+.manual-preview-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 11px 14px; border-bottom: 1px solid #e9edf2; }
+.manual-preview-dialog header strong { overflow: hidden; color: #3b4c64; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.manual-preview-dialog iframe { width: 100%; height: 100%; border: 0; background: #f7f8fa; }
 .manual-file-selected, .manual-current-media { display: flex; align-items: center; gap: 8px; color: #728098; font-size: 9px; }
 .manual-current-media { justify-content: space-between; flex-wrap: wrap; }
 .manual-list { display: grid; gap: 12px; }

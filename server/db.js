@@ -443,6 +443,10 @@ const schemaMigrations = [
     );
     CREATE INDEX IF NOT EXISTS user_manual_attachments_manual_idx ON user_manual_attachments(manual_id, id);
   `) },
+  { version: 18, apply: () => db.exec(`
+    ALTER TABLE user_manual_attachments ADD COLUMN IF NOT EXISTS file_kind TEXT NOT NULL DEFAULT 'file'
+      CHECK (file_kind IN ('file', 'audio', 'video'));
+  `) },
 ];
 
 async function seedDatabase() {
