@@ -1719,7 +1719,9 @@ app.get("/api/information-center/:id/attachments/:attachmentId", requireAuth, as
   `).get(attachmentId, informationId);
   if (!attachment) return res.status(404).json({ error: "Attachment not found." });
   res.type(attachment.mime_type);
-  res.download(resolve(attachmentsRoot, attachment.storage_name), attachment.original_name, (error) => {
+  res.setHeader("Content-Disposition", "inline");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.sendFile(resolve(attachmentsRoot, attachment.storage_name), (error) => {
     if (error && !res.headersSent) res.status(error.code === "ENOENT" ? 404 : 500).json({ error: "Could not retrieve this attachment." });
   });
 });
@@ -2681,7 +2683,9 @@ app.get("/api/tickets/:id/attachments/:attachmentId", requireAuth, async (req, r
     .get(attachmentId, ticketId);
   if (!attachment) return res.status(404).json({ error: "Attachment not found." });
   res.type(attachment.mime_type);
-  res.download(resolve(attachmentsRoot, attachment.storage_name), attachment.original_name, (error) => {
+  res.setHeader("Content-Disposition", "inline");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.sendFile(resolve(attachmentsRoot, attachment.storage_name), (error) => {
     if (error && !res.headersSent) res.status(error.code === "ENOENT" ? 404 : 500).json({ error: "Could not retrieve this attachment." });
   });
 });

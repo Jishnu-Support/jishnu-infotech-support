@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowUp, BarChart3, Bell, Check,
   CheckCheck, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2, ClipboardPlus,
@@ -70,6 +71,7 @@ type InformationClient = { id: number; name: string; username: string; contactNu
 type InformationCompany = { id: number; name: string };
 type InformationNotification = { id: number; informationId: number; createdAt: string; postedAt: string; consultantName: string; consultantMobile: string | null; information: string; attachments: InformationAttachment[] };
 type ManualAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; kind: "file" | "audio" | "video" };
+type PlatformFilePreview = { name: string; mimeType: string; sizeBytes: number; url: string };
 type UserManualEntry = { id: number; title: string; summary: string; content: string; mediaKind: "audio" | "video" | null; mediaName: string | null; mediaMimeType: string | null; mediaSizeBytes: number | null; attachments?: ManualAttachment[]; isPublished: boolean | number; audienceType: "all" | "company" | "user"; audienceCompanyId: number | null; audienceCompanyName: string | null; audienceUserId: number | null; audienceUserName: string | null; audienceUserIds?: number[]; audienceUserNames?: string[]; createdAt: string; updatedAt: string };
 type ManualAudienceUser = { id: number; name: string; username: string; role: Role };
 type PortalMode = "login" | "register";
@@ -147,6 +149,28 @@ function ticketUpdatedLabel(date: string) {
 
 function formatBytes(bytes: number) {
   return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function PlatformFileViewer({ file, onClose }: { file: PlatformFilePreview; onClose: () => void }) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+  const mime = file.mimeType.toLowerCase();
+  const browserPreviewable = mime === "application/pdf" || mime.startsWith("text/") || mime === "application/json" || mime === "application/xml" || mime === "application/rtf";
+  return createPortal(<div className="platform-viewer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="platform-viewer" role="dialog" aria-modal="true" aria-label={`File viewer: ${file.name}`}>
+      <header><div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div><button className="button button-quiet" type="button" onClick={onClose}><X size={15} /> Close</button></header>
+      <div className="platform-viewer-content">
+        {mime.startsWith("image/") ? <img src={file.url} alt={file.name} onContextMenu={(event) => event.preventDefault()} />
+          : mime.startsWith("audio/") ? <audio controls controlsList="nodownload" preload="metadata" src={file.url} onContextMenu={(event) => event.preventDefault()} />
+            : mime.startsWith("video/") ? <video controls controlsList="nodownload" disablePictureInPicture preload="metadata" src={file.url} onContextMenu={(event) => event.preventDefault()} />
+              : browserPreviewable ? <iframe title={`View ${file.name}`} src={file.url} />
+                : <div className="platform-viewer-unsupported"><strong>Preview unavailable for this file type</strong><span>This format needs a compatible viewer. It has not been opened or downloaded.</span></div>}
+      </div>
+    </section>
+  </div>, document.body);
 }
 
 function initials(name: string) {
@@ -253,6 +277,7 @@ function App() {
   const [agents, setAgents] = useState<Customer[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<TicketDetail | null>(null);
+  const [filePreview, setFilePreview] = useState<PlatformFilePreview | null>(null);
   const [activeView, setActiveView] = useState("inbox");
   const [filter, setFilter] = useState<Status | "all">("all");
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
@@ -930,9 +955,9 @@ function App() {
                 {selectedTicket.solution && <section className="ticket-solution"><strong>Consultant solution{selectedTicket.solutionConsultantName ? ` · ${selectedTicket.solutionConsultantName}` : ""}</strong><p>{selectedTicket.solution}</p></section>}
                 {detail?.attachments.length ? <div className="attachment-list" aria-label="Ticket attachments">
                   <strong className="attachment-heading">Attachments</strong>
-                  {detail.attachments.map((attachment) => <a key={attachment.id} className="ticket-attachment" href={`/api/tickets/${selectedTicket.id}/attachments/${attachment.id}`} target="_blank" rel="noreferrer">
-                    <span className="attachment-icon"><Paperclip size={14} /></span><span><strong>{attachment.name}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span><Download size={14} />
-                  </a>)}
+                  {detail.attachments.map((attachment) => <button key={attachment.id} type="button" className="ticket-attachment" onClick={() => setFilePreview({ name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, url: `/api/tickets/${selectedTicket.id}/attachments/${attachment.id}` })}>
+                    <span className="attachment-icon"><Paperclip size={14} /></span><span><strong>{attachment.name}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span><span className="attachment-view-label">View</span>
+                  </button>)}
                 </div> : null}
                 <div className="conversation-heading"><span>Conversation</span><span>{detail?.messages.length ?? 0} messages</span></div>
                 {isAgent && <div className="internal-note-notice"><ShieldCheck size={13} /><span>Internal notes are visible only to Consultants.</span></div>}
@@ -1116,6 +1141,7 @@ function App() {
           } catch (error) { setActionError(error instanceof Error ? error.message : "Could not open this information notice."); }
         }}
       />}
+      {filePreview && <PlatformFileViewer file={filePreview} onClose={() => setFilePreview(null)} />}
     </div>
   );
 }
@@ -1876,6 +1902,7 @@ function InformationUpdatePopup({ notification, onDismiss, onOpen }: {
   onDismiss: () => void;
   onOpen: () => void;
 }) {
+  const [filePreview, setFilePreview] = useState<PlatformFilePreview | null>(null);
   const normalizedDate = notification.postedAt.includes("T") ? notification.postedAt : notification.postedAt.replace(" ", "T");
   const date = new Date(normalizedDate.endsWith("Z") ? normalizedDate : `${normalizedDate}Z`);
   const postedDate = Number.isNaN(date.getTime()) ? notification.postedAt : new Intl.DateTimeFormat("en-GB", {
@@ -1889,9 +1916,10 @@ function InformationUpdatePopup({ notification, onDismiss, onOpen }: {
       </div>
       <div className="information-alert-author"><strong>{notification.consultantName}</strong><span>Consultant Â· {notification.consultantMobile || "Mobile number unavailable"}</span></div>
       <p className="information-alert-copy">{notification.information}</p>
-      {notification.attachments.length > 0 && <div className="information-alert-files" aria-label="Information attachments">{notification.attachments.map((attachment) => <a key={attachment.id} href={`/api/information-center/${notification.informationId}/attachments/${attachment.id}`} target="_blank" rel="noreferrer"><Paperclip size={13} /><span>{attachment.name}</span><small>{formatBytes(attachment.sizeBytes)}</small></a>)}</div>}
+      {notification.attachments.length > 0 && <div className="information-alert-files" aria-label="Information attachments">{notification.attachments.map((attachment) => <button type="button" key={attachment.id} onClick={() => setFilePreview({ name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, url: `/api/information-center/${notification.informationId}/attachments/${attachment.id}` })}><Paperclip size={13} /><span>{attachment.name}</span><small>{formatBytes(attachment.sizeBytes)}</small><strong>View</strong></button>)}</div>}
       <div className="modal-footer"><button type="button" className="button button-quiet" onClick={onDismiss}>Dismiss</button><button type="button" className="button button-primary" onClick={onOpen}>Open Information Center <ArrowRight size={14} /></button></div>
     </section>
+    {filePreview && <PlatformFileViewer file={filePreview} onClose={() => setFilePreview(null)} />}
   </div>;
 }
 
@@ -2175,6 +2203,7 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
   isSuperAdmin: boolean;
   currentUserId: number;
 }) {
+  const [filePreview, setFilePreview] = useState<PlatformFilePreview | null>(null);
   const [posts, setPosts] = useState<InformationPost[]>([]);
   const [clients, setClients] = useState<InformationClient[]>([]);
   const [companies, setCompanies] = useState<InformationCompany[]>([]);
@@ -2315,16 +2344,17 @@ function InformationCenter({ isConsultant, isSuperAdmin, currentUserId }: {
         return <article className="information-card" key={post.id}>
           <div className="information-card-top"><span className="information-posted-date">Posted {dateLabel(post.postedAt)}</span>{canEdit && <button className="button button-quiet" type="button" onClick={() => startEditing(post)}><Pencil size={13} /> Edit</button>}</div>
           <p className="information-copy">{post.information}</p>
-          {(post.attachments || []).length > 0 && <div className="information-card-files" aria-label="Information attachments">{post.attachments?.map((attachment) => <a key={attachment.id} href={`/api/information-center/${post.id}/attachments/${attachment.id}`} target="_blank" rel="noreferrer"><Paperclip size={13} /><span>{attachment.name}</span><small>{formatBytes(attachment.sizeBytes)}</small></a>)}</div>}
+          {(post.attachments || []).length > 0 && <div className="information-card-files" aria-label="Information attachments">{post.attachments?.map((attachment) => <button type="button" key={attachment.id} onClick={() => setFilePreview({ name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, url: `/api/information-center/${post.id}/attachments/${attachment.id}` })}><Paperclip size={13} /><span>{attachment.name}</span><small>{formatBytes(attachment.sizeBytes)}</small><strong>View</strong></button>)}</div>}
           <div className="information-card-footer"><span><strong>{post.consultantName}</strong><small>Consultant</small></span><span><strong>{post.consultantMobile || "Not provided"}</strong><small>Mobile number</small></span>{isConsultant && <span><strong>{audienceLabel}</strong><small>Audience</small></span>}</div>
         </article>;
       })}</div>}
+    {filePreview && <PlatformFileViewer file={filePreview} onClose={() => setFilePreview(null)} />}
   </section>;
 }
 
 function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
   const [manuals, setManuals] = useState<UserManualEntry[]>([]);
-  const [previewFile, setPreviewFile] = useState<{ manualId: number; attachment: ManualAttachment } | null>(null);
+  const [previewFile, setPreviewFile] = useState<PlatformFilePreview | null>(null);
   const [audienceCompanies, setAudienceCompanies] = useState<InformationCompany[]>([]);
   const [audienceUsers, setAudienceUsers] = useState<ManualAudienceUser[]>([]);
   const [query, setQuery] = useState("");
@@ -2455,15 +2485,16 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
         {manual.content && <div className="manual-content">{manual.content}</div>}
         {manual.mediaName && manual.mediaKind === "audio" && <div className="manual-media"><div><strong>{manual.mediaName}</strong><small>Audio guide{manual.mediaSizeBytes ? ` · ${formatBytes(manual.mediaSizeBytes)}` : ""}</small></div><audio controls controlsList="nodownload" preload="metadata" src={`/api/user-manuals/${manual.id}/media`} onContextMenu={(event) => event.preventDefault()} /></div>}
         {manual.mediaName && manual.mediaKind === "video" && <div className="manual-video"><video controls controlsList="nodownload" disablePictureInPicture preload="metadata" src={`/api/user-manuals/${manual.id}/media`} onContextMenu={(event) => event.preventDefault()} /><span>{manual.mediaName}{manual.mediaSizeBytes ? ` · ${formatBytes(manual.mediaSizeBytes)}` : ""}</span></div>}
-        {(manual.attachments || []).length > 0 && <div className="manual-attachments"><strong>Guide files</strong>{manual.attachments?.map((attachment) => <div className="manual-attachment" key={attachment.id}>{attachment.kind === "audio" ? <audio controls controlsList="nodownload" preload="metadata" src={`/api/user-manuals/${manual.id}/attachments/${attachment.id}`} onContextMenu={(event) => event.preventDefault()} /> : attachment.kind === "video" ? <video controls controlsList="nodownload" disablePictureInPicture preload="metadata" src={`/api/user-manuals/${manual.id}/attachments/${attachment.id}`} onContextMenu={(event) => event.preventDefault()} /> : attachment.mimeType.startsWith("image/") ? <img src={`/api/user-manuals/${manual.id}/attachments/${attachment.id}`} alt={attachment.name} loading="lazy" /> : <button type="button" className="manual-file-view" onClick={() => setPreviewFile({ manualId: manual.id, attachment })}><Paperclip size={13} /><span>{attachment.name}</span><small>{formatBytes(attachment.sizeBytes)}</small><strong>View</strong></button>}{(attachment.kind === "audio" || attachment.kind === "video") && <span>{attachment.name} · {formatBytes(attachment.sizeBytes)}</span>}{isSuperAdmin && <button type="button" className="button button-quiet" onClick={() => deleteManualAttachment(manual, attachment)}>Remove</button>}</div>)}</div>}
+        {(manual.attachments || []).length > 0 && <div className="manual-attachments"><strong>Guide files</strong>{manual.attachments?.map((attachment) => { const url = `/api/user-manuals/${manual.id}/attachments/${attachment.id}`; return <div className="manual-attachment" key={attachment.id}>{attachment.kind === "audio" ? <audio controls controlsList="nodownload" preload="metadata" src={url} onContextMenu={(event) => event.preventDefault()} /> : attachment.kind === "video" ? <video controls controlsList="nodownload" disablePictureInPicture preload="metadata" src={url} onContextMenu={(event) => event.preventDefault()} /> : attachment.mimeType.startsWith("image/") ? <button type="button" className="manual-image-preview" onClick={() => setPreviewFile({ name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, url })} aria-label={`View full image: ${attachment.name}`}><img src={url} alt={attachment.name} loading="lazy" /></button> : <button type="button" className="manual-file-view" onClick={() => setPreviewFile({ name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, url })}><Paperclip size={13} /><span>{attachment.name}</span><small>{formatBytes(attachment.sizeBytes)}</small><strong>View</strong></button>}{(attachment.kind === "audio" || attachment.kind === "video") && <span>{attachment.name} · {formatBytes(attachment.sizeBytes)}</span>}{isSuperAdmin && <button type="button" className="button button-quiet" onClick={() => deleteManualAttachment(manual, attachment)}>Remove</button>}</div>;})}</div>}
       </article>)}</div>}
-    {previewFile && <div className="manual-preview-backdrop" role="presentation" onClick={() => setPreviewFile(null)}><section className="manual-preview-dialog" role="dialog" aria-modal="true" aria-label={`Preview ${previewFile.attachment.name}`} onClick={(event) => event.stopPropagation()}><header><strong>{previewFile.attachment.name}</strong><button className="button button-quiet" type="button" onClick={() => setPreviewFile(null)}><X size={15} /> Close</button></header><iframe title={`Preview ${previewFile.attachment.name}`} src={`/api/user-manuals/${previewFile.manualId}/attachments/${previewFile.attachment.id}`} /></section></div>}
+    {previewFile && <PlatformFileViewer file={previewFile} onClose={() => setPreviewFile(null)} />}
   </section>;
 }
 
 function KnowledgeBase({ companies }: { companies: Array<{ id: number; name: string }> }) {
   const [tickets, setTickets] = useState<KnowledgeBaseTicket[]>([]);
   const [openTicket, setOpenTicket] = useState<TicketDetail | null>(null);
+  const [filePreview, setFilePreview] = useState<PlatformFilePreview | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState("");
   const [query, setQuery] = useState("");
@@ -2541,7 +2572,7 @@ function KnowledgeBase({ companies }: { companies: Array<{ id: number; name: str
           <div className="knowledge-conversation-summary"><StatusPill status={openTicket.ticket.status} /><span>Reported {formatDate(openTicket.ticket.createdAt)}</span><span>Client: {displayClientName(openTicket.ticket.customer.name)}</span><span>Handled by: {openTicket.ticket.assignee?.name || "Unassigned"}</span></div>
           <article className="knowledge-original-request"><strong>Original ticket description</strong><p>{openTicket.ticket.description}</p></article>
           {openTicket.assignmentHistory.length > 0 && <AssignmentHistorySection entries={openTicket.assignmentHistory} />}
-          {openTicket.attachments.length > 0 && <div className="attachment-list" aria-label="Ticket attachments"><strong className="attachment-heading">Attachments</strong>{openTicket.attachments.map((attachment) => <a key={attachment.id} className="ticket-attachment" href={`/api/tickets/${openTicket.ticket.id}/attachments/${attachment.id}`} target="_blank" rel="noreferrer"><span className="attachment-icon"><Paperclip size={14} /></span><span><strong>{attachment.name}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span><Download size={14} /></a>)}</div>}
+          {openTicket.attachments.length > 0 && <div className="attachment-list" aria-label="Ticket attachments"><strong className="attachment-heading">Attachments</strong>{openTicket.attachments.map((attachment) => <button type="button" key={attachment.id} className="ticket-attachment" onClick={() => setFilePreview({ name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, url: `/api/tickets/${openTicket.ticket.id}/attachments/${attachment.id}` })}><span className="attachment-icon"><Paperclip size={14} /></span><span><strong>{attachment.name}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span><span className="attachment-view-label">View</span></button>)}</div>}
           <div className="conversation-heading"><span>Conversation</span><span>{openTicket.messages.length} messages</span></div>
           {openTicket.messages.length ? <div className="conversation">{openTicket.messages.map((message, index) => {
             const fromConsultant = message.authorRole === "agent";
@@ -2552,6 +2583,7 @@ function KnowledgeBase({ companies }: { companies: Array<{ id: number; name: str
         </div>
       </section>
     </div>}
+    {filePreview && <PlatformFileViewer file={filePreview} onClose={() => setFilePreview(null)} />}
   </section>;
 }
 

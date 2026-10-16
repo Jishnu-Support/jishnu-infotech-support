@@ -309,9 +309,9 @@ h1, h2, p { margin-top: 0; }
 .information-card-footer small { color: #8d98a6; font-size: 8px; }
 .information-pending-files { display: grid; gap: 4px; color: #77859a; font-size: 9px; }
 .information-card-files, .information-alert-files { display: grid; gap: 6px; margin: 0 0 14px; }
-.information-card-files a, .information-alert-files a { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #e8edf3; border-radius: 6px; color: #536b91; background: #fafbfd; text-decoration: none; font-size: 9px; }
-.information-card-files a:hover, .information-alert-files a:hover { border-color: #cddaf0; background: #f4f7fc; }
-.information-card-files a > span, .information-alert-files a > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.information-card-files button, .information-alert-files button { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #e8edf3; border-radius: 6px; color: #536b91; background: #fafbfd; text-align: left; font: inherit; font-size: 9px; cursor: pointer; }
+.information-card-files button:hover, .information-alert-files button:hover { border-color: #cddaf0; background: #f4f7fc; }
+.information-card-files button > span, .information-alert-files button > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .information-card-files small, .information-alert-files small { flex: none; color: #8d98a6; font-size: 8px; }
 .information-alert-scrim { z-index: 30; }
 .information-alert-modal { width: min(550px, 100%); }
@@ -621,12 +621,29 @@ h1, h2, p { margin-top: 0; }
 .attachment-list { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 20px 10px; }
 .attachment-heading { flex: 0 0 100%; padding: 2px 0; color: #738095; font-size: 8px; font-weight: 700; }
 .ticket-attachment { min-width: 150px; max-width: 245px; display: flex; align-items: center; gap: 7px; padding: 7px 8px; border: 1px solid #e8edf4; border-radius: 5px; color: #708096; background: #fbfcfe; text-decoration: none; }
+.ticket-attachment { font: inherit; text-align: left; cursor: pointer; }
 .ticket-attachment:hover { border-color: #cbdaf5; background: #f5f8ff; }
 .attachment-icon { display: grid; place-items: center; width: 25px; height: 25px; flex: none; border-radius: 5px; color: #5c7fbe; background: #edf3ff; }
 .ticket-attachment > span:nth-child(2) { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .ticket-attachment strong { overflow: hidden; color: #4d5b70; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .ticket-attachment small { color: #9aa4b0; font-size: 7px; }
 .ticket-attachment > svg { flex: none; }
+.manual-image-preview { width: 52px; height: 52px; flex: none; overflow: hidden; padding: 0; border: 1px solid #e2e8f0; border-radius: 5px; background: #fff; cursor: zoom-in; }
+.manual-image-preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.platform-viewer-backdrop { position: fixed; z-index: 20000; inset: 0; display: grid; place-items: center; padding: 20px; background: #111827c9; }
+.platform-viewer { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(1120px, 100%); height: min(850px, 94vh); min-height: 240px; overflow: hidden; border: 1px solid #dce3ed; border-radius: 10px; background: #fff; box-shadow: 0 20px 70px #0005; }
+.platform-viewer > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 10px 14px; border-bottom: 1px solid #e9edf2; }
+.platform-viewer > header > div { display: grid; gap: 3px; min-width: 0; }
+.platform-viewer > header strong { overflow: hidden; color: #3b4c64; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.platform-viewer > header small { color: #8994a2; font-size: 9px; }
+.platform-viewer-content { min-height: 0; display: grid; place-items: center; overflow: auto; background: #f4f6f9; }
+.platform-viewer-content > img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.platform-viewer-content > audio { width: min(640px, calc(100% - 32px)); }
+.platform-viewer-content > video { width: 100%; max-height: 100%; background: #101828; }
+.platform-viewer-content > iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+.platform-viewer-unsupported { display: grid; gap: 8px; max-width: 460px; padding: 24px; color: #66758a; text-align: center; font-size: 12px; line-height: 1.6; }
+.platform-viewer-unsupported strong { color: #3b4c64; font-size: 14px; }
+@media (max-width: 640px) { .platform-viewer-backdrop { padding: 8px; } .platform-viewer { height: 92vh; border-radius: 7px; } .platform-viewer > header { padding: 9px; } }
 .report-page { display: flex; flex-direction: column; gap: 14px; }
 .report-page .page-heading { margin-bottom: 0; }
 .report-toolbar { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #8b96a4; font-size: 9px; }
