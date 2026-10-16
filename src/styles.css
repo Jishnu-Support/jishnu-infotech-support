@@ -352,6 +352,9 @@ h1, h2, p { margin-top: 0; }
 .manual-links > a { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 8px 10px; border: 1px solid #e5ebf3; border-radius: 6px; color: #4268a5; background: #fafbfd; text-decoration: none; font-size: 10px; }
 .manual-links > a:hover { border-color: #cbdaf5; background: #f4f7fc; }
 .manual-links > a span { overflow-wrap: anywhere; }
+.manual-youtube-reference { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px; border: 1px solid #f0d8d8; border-radius: 7px; color: #59677a; background: #fffafa; font-size: 10px; line-height: 1.5; }
+.manual-youtube-reference a { display: inline-flex; align-items: center; gap: 6px; color: #c62828; font-weight: 700; text-decoration: none; }
+.manual-youtube-reference a:hover { text-decoration: underline; }
 .manual-new-attachments > div, .manual-existing-attachments > div, .manual-attachment { display: flex; align-items: center; gap: 8px; min-width: 0; color: #66758a; font-size: 9px; }
 .manual-new-attachments span, .manual-existing-attachments span { min-width: 0; overflow-wrap: anywhere; }
 .manual-existing-attachments > strong, .manual-attachments > strong { color: #536278; font-size: 10px; }

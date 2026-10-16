@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import {
   Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowUp, BarChart3, Bell, Check,
   CheckCheck, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2, ClipboardPlus,
-  Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen, Megaphone, Pencil, ExternalLink,
+  Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen, Megaphone, Pencil, ExternalLink, Youtube,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 
@@ -2473,6 +2473,7 @@ function UserManual({ isSuperAdmin }: { isSuperAdmin: boolean }) {
 
   return <section className="feature-page user-manual-page">
     <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />{isSuperAdmin ? "CONSULTANT WORKSPACE" : "CUSTOMER WORKSPACE"}</div><h1>User Manual</h1><p>Guides and tutorials for using the support portal.</p></div>{isSuperAdmin && <button className="button button-primary" type="button" onClick={startNewManual}><Plus size={15} /> Add guide</button>}</div>
+    <div className="manual-youtube-reference"><span>For any doubts in user manual use this YouTube as reference</span><a href="https://www.youtube.com/channel/UCUIJ-QDQgPdTY3mmNhrRyIg" target="_blank" rel="noopener noreferrer"><Youtube size={15} /> Jishnu Infotech YouTube channel <ExternalLink size={12} /></a></div>
     {error && <div className="inline-error" role="alert">{error}<button type="button" onClick={() => setError("")}><X size={13} /></button></div>}
     {message && <div className="inline-success" role="status">{message}<button type="button" onClick={() => setMessage("")}><X size={13} /></button></div>}
     <div className="directory-toolbar information-toolbar"><div className="search-box"><Search size={15} /><input aria-label="Search user manuals" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search guides…" /></div><span className="knowledge-total-card">{manuals.filter((manual) => isSuperAdmin || Boolean(manual.isPublished)).length} guides</span></div>
