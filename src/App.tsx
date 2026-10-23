@@ -366,7 +366,7 @@ function App() {
   }, [selectedId, user, tickets]);
 
   useEffect(() => {
-    if (!selectedId || user?.role !== "agent" || (activeView !== "inbox" && activeView !== "assigned")) return;
+    if (!selectedId || user?.role !== "agent" || (activeView !== "inbox" && activeView !== "assigned" && activeView !== "my-tickets")) return;
     const intervalId = window.setInterval(() => {
       api<TicketDetail>(`/tickets/${selectedId}`)
         .then(setDetail)
@@ -533,9 +533,11 @@ function App() {
     const matchCompany = !consultantInbox || companyFilter === "all" || ticket.company?.id === Number(companyFilter);
     const query = search.trim().toLowerCase();
     const matchSearch = !query || `${ticket.subject} ${ticket.customer.name} ${ticket.lastMessage}`.toLowerCase().includes(query);
-    const matchView = activeView !== "assigned" || ((user?.role === "agent" || user?.isInternalConsultant)
-      ? ticket.assignee?.id === user.id
-      : ticket.customer.id === user?.id);
+    const matchView = activeView === "assigned"
+      ? ticket.assignee?.id === user?.id
+      : activeView === "my-tickets"
+        ? ticket.customer.id === user?.id
+        : true;
     return matchStatus && matchPriority && matchCompany && matchSearch && matchView;
   }), [activeView, companyFilter, filter, priorityFilter, search, tickets, user]);
 
@@ -548,18 +550,23 @@ function App() {
   }), [tickets]);
 
   const myTicketCount = useMemo(
-    () => user?.isInternalConsultant && activeView === "assigned"
-      ? tickets.filter((ticket) => ticket.assignee?.id === user?.id).length
-      : tickets.filter((ticket) => ticket.customer.id === user?.id).length,
-    [activeView, tickets, user?.id, user?.isInternalConsultant],
+    () => tickets.filter((ticket) => ticket.customer.id === user?.id).length,
+    [tickets, user?.id],
+  );
+
+  const assignedTicketCount = useMemo(
+    () => tickets.filter((ticket) => ticket.assignee?.id === user?.id && ticket.status !== "resolved").length,
+    [tickets, user?.id],
   );
 
   const inboxCounts = useMemo(() => {
-    const scopedTickets = (user?.role === "agent" || user?.isInternalConsultant) && activeView === "assigned"
-      ? tickets.filter((ticket) => ticket.assignee?.id === user.id)
-      : user?.role === "agent" && activeView === "inbox" && companyFilter !== "all"
-        ? tickets.filter((ticket) => ticket.company?.id === Number(companyFilter))
-        : tickets;
+    const scopedTickets = activeView === "assigned"
+      ? tickets.filter((ticket) => ticket.assignee?.id === user?.id)
+      : activeView === "my-tickets"
+        ? tickets.filter((ticket) => ticket.customer.id === user?.id)
+        : user?.role === "agent" && activeView === "inbox" && companyFilter !== "all"
+          ? tickets.filter((ticket) => ticket.company?.id === Number(companyFilter))
+          : tickets;
     return {
       all: scopedTickets.length,
       open: scopedTickets.filter((ticket) => ticket.status === "open").length,
@@ -838,7 +845,13 @@ function App() {
   const canChangeAssignment = Boolean(selectedTicket && (
     isAgent && (isSuperAdmin || selectedTicket.assignee?.id === user.id)
   ));
-  const heading = isAgent ? "Support inbox" : activeView === "assigned" ? (user.isInternalConsultant ? "Assigned to me" : "My tickets") : "Company inbox";
+  const heading = isAgent
+    ? (activeView === "assigned" ? "Assigned to me" : "Support inbox")
+    : activeView === "assigned"
+      ? "Assigned to me"
+      : activeView === "my-tickets"
+        ? "My tickets"
+        : "Company inbox";
   async function openNewTicketForm() {
     if (!isAgent) {
       try {
@@ -875,7 +888,7 @@ function App() {
           </button>
           {(isAgent || user.isInternalConsultant) && (
             <button aria-label="Assigned to me" title="Assigned to me" className={`nav-item ${activeView === "assigned" ? "active" : ""}`} onClick={() => { setActiveView("assigned"); setFilter("all"); }}>
-              <UserRound size={17} /><span>Assigned to me</span><span className="nav-count">{tickets.filter((ticket) => ticket.assignee?.id === user.id && ticket.status !== "resolved").length}</span>
+              <UserRound size={17} /><span>Assigned to me</span><span className="nav-count">{assignedTicketCount}</span>
             </button>
           )}
           {isAgent && <>
@@ -895,7 +908,7 @@ function App() {
             <BookOpen size={17} /><span>User Manual</span>
           </button>
           </>}
-          {!isAgent && <button aria-label="My tickets" title="My tickets" className={`nav-item ${activeView === "assigned" ? "active" : ""}`} onClick={() => { setActiveView("assigned"); setFilter("all"); }}>
+          {!isAgent && <button aria-label="My tickets" title="My tickets" className={`nav-item ${activeView === "my-tickets" ? "active" : ""}`} onClick={() => { setActiveView("my-tickets"); setFilter("all"); }}>
             <UserRound size={17} /><span>My tickets</span><span className="nav-count">{myTicketCount}</span>
           </button>}
           {!isAgent && <button aria-label="Information Center" title="Information Center" className={`nav-item ${activeView === "information" ? "active" : ""}`} onClick={() => setActiveView("information")}>
@@ -930,23 +943,23 @@ function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "information" ? "Information Center" : activeView === "user-manual" ? "User Manual" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
+          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "information" ? "Information Center" : activeView === "user-manual" ? "User Manual" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
           {user.role === "customer" && user.companyName && <div className="topbar-company-name" title={user.companyName}>{user.companyName}</div>}
           <div className="topbar-actions">
             {user.role === "customer" && availableCompanies.length > 1 && <button type="button" className="company-switcher" onClick={() => setShowCompanySelection(true)}><Building2 size={14} /><span>{user.companyName || "Select a company"}</span><ArrowDown size={13} /></button>}
-            {(activeView === "inbox" || activeView === "assigned") && <div className="search-box"><Search size={15} /><input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tickets…" /><kbd>Ctrl K</kbd></div>}
+            {(activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets") && <div className="search-box"><Search size={15} /><input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tickets…" /><kbd>Ctrl K</kbd></div>}
             <div className="topbar-avatar">{initials(user.name)}</div>
           </div>
         </header>
 
-        {activeView === "inbox" || activeView === "assigned" ? (
+        {activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" ? (
           <div className={`workbench ${selectedTicket ? "has-detail" : ""}`}>
             <section className="ticket-list-panel">
               <div className="page-heading">
                 <div>
                   <div className="eyebrow"><span className="eyebrow-live" />{isAgent ? "YOUR TEAM, IN SYNC" : "WE'RE HERE TO HELP"}</div>
-                  <h1>{activeView === "assigned" && (isAgent || user.isInternalConsultant) ? "Assigned to me" : heading}</h1>
-                  <p>{isAgent ? "Stay on top of every customer conversation." : activeView === "assigned" ? (user.isInternalConsultant ? "Tickets assigned to you to review, solve, or switch to a Consultant." : "Track the support tickets you opened.") : "See support tickets opened by you and your teammates."}</p>
+                  <h1>{heading}</h1>
+                  <p>{isAgent ? (activeView === "assigned" ? "Stay on top of conversations assigned to you." : "Stay on top of every customer conversation.") : activeView === "assigned" ? "Tickets assigned to you to review, solve, or transfer to an External Consultant." : activeView === "my-tickets" ? "Track the support tickets you opened." : "See support tickets opened by you and your teammates."}</p>
                 </div>
                 <button className="button button-primary" onClick={openNewTicketForm}><Plus size={16} /> New ticket</button>
               </div>
@@ -963,7 +976,7 @@ function App() {
                   {(["all", "open", "in_progress", "waiting", "resolved"] as const).map((value) => (
                     <button key={value} className={filter === value ? "selected" : ""} onClick={() => setFilter(value)}>
                       {value === "all" ? "All tickets" : value === "in_progress" ? "In progress" : value === "resolved" ? "Closed" : value[0].toUpperCase() + value.slice(1)}
-                      {value === "all" && <span className="filter-count">{activeView === "assigned" ? (isAgent ? inboxCounts.all : myTicketCount) : inboxCounts.all}</span>}
+                      {value === "all" && <span className="filter-count">{inboxCounts.all}</span>}
                     </button>
                   ))}
                 </div>
@@ -995,7 +1008,7 @@ function App() {
                 ))}
               </div>
               <div className="list-footer">
-                <span>Showing <strong>{filteredTickets.length}</strong> of {activeView === "assigned" ? (isAgent ? inboxCounts.all : myTicketCount) : activeView === "inbox" && isAgent ? inboxCounts.all : tickets.length} tickets</span>
+                <span>Showing <strong>{filteredTickets.length}</strong> of {inboxCounts.all} tickets</span>
                 <span className="footer-refresh-wrap">
                   {inboxRefreshError && <span className="footer-refresh-error" role="alert">{inboxRefreshError}</span>}
                   {refreshSuccess && <span className="footer-refresh-success" role="status"><Check size={11} /> Refreshed</span>}
