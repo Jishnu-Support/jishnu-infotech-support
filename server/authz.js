@@ -19,3 +19,55 @@ export function reportAccess(user) {
   }
   return { allowed: false, workspaceWide: false, companyId: null };
 }
+
+export function isInternalConsultant(user, company) {
+  if (!user) return false;
+  if (user.is_internal_consultant || user.isInternalConsultant) return true;
+  if (company && company.internal_consultant_id && Number(company.internal_consultant_id) === Number(user.id)) {
+    return true;
+  }
+  return false;
+}
+
+export function canManageTicket(user, ticket, company) {
+  if (!user || !ticket) {
+    return {
+      canUpdateStatus: false,
+      canUpdatePriority: false,
+      canChangeAssignment: false,
+      canSwitchToConsultant: false,
+      isInternalConsultant: false,
+    };
+  }
+  const isInternal = isInternalConsultant(user, company);
+  if (user.role === "agent") {
+    const isSuperAdmin = Boolean(user.is_admin);
+    const isAssignee = Number(ticket.assignee_id) === Number(user.id);
+    return {
+      canUpdateStatus: true,
+      canUpdatePriority: true,
+      canChangeAssignment: isSuperAdmin || isAssignee,
+      canSwitchToConsultant: isSuperAdmin || isAssignee,
+      isInternalConsultant: isInternal,
+    };
+  }
+  if (user.role === "customer" && user.company_id && Number(ticket.company_id) === Number(user.company_id)) {
+    const isAssigned = Number(ticket.assignee_id) === Number(user.id);
+    if (isInternal || isAssigned) {
+      return {
+        canUpdateStatus: true,
+        canUpdatePriority: true,
+        canChangeAssignment: true,
+        canSwitchToConsultant: true,
+        isInternalConsultant: true,
+      };
+    }
+  }
+  return {
+    canUpdateStatus: false,
+    canUpdatePriority: false,
+    canChangeAssignment: false,
+    canSwitchToConsultant: false,
+    isInternalConsultant: false,
+  };
+}

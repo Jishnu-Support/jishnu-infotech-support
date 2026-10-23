@@ -457,6 +457,28 @@ const schemaMigrations = [
     );
     CREATE INDEX IF NOT EXISTS user_manual_links_manual_idx ON user_manual_links(manual_id, id);
   `) },
+  { version: 20, apply: () => db.exec(`
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS internal_consultant_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS companies_internal_consultant_idx ON companies(internal_consultant_id);
+  `) },
+  { version: 21, apply: () => db.exec(`
+    ALTER TABLE company_memberships ADD COLUMN IF NOT EXISTS is_internal_consultant INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE company_memberships ADD COLUMN IF NOT EXISTS internal_routing_priority INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS is_internal_consultant INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS internal_routing_priority INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX IF NOT EXISTS company_memberships_internal_consultant_idx
+      ON company_memberships (company_id, is_internal_consultant, internal_routing_priority);
+
+    UPDATE company_memberships cm
+    SET is_internal_consultant = 1, internal_routing_priority = 1
+    FROM companies c
+    WHERE cm.company_id = c.id AND cm.user_id = c.internal_consultant_id;
+
+    UPDATE users u
+    SET is_internal_consultant = 1, internal_routing_priority = 1
+    FROM companies c
+    WHERE u.id = c.internal_consultant_id;
+  `) },
 ];
 
 async function seedDatabase() {

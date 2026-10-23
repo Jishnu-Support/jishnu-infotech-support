@@ -15,7 +15,7 @@ import { simpleParser } from "mailparser";
 import { parseHistoricalTicketWorkbook } from "./historical-ticket-import.js";
 import { db, initializeDatabase } from "./db.js";
 import { applicationUrl, emailIsConfigured, sendEmail } from "./email.js";
-import { reportAccess, ticketAccessFilter } from "./authz.js";
+import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket } from "./authz.js";
 import { normalizedTicketMetadata, ticketCategories } from "./validation.js";
 
 const app = express();
@@ -135,6 +135,8 @@ function publicUser(user) {
     role: user.role,
     isAdmin: Boolean(user.is_admin),
     isCompanyAdmin: Boolean(user.is_company_admin),
+    isInternalConsultant: Boolean(user.is_internal_consultant),
+    internalRoutingPriority: user.internal_routing_priority || 0,
     companyId: user.company_id || null,
     companyName: user.company_name || null,
     companySupportValidUntil: user.company_support_valid_until || null,
@@ -143,13 +145,27 @@ function publicUser(user) {
 }
 
 async function companyMemberships(userId) {
-  return db.prepare(`
+  const rows = await db.prepare(`
     SELECT c.id, c.name, c.support_valid_until AS supportValidUntil,
-           m.is_company_admin AS isCompanyAdmin
+           c.internal_consultant_id AS internalConsultantId,
+           m.is_company_admin AS isCompanyAdmin,
+           m.is_internal_consultant AS isInternalConsultant,
+           m.internal_routing_priority AS internalRoutingPriority,
+           (SELECT COUNT(*) FROM company_memberships cm2
+            JOIN users u2 ON u2.id = cm2.user_id
+            WHERE cm2.company_id = c.id AND cm2.is_internal_consultant = 1
+              AND u2.role = 'customer' AND u2.approval_status = 'approved' AND u2.disabled_at IS NULL
+           ) AS internalConsultantCount
     FROM company_memberships m JOIN companies c ON c.id = m.company_id
     WHERE m.user_id = ? AND c.is_active = 1
     ORDER BY c.name
   `).all(userId);
+  return rows.map((row) => ({
+    ...row,
+    isInternalConsultant: Boolean(row.isInternalConsultant || (row.internalConsultantId && Number(row.internalConsultantId) === Number(userId))),
+    internalRoutingPriority: row.internalRoutingPriority || 0,
+    hasInternalConsultants: Number(row.internalConsultantCount) > 0 || Boolean(row.internalConsultantId),
+  }));
 }
 
 function createToken(user, activeCompanyId = user.company_id) {
@@ -246,7 +262,10 @@ async function requireAuth(req, res, next) {
     const activeCompanyId = Number(payload.companyId) || Number(user.company_id);
     const membership = await db.prepare(`
       SELECT c.id, c.name, c.support_valid_until AS supportValidUntil,
-             m.is_company_admin AS isCompanyAdmin
+             c.internal_consultant_id AS internalConsultantId,
+             m.is_company_admin AS isCompanyAdmin,
+             m.is_internal_consultant AS isInternalConsultant,
+             m.internal_routing_priority AS internalRoutingPriority
       FROM company_memberships m JOIN companies c ON c.id = m.company_id
       WHERE m.user_id = ? AND m.company_id = ? AND c.is_active = 1
     `).get(user.id, activeCompanyId);
@@ -255,6 +274,12 @@ async function requireAuth(req, res, next) {
     user.company_name = membership.name;
     user.company_support_valid_until = membership.supportValidUntil;
     user.is_company_admin = membership.isCompanyAdmin;
+    user.is_internal_consultant = (membership.isInternalConsultant === 1 || Number(membership.internalConsultantId) === Number(user.id)) ? 1 : 0;
+    user.internal_routing_priority = membership.internalRoutingPriority || 0;
+  } else if (user.role === "agent") {
+    const assignedInternal = await db.prepare("SELECT 1 FROM companies WHERE internal_consultant_id = ? AND is_active = 1 LIMIT 1").get(user.id);
+    user.is_internal_consultant = assignedInternal ? 1 : 0;
+    user.internal_routing_priority = 0;
   }
   req.user = user;
   next();
@@ -310,6 +335,49 @@ async function selectRoutingAgent(category) {
   `).get(...(specialty ? [specialty] : []));
 }
 
+async function selectInternalConsultant(companyId, excludeUserId = null) {
+  if (!companyId) return null;
+  const excludeClause = excludeUserId ? "AND u.id != ?" : "";
+  const params = excludeUserId ? [companyId, excludeUserId] : [companyId];
+  return await db.prepare(`
+    SELECT u.id, u.name, u.email, cm.internal_routing_priority,
+           COUNT(t.id) AS active_tickets
+    FROM users u
+    JOIN company_memberships cm ON cm.user_id = u.id AND cm.company_id = ?
+    LEFT JOIN tickets t ON t.assignee_id = u.id AND t.status != 'resolved'
+    WHERE u.role = 'customer'
+      AND (cm.is_internal_consultant = 1 OR u.is_internal_consultant = 1)
+      AND u.approval_status = 'approved'
+      AND u.disabled_at IS NULL
+      ${excludeClause}
+    GROUP BY u.id, cm.internal_routing_priority
+    ORDER BY COALESCE(NULLIF(cm.internal_routing_priority, 0), 999999) ASC,
+             COUNT(t.id) ASC,
+             u.id ASC
+    LIMIT 1
+  `).get(...params);
+}
+
+async function normalizeCompanyInternalPriorities(companyId) {
+  if (!companyId) return;
+  const consultants = await db.prepare(`
+    SELECT m.user_id
+    FROM company_memberships m
+    JOIN users u ON u.id = m.user_id
+    WHERE m.company_id = ? AND (m.is_internal_consultant = 1 OR u.is_internal_consultant = 1) AND u.disabled_at IS NULL
+    ORDER BY COALESCE(NULLIF(m.internal_routing_priority, 0), 999999), m.user_id
+  `).all(companyId);
+
+  const updateMembership = db.prepare("UPDATE company_memberships SET internal_routing_priority = ? WHERE user_id = ? AND company_id = ?");
+  const updateUser = db.prepare("UPDATE users SET internal_routing_priority = ? WHERE id = ? AND company_id = ?");
+
+  for (const [index, row] of consultants.entries()) {
+    const priority = index + 1;
+    await updateMembership.run(priority, row.user_id, companyId);
+    await updateUser.run(priority, row.user_id, companyId);
+  }
+}
+
 async function recordTicketAssignment(ticketId, agentId, assignedBy, source) {
   await db.prepare(`
     INSERT INTO ticket_assignment_history (ticket_id, agent_id, assigned_by, source)
@@ -337,6 +405,13 @@ async function ticketSummary(row) {
   const sla = await slaConfiguration();
   const firstResponseDueAt = new Date(deadlineFrom(row.created_at, sla.firstResponseHours)).toISOString();
   const resolutionDueAt = new Date(deadlineFrom(row.created_at, sla.resolutionHours)).toISOString();
+  const resolvedByInternalConsultant = Boolean(
+    row.status === "resolved" && row.resolved_by && (
+      row.resolved_by_is_internal_consultant === 1 ||
+      (row.company_internal_consultant_id && Number(row.resolved_by) === Number(row.company_internal_consultant_id)) ||
+      row.resolved_by_role === "customer"
+    )
+  );
   return {
     id: row.id,
     subject: row.subject,
@@ -366,7 +441,14 @@ async function ticketSummary(row) {
       email: row.customer_email || "",
       contactNumber: row.customer_contact_number || row.reported_client_contact || null,
     } : { id: null, name: "", email: "", contactNumber: null },
-    assignee: row.assignee_id ? { id: row.assignee_id, name: row.assignee_name, email: row.assignee_email, contactNumber: row.assignee_contact_number || null } : null,
+    assignee: row.assignee_id ? { id: row.assignee_id, name: row.assignee_name, email: row.assignee_email, contactNumber: row.assignee_contact_number || null, role: row.assignee_role } : null,
+    resolvedBy: row.resolved_by ? {
+      id: row.resolved_by,
+      name: row.resolved_by_name || (resolvedByInternalConsultant ? "Internal Consultant" : "Consultant"),
+      role: row.resolved_by_role,
+      isInternalConsultant: resolvedByInternalConsultant,
+    } : null,
+    resolvedByInternalConsultant,
     messageCount: row.message_count,
     lastMessage: row.last_message || row.description,
     firstResponseDueAt,
@@ -380,8 +462,11 @@ async function ticketSummary(row) {
 
 const ticketSelect = `
   SELECT t.*, c.name AS customer_name, c.email AS customer_email, c.contact_number AS customer_contact_number,
-         co.name AS company_name,
+         co.name AS company_name, co.internal_consultant_id AS company_internal_consultant_id,
          a.id AS assignee_id, a.name AS assignee_name, a.email AS assignee_email, a.contact_number AS assignee_contact_number,
+         a.role AS assignee_role,
+         res.id AS resolved_by_id, res.name AS resolved_by_name, res.role AS resolved_by_role,
+         res_cm.is_internal_consultant AS resolved_by_is_internal_consultant,
          (SELECT COUNT(*) FROM messages m WHERE m.ticket_id = t.id AND m.is_internal = 0) AS message_count,
          (SELECT COUNT(*) FROM ticket_attachments x WHERE x.ticket_id = t.id) AS attachment_count,
          (SELECT body FROM messages m WHERE m.ticket_id = t.id AND m.is_internal = 0 ORDER BY m.id DESC LIMIT 1) AS last_message,
@@ -391,6 +476,8 @@ const ticketSelect = `
   LEFT JOIN users c ON c.id = t.customer_id
   LEFT JOIN companies co ON co.id = t.company_id
   LEFT JOIN users a ON a.id = t.assignee_id
+  LEFT JOIN users res ON res.id = t.resolved_by
+  LEFT JOIN company_memberships res_cm ON res_cm.user_id = res.id AND res_cm.company_id = t.company_id
   LEFT JOIN ticket_ratings r ON r.ticket_id = t.id
 `;
 
@@ -521,17 +608,24 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
     return res.status(400).json({ error: "Choose a company or enter a company invitation code." });
   }
 
+  const isInternalConsultant = Boolean(req.body.isInternalConsultant);
+
   if (await clientUsernameExistsInCompany(username, company.id)) {
     return res.status(409).json({ error: "That username is already in use in this company." });
   }
 
   try {
+    let internalRoutingPriority = 0;
+    if (isInternalConsultant) {
+      const maxPri = (await db.prepare("SELECT COALESCE(MAX(internal_routing_priority), 0) AS max_pri FROM company_memberships WHERE company_id = ? AND is_internal_consultant = 1").get(company.id))?.max_pri || 0;
+      internalRoutingPriority = maxPri + 1;
+    }
     const id = Number((await db.prepare(`
-      INSERT INTO users (name, username, email, contact_number, password_hash, role, company_id, approval_status)
-      VALUES (?, ?, ?, ?, ?, 'customer', ?, ?)
-    `).run(name, username, email, contactNumber, bcrypt.hashSync(password, 12), company.id, approvalStatus)).lastInsertRowid);
-    await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin) VALUES (?, ?, 0) ON CONFLICT DO NOTHING")
-      .run(id, company.id);
+      INSERT INTO users (name, username, email, contact_number, password_hash, role, company_id, approval_status, is_internal_consultant, internal_routing_priority)
+      VALUES (?, ?, ?, ?, ?, 'customer', ?, ?, ?, ?)
+    `).run(name, username, email, contactNumber, bcrypt.hashSync(password, 12), company.id, approvalStatus, isInternalConsultant ? 1 : 0, internalRoutingPriority)).lastInsertRowid);
+    await db.prepare("INSERT INTO company_memberships (user_id, company_id, is_company_admin, is_internal_consultant, internal_routing_priority) VALUES (?, ?, 0, ?, ?) ON CONFLICT DO NOTHING")
+      .run(id, company.id, isInternalConsultant ? 1 : 0, internalRoutingPriority);
     if (approvalStatus === "pending") {
       await db.prepare(`
         INSERT INTO notifications (user_id, ticket_id, kind, message)
@@ -788,10 +882,22 @@ app.get("/api/agent-invitations", requireAuth, requireAdmin, async (_req, res) =
   res.json({ invitations });
 });
 
-app.get("/api/auth/me", requireAuth, async (req, res) => res.json({
-  user: publicUser(req.user),
-  companies: req.user.role === "customer" ? await companyMemberships(req.user.id) : [],
-}));
+app.get("/api/auth/me", requireAuth, async (req, res) => {
+  const companyHasInternalConsultants = req.user.role === "customer" && req.user.company_id ? Boolean(
+    await db.prepare(`
+      SELECT 1 FROM company_memberships cm
+      JOIN users u ON u.id = cm.user_id
+      WHERE cm.company_id = ? AND cm.is_internal_consultant = 1 AND u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL
+      LIMIT 1
+    `).get(req.user.company_id)
+  ) : false;
+
+  res.json({
+    user: publicUser(req.user),
+    companies: req.user.role === "customer" ? await companyMemberships(req.user.id) : [],
+    companyHasInternalConsultants,
+  });
+});
 
 app.post("/api/auth/select-company", requireAuth, async (req, res) => {
   if (req.user.role !== "customer") return res.status(403).json({ error: "Company selection is only available to client accounts." });
@@ -978,6 +1084,43 @@ app.get("/api/reports", requireAuth, async (req, res) => {
     WHERE t.created_at >= ? AND t.created_at < ?
     GROUP BY c.id ORDER BY count DESC, c.name LIMIT 8
   `).all(startAt, endAt) : [];
+
+  const solvedByInternalRow = await db.prepare(`
+    SELECT 
+      COUNT(DISTINCT CASE WHEN (
+        res_cm.is_internal_consultant = 1 OR
+        res.role = 'customer' OR
+        (co.internal_consultant_id IS NOT NULL AND t.resolved_by = co.internal_consultant_id)
+      ) THEN t.id END) AS solvedByInternal,
+      COUNT(DISTINCT CASE WHEN (
+        res.role = 'agent' AND (co.internal_consultant_id IS NULL OR t.resolved_by != co.internal_consultant_id)
+      ) THEN t.id END) AS solvedByExternal
+    FROM tickets t
+    LEFT JOIN companies co ON co.id = t.company_id
+    LEFT JOIN users res ON res.id = t.resolved_by
+    LEFT JOIN company_memberships res_cm ON res_cm.user_id = t.resolved_by AND res_cm.company_id = t.company_id
+    WHERE ${scopeClause} AND t.status = 'resolved' AND t.resolved_at >= ? AND t.resolved_at < ?
+  `).get(...scopeParams, startAt, endAt);
+
+  const internalConsultantWorkload = await db.prepare(`
+    SELECT u.id, u.name, u.email, c.name AS companyName,
+           m.internal_routing_priority AS routingPriority,
+           COUNT(DISTINCT CASE WHEN t.status != 'resolved' AND t.assignee_id = u.id THEN t.id END) AS active,
+           COUNT(DISTINCT CASE WHEN t.resolved_by = u.id AND t.resolved_at >= ? AND t.resolved_at < ? THEN t.id END) AS resolvedInPeriod
+    FROM users u
+    JOIN company_memberships m ON m.user_id = u.id AND (m.is_internal_consultant = 1 OR u.is_internal_consultant = 1)
+    JOIN companies c ON c.id = m.company_id
+    LEFT JOIN tickets t ON (t.assignee_id = u.id OR t.resolved_by = u.id)
+      AND ${isAllCompaniesScope ? "1 = 1" : "t.company_id = ?"}
+    WHERE u.role = 'customer' AND u.disabled_at IS NULL
+      AND ${isAllCompaniesScope ? "1 = 1" : "m.company_id = ?"}
+    GROUP BY u.id, c.name, m.internal_routing_priority
+    ORDER BY resolvedInPeriod DESC, m.internal_routing_priority ASC, u.name
+  `).all(
+    startAt, endAt,
+    ...(isAllCompaniesScope ? [] : [scopeCompanyId, scopeCompanyId]),
+  );
+
   const scopeCompany = scopeCompanyId === null
     ? null
     : { id: scopeCompanyId, name: scopeCompanyName || (await db.prepare("SELECT name FROM companies WHERE id = ?").get(scopeCompanyId))?.name || "Company" };
@@ -988,6 +1131,8 @@ app.get("/api/reports", requireAuth, async (req, res) => {
     endDate: new Date(end).toISOString().slice(0, 10),
     scopeCompany,
     summary: { created: totals.created || 0, activeInPeriod: totals.active || 0, activeBacklog, waiting: waitingTickets || 0 },
+    solvedByInternal: Number(solvedByInternalRow?.solvedByInternal || 0),
+    solvedByExternal: Number(solvedByInternalRow?.solvedByExternal || 0),
     statuses: ["open", "in_progress", "waiting", "resolved"].map((status) => ({
       status, count: statusRows.find((row) => row.status === status)?.count || 0,
     })),
@@ -1003,6 +1148,7 @@ app.get("/api/reports", requireAuth, async (req, res) => {
       resolution: { ...resolutionSla, targetHours: sla.resolutionHours },
     },
     agentWorkload,
+    internalConsultantWorkload,
     companyVolume,
     customerActivity,
   });
@@ -1996,12 +2142,15 @@ app.post("/api/admin/agents", requireAuth, requireAdmin, async (req, res) => {
 app.get("/api/admin/companies", requireAuth, requireAdmin, async (_req, res) => {
   const companies = await db.prepare(`
     SELECT c.id, c.name, c.domain, c.support_valid_until AS supportValidUntil, c.is_active AS isActive,
+           c.internal_consultant_id AS internalConsultantId,
+           ic.name AS internalConsultantName, ic.role AS internalConsultantRole,
            COUNT(DISTINCT u.id) AS userCount,
            COUNT(DISTINCT CASE WHEN u.approval_status = 'pending' THEN u.id END) AS pendingCount
     FROM companies c
+    LEFT JOIN users ic ON ic.id = c.internal_consultant_id
     LEFT JOIN company_memberships m ON m.company_id = c.id
     LEFT JOIN users u ON u.id = m.user_id AND u.role = 'customer'
-    GROUP BY c.id ORDER BY c.name
+    GROUP BY c.id, ic.name, ic.role ORDER BY c.name
   `).all();
   res.json({ companies });
 });
@@ -2011,25 +2160,58 @@ app.patch("/api/admin/companies/:id", requireAuth, requireAdmin, async (req, res
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
   const domain = typeof req.body.domain === "string" ? req.body.domain.trim().toLowerCase().replace(/^@/, "") : "";
   const supportValidUntil = req.body.supportValidUntil;
+  let internalConsultantId = req.body.internalConsultantId !== undefined
+    ? (req.body.internalConsultantId === null || req.body.internalConsultantId === "" ? null : Number(req.body.internalConsultantId))
+    : undefined;
+
   if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose a valid company." });
   if (name.length < 2 || name.length > 120) return res.status(400).json({ error: "Company name must be between 2 and 120 characters." });
   if (domain && (!/^(?=.{1,253}$)(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(domain))) {
     return res.status(400).json({ error: "Enter a valid company email domain, or leave it blank." });
   }
   if (supportValidUntil && !validDateOnly(supportValidUntil)) return res.status(400).json({ error: "Enter a valid Support valid until date." });
+
+  if (internalConsultantId !== undefined && internalConsultantId !== null) {
+    if (!Number.isInteger(internalConsultantId) || internalConsultantId < 1) {
+      return res.status(400).json({ error: "Choose a valid Internal Consultant." });
+    }
+    const candidate = await db.prepare(`
+      SELECT u.id, u.name, u.role FROM users u
+      LEFT JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ?
+      WHERE u.id = ? AND u.disabled_at IS NULL AND (
+        u.role = 'agent' OR (u.role = 'customer' AND m.company_id IS NOT NULL AND u.approval_status = 'approved')
+      )
+    `).get(companyId, internalConsultantId);
+    if (!candidate) {
+      return res.status(400).json({ error: "The Internal Consultant must be an active Consultant or an approved client in this company." });
+    }
+  }
+
   const slug = name.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 100);
   if (!slug) return res.status(400).json({ error: "Company name must contain at least one letter or number." });
   try {
+    const fields = ["name = ?", "slug = ?", "domain = ?", "support_valid_until = ?"];
+    const values = [name, slug, domain || null, supportValidUntil || null];
+    if (internalConsultantId !== undefined) {
+      fields.push("internal_consultant_id = ?");
+      values.push(internalConsultantId);
+    }
+    values.push(companyId);
     const updated = await db.prepare(`
-      UPDATE companies SET name = ?, slug = ?, domain = ?, support_valid_until = ? WHERE id = ?
-    `).run(name, slug, domain || null, supportValidUntil || null, companyId);
+      UPDATE companies SET ${fields.join(", ")} WHERE id = ?
+    `).run(...values);
     if (updated.changes !== 1) return res.status(404).json({ error: "Company not found." });
   } catch (error) {
     if (error.code === "23505") return res.status(409).json({ error: "That company name, email domain, or URL slug is already in use." });
     throw error;
   }
   res.json({ company: await db.prepare(`
-    SELECT id, name, domain, support_valid_until AS supportValidUntil FROM companies WHERE id = ?
+    SELECT c.id, c.name, c.domain, c.support_valid_until AS supportValidUntil,
+           c.internal_consultant_id AS internalConsultantId,
+           ic.name AS internalConsultantName, ic.role AS internalConsultantRole
+    FROM companies c
+    LEFT JOIN users ic ON ic.id = c.internal_consultant_id
+    WHERE c.id = ?
   `).get(companyId) });
 });
 
@@ -2433,9 +2615,11 @@ app.get("/api/company/users", requireAuth, requireCompanyAdmin, async (req, res)
   if (!company) return res.status(404).json({ error: "Company not found." });
   const users = await db.prepare(`
     SELECT u.id, u.name, u.username, u.email, u.contact_number AS contactNumber, m.is_company_admin AS isCompanyAdmin,
+           m.is_internal_consultant AS isInternalConsultant, m.internal_routing_priority AS internalRoutingPriority,
            u.approval_status AS approvalStatus, u.disabled_at AS disabledAt, u.created_at AS createdAt
     FROM users u JOIN company_memberships m ON m.user_id = u.id
-    WHERE m.company_id = ? AND u.role = 'customer' ORDER BY u.approval_status = 'pending' DESC, u.name
+    WHERE m.company_id = ? AND u.role = 'customer'
+    ORDER BY u.approval_status = 'pending' DESC, m.is_internal_consultant DESC, m.internal_routing_priority ASC, u.name
   `).all(companyId);
   const invitations = await db.prepare(`
     SELECT id, email, is_company_admin AS isCompanyAdmin, expires_at AS expiresAt, created_at AS createdAt
@@ -2571,6 +2755,32 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, async (req
       membershipChanged = true;
     }
   }
+  if (req.body.isInternalConsultant !== undefined) {
+    if (typeof req.body.isInternalConsultant !== "boolean") return res.status(400).json({ error: "Internal Consultant setting must be true or false." });
+    const isInternal = req.body.isInternalConsultant;
+    let pri = Number(req.body.internalRoutingPriority) || 0;
+    if (isInternal && pri < 1) {
+      const maxPri = (await db.prepare("SELECT COALESCE(MAX(internal_routing_priority), 0) AS max_pri FROM company_memberships WHERE company_id = ? AND is_internal_consultant = 1").get(companyId))?.max_pri || 0;
+      pri = maxPri + 1;
+    } else if (!isInternal) {
+      pri = 0;
+    }
+    await db.prepare("UPDATE company_memberships SET is_internal_consultant = ?, internal_routing_priority = ? WHERE user_id = ? AND company_id = ?")
+      .run(isInternal ? 1 : 0, pri, userId, companyId);
+    await db.prepare("UPDATE users SET is_internal_consultant = ?, internal_routing_priority = ? WHERE id = ? AND company_id = ?")
+      .run(isInternal ? 1 : 0, pri, userId, companyId);
+    await normalizeCompanyInternalPriorities(companyId);
+    membershipChanged = true;
+  }
+  if (req.body.internalRoutingPriority !== undefined && req.body.isInternalConsultant === undefined) {
+    const pri = Math.max(1, Number(req.body.internalRoutingPriority) || 1);
+    await db.prepare("UPDATE company_memberships SET internal_routing_priority = ? WHERE user_id = ? AND company_id = ?")
+      .run(pri, userId, companyId);
+    await db.prepare("UPDATE users SET internal_routing_priority = ? WHERE id = ? AND company_id = ?")
+      .run(pri, userId, companyId);
+    await normalizeCompanyInternalPriorities(companyId);
+    membershipChanged = true;
+  }
   if (req.body.disabled !== undefined) {
     if (typeof req.body.disabled !== "boolean") return res.status(400).json({ error: "Disabled setting must be true or false." });
     if (req.body.disabled && user.is_company_admin) {
@@ -2595,13 +2805,15 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, async (req
   const updatedUser = await db.prepare(`
     SELECT u.id, u.name, u.username, u.email, u.contact_number AS contactNumber,
            m.is_company_admin AS isCompanyAdmin,
+           m.is_internal_consultant AS isInternalConsultant,
+           m.internal_routing_priority AS internalRoutingPriority,
            u.approval_status AS approvalStatus, u.disabled_at AS disabledAt
     FROM users u JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ? WHERE u.id = ?
   `).get(companyId, userId);
   res.json({ user: updatedUser });
 });
 
-app.get("/api/notifications", requireAuth, requireAgent, async (req, res) => {
+app.get("/api/notifications", requireAuth, async (req, res) => {
   const notifications = await db.prepare(`
     SELECT n.id, n.ticket_id AS ticketId, n.kind, n.message, n.read_at AS readAt, n.created_at AS createdAt,
            t.subject, t.description, t.category, t.priority, customer.name AS customerName
@@ -2613,7 +2825,7 @@ app.get("/api/notifications", requireAuth, requireAgent, async (req, res) => {
   res.json({ notifications, unreadCount: notifications.filter((notification) => !notification.readAt).length });
 });
 
-app.post("/api/notifications/read", requireAuth, requireAgent, async (req, res) => {
+app.post("/api/notifications/read", requireAuth, async (req, res) => {
   const id = Number(req.body.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid notification id." });
   await db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?").run(id, req.user.id);
@@ -2652,7 +2864,7 @@ app.get("/api/tickets/:id", requireAuth, async (req, res) => {
            created_at AS createdAt, uploaded_by AS uploadedBy
     FROM ticket_attachments WHERE ticket_id = ? ORDER BY id
   `).all(ticketId);
-  const assignmentHistory = req.user.role === "agent" || req.user.is_company_admin
+  const assignmentHistory = req.user.role === "agent" || req.user.is_company_admin || req.user.is_internal_consultant || ticket.assignee_id === req.user.id
     ? await db.prepare(`
         SELECT h.id, h.source, h.created_at AS createdAt,
                agent.id AS agentId, COALESCE(agent.name, 'Unassigned') AS agentName,
@@ -2809,13 +3021,55 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
     discardUploadedFiles(req.files);
     return res.status(400).json({ error: "Choose a Consultant who supports the selected ticket category." });
   }
-  const agent = req.user.role === "agent"
-    ? { id: req.user.id }
-    : requestedAssignee
-      ? { id: requestedAssignee }
-      : await selectRoutingAgent(metadata.category);
-  const assignmentSource = req.user.role === "agent" ? "agent_created"
-    : requestedAssignee ? "client_selected" : "automatic";
+  const companyRecord = await db.prepare("SELECT internal_consultant_id FROM companies WHERE id = ?").get(companyId);
+  const isCreatorInternalConsultant = Boolean(
+    req.user.role === "customer" && (
+      req.user.is_internal_consultant ||
+      (companyRecord?.internal_consultant_id && Number(companyRecord.internal_consultant_id) === Number(req.user.id)) ||
+      (await db.prepare("SELECT 1 FROM company_memberships WHERE user_id = ? AND company_id = ? AND is_internal_consultant = 1").get(req.user.id, companyId))
+    )
+  );
+  const companyHasInternalConsultants = Boolean(
+    companyRecord?.internal_consultant_id ||
+    (await db.prepare(`
+      SELECT 1 FROM company_memberships cm
+      JOIN users u ON u.id = cm.user_id
+      WHERE cm.company_id = ? AND (cm.is_internal_consultant = 1 OR u.is_internal_consultant = 1)
+        AND u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL
+      LIMIT 1
+    `).get(companyId))
+  );
+
+  const routingPreference = req.body.routingPreference === "external" ? "external" : (req.body.routingPreference === "internal" ? "internal" : null);
+
+  let agent;
+  let assignmentSource;
+  if (req.user.role === "agent") {
+    agent = { id: req.user.id };
+    assignmentSource = "agent_created";
+  } else if (isCreatorInternalConsultant) {
+    // Internal consultant raising a ticket must be routed to external consultant in priority order
+    agent = await selectRoutingAgent(metadata.category);
+    assignmentSource = "external_consultant_auto";
+  } else if (companyHasInternalConsultants && routingPreference === "external") {
+    agent = await selectRoutingAgent(metadata.category);
+    assignmentSource = "external_consultant_priority";
+  } else if (companyHasInternalConsultants) {
+    const internalConsultant = await selectInternalConsultant(companyId);
+    if (internalConsultant) {
+      agent = { id: internalConsultant.id };
+      assignmentSource = "internal_consultant_auto";
+    } else {
+      agent = await selectRoutingAgent(metadata.category);
+      assignmentSource = "automatic";
+    }
+  } else if (requestedAssignee) {
+    agent = { id: requestedAssignee };
+    assignmentSource = "client_selected";
+  } else {
+    agent = await selectRoutingAgent(metadata.category);
+    assignmentSource = "automatic";
+  }
   const files = req.files || [];
   const verifiedFiles = [];
   try {
@@ -2886,12 +3140,18 @@ app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
   if (isInternal && req.user.role !== "agent") return res.status(403).json({ error: "Internal notes are only available to Consultants." });
   if (body.length < 1 || body.length > 5000) return res.status(400).json({ error: "Reply must be between 1 and 5,000 characters." });
   const ticket = await db.prepare(`
-    SELECT t.status, t.first_response_at, t.email_thread_id, t.subject, t.customer_id, c.email AS customer_email
+    SELECT t.status, t.first_response_at, t.email_thread_id, t.subject, t.customer_id, t.company_id, t.assignee_id, c.email AS customer_email
     FROM tickets t LEFT JOIN users c ON c.id = t.customer_id WHERE t.id = ?
   `).get(ticketId);
   if (!ticket) return res.status(404).json({ error: "Ticket not found." });
-  if (req.user.role === "customer" && ticket.customer_id !== req.user.id && !req.user.is_company_admin) {
-    return res.status(403).json({ error: "Only the ticket creator or a company administrator can reply to this ticket." });
+  const companyRecord = await db.prepare("SELECT internal_consultant_id FROM companies WHERE id = ?").get(ticket.company_id);
+  const isInternalUser = Boolean(
+    req.user.is_internal_consultant ||
+    (companyRecord?.internal_consultant_id && Number(companyRecord.internal_consultant_id) === Number(req.user.id)) ||
+    Number(ticket.assignee_id) === Number(req.user.id)
+  );
+  if (req.user.role === "customer" && ticket.customer_id !== req.user.id && !req.user.is_company_admin && !isInternalUser) {
+    return res.status(403).json({ error: "Only the ticket creator, internal consultant, or a company administrator can reply to this ticket." });
   }
 
   const insertMessage = db.transaction(async () => {
@@ -2901,10 +3161,10 @@ app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
     const result = await db.prepare("INSERT INTO messages (ticket_id, author_id, body, is_internal, email_message_id) VALUES (?, ?, ?, ?, ?)")
       .run(ticketId, req.user.id, body, isInternal ? 1 : 0, emailMessageId);
     await db.prepare("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticketId);
-    if (!isInternal && req.user.role === "customer" && ticket.status === "resolved") {
+    if (!isInternal && req.user.role === "customer" && req.user.id === ticket.customer_id && ticket.status === "resolved") {
       await db.prepare("UPDATE tickets SET status = 'open', resolved_at = NULL, resolved_by = NULL WHERE id = ?").run(ticketId);
     }
-    if (!isInternal && req.user.role !== "customer" && !ticket.first_response_at) {
+    if (!isInternal && req.user.id !== ticket.customer_id && !ticket.first_response_at) {
       await db.prepare("UPDATE tickets SET first_response_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticketId);
     }
     if (emailMessageId) {
@@ -2936,15 +3196,40 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
   const ticketId = Number(req.params.id);
   const status = req.body.status;
   const priority = req.body.priority;
-  const assigneeId = req.body.assigneeId;
+  let assigneeId = req.body.assigneeId;
+  const transferToExternal = Boolean(req.body.transferToExternal);
   const metadataRequested = ["category", "tags", "customFields"].some((key) => req.body[key] !== undefined);
   if (!Number.isInteger(ticketId) || ticketId < 1) return res.status(400).json({ error: "Invalid ticket id." });
   const existing = await db.prepare("SELECT * FROM tickets WHERE id = ?").get(ticketId);
   if (!existing || !await canAccessTicket(req.user, ticketId)) return res.status(404).json({ error: "Ticket not found." });
-  if (req.user.role === "customer") {
+  const company = await db.prepare("SELECT id, internal_consultant_id FROM companies WHERE id = ?").get(existing.company_id);
+  const perms = canManageTicket(req.user, existing, company);
+
+  if (transferToExternal) {
+    if (!perms.isInternalConsultant && req.user.role !== "agent") {
+      return res.status(403).json({ error: "Only an Internal Consultant or Consultant can transfer this ticket to an external consultant." });
+    }
+    const externalAgent = await selectRoutingAgent(existing.category);
+    if (!externalAgent) {
+      return res.status(400).json({ error: "No external consultant is currently available to take this ticket." });
+    }
+    assigneeId = externalAgent.id;
+  }
+
+  if (status !== undefined && !perms.canUpdateStatus) {
+    return res.status(403).json({ error: "Only Consultants or the Internal Consultant can update ticket status." });
+  }
+  if (priority !== undefined && !perms.canUpdatePriority) {
+    return res.status(403).json({ error: "Only Consultants or the Internal Consultant can update ticket priority." });
+  }
+  if (assigneeId !== undefined && !perms.canChangeAssignment && !perms.canSwitchToConsultant) {
+    return res.status(403).json({ error: "Only a Super Admin, the assigned Consultant, or the Internal Consultant can change this ticket's assignment." });
+  }
+  if (req.user.role === "customer" && !perms.isInternalConsultant) {
     return res.status(403).json({ error: "Clients can view ticket assignment but cannot change the Consultant." });
-  } else if (!req.user.is_admin && assigneeId !== undefined && existing.assignee_id !== req.user.id) {
-    return res.status(403).json({ error: "Only a Super Admin or the Consultant assigned to this ticket can change its assignment." });
+  }
+  if (req.user.role === "customer" && assigneeId === null && !transferToExternal) {
+    return res.status(400).json({ error: "Choose an active Consultant to switch this ticket to." });
   }
   if (status !== undefined && !["open", "in_progress", "waiting", "resolved"].includes(status)) {
     return res.status(400).json({ error: "Invalid ticket status." });
@@ -2952,7 +3237,7 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
   if (priority !== undefined && !["low", "normal", "high", "urgent"].includes(priority)) {
     return res.status(400).json({ error: "Invalid ticket priority." });
   }
-  if (assigneeId !== undefined && assigneeId !== null) {
+  if (assigneeId !== undefined && assigneeId !== null && !transferToExternal) {
     if (!Number.isInteger(assigneeId) || assigneeId < 1) return res.status(400).json({ error: "Invalid Consultant assignment." });
     const agent = await db.prepare("SELECT id, specialty FROM users WHERE id = ? AND role = 'agent' AND disabled_at IS NULL").get(assigneeId);
     if (!agent) return res.status(400).json({ error: "Choose a valid Consultant." });
@@ -2967,7 +3252,7 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
     customFields: parseJsonObject(existing.custom_fields_json),
   }) : null;
   if (metadata?.error) return res.status(400).json({ error: metadata.error });
-  if (status === undefined && priority === undefined && assigneeId === undefined && !metadataRequested) {
+  if (status === undefined && priority === undefined && assigneeId === undefined && !metadataRequested && !transferToExternal) {
     return res.status(400).json({ error: "Choose ticket details to update." });
   }
   const fields = [];
@@ -2990,7 +3275,22 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
   await db.transaction(async () => {
     await db.prepare(`UPDATE tickets SET ${fields.join(", ")} WHERE id = ?`).run(...values);
     if (assigneeId !== undefined && assigneeId !== existing.assignee_id) {
-      await recordTicketAssignment(ticketId, assigneeId, req.user.id, assigneeId === null ? "agent_unassigned" : "agent_reassigned");
+      const source = transferToExternal
+        ? "transferred_to_external"
+        : req.user.role === "customer"
+          ? "switched_by_internal_consultant"
+          : assigneeId === null ? "agent_unassigned" : "agent_reassigned";
+      await recordTicketAssignment(ticketId, assigneeId, req.user.id, source);
+      if (assigneeId && assigneeId !== req.user.id) {
+        const notifMsg = transferToExternal
+          ? `Ticket #${ticketId} transferred to you by ${req.user.name}: ${existing.subject}`
+          : `Ticket #${ticketId} switched to you by ${req.user.name}: ${existing.subject}`;
+        await db.prepare(`
+          INSERT INTO notifications (user_id, ticket_id, kind, message)
+          VALUES (?, ?, 'ticket_assigned', ?)
+          ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
+        `).run(assigneeId, ticketId, notifMsg);
+      }
     }
   })();
   res.json({ ticket: await ticketSummary(await db.prepare(`${ticketSelect} WHERE t.id = ?`).get(ticketId)) });
@@ -3079,8 +3379,8 @@ async function pollSupportMailbox() {
             } else {
               const senderDomain = sender.split("@")[1];
               const senderCompany = senderUser
-                ? await db.prepare("SELECT id FROM companies WHERE id = ? AND is_active = 1").get(senderUser.companyId)
-                : await db.prepare("SELECT id FROM companies WHERE domain = ? COLLATE NOCASE AND is_active = 1").get(senderDomain);
+                ? await db.prepare("SELECT id, internal_consultant_id FROM companies WHERE id = ? AND is_active = 1").get(senderUser.companyId)
+                : await db.prepare("SELECT id, internal_consultant_id FROM companies WHERE domain = ? COLLATE NOCASE AND is_active = 1").get(senderDomain);
               if (!senderCompany) {
                 console.warn(`Inbound email from ${sender} has no active client company mapping; configure the company's verified email domain.`);
                 await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
@@ -3112,12 +3412,25 @@ async function pollSupportMailbox() {
               const insertInbound = db.transaction(async () => {
                 let ticketId = referencedTicket?.id;
                 if (!ticketId) {
-                  const assignedAgent = await selectRoutingAgent();
+                  const isSenderInternal = Boolean(await db.prepare("SELECT 1 FROM company_memberships WHERE user_id = ? AND company_id = ? AND is_internal_consultant = 1").get(inboundId, senderCompany.id));
+                  let assignedAgent = null;
+                  let assignmentSource = "email_automatic";
+                  if (!isSenderInternal) {
+                    const internalConsultant = await selectInternalConsultant(senderCompany.id);
+                    if (internalConsultant) {
+                      assignedAgent = { id: internalConsultant.id };
+                      assignmentSource = "internal_consultant_email";
+                    }
+                  }
+                  if (!assignedAgent) {
+                    assignedAgent = await selectRoutingAgent();
+                    assignmentSource = isSenderInternal ? "external_consultant_email" : "email_automatic";
+                  }
                   ticketId = Number((await db.prepare(`
                     INSERT INTO tickets (subject, description, status, priority, customer_id, company_id, assignee_id, source, email_thread_id)
                     VALUES (?, ?, 'open', 'normal', ?, ?, ?, 'email', ?)
                   `).run(subject, body, inboundId, senderCompany.id, assignedAgent?.id || null, messageId)).lastInsertRowid);
-                  await recordTicketAssignment(ticketId, assignedAgent?.id || null, null, "email_automatic");
+                  await recordTicketAssignment(ticketId, assignedAgent?.id || null, null, assignmentSource);
                 }
                 await db.prepare("INSERT OR IGNORE INTO messages (ticket_id, author_id, body, email_message_id) VALUES (?, ?, ?, ?)")
                   .run(ticketId, inboundId, body, messageId);

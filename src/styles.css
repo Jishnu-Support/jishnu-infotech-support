@@ -129,6 +129,17 @@ h1, h2, p { margin-top: 0; }
 .status-in_progress { color: #845fcb; border-color: #eee5ff; background: #f6f1ff; }
 .status-waiting { color: #b97d2c; border-color: #f8ebd2; background: #fff8ea; }
 .status-resolved { color: #438c69; border-color: #dfefe6; background: #eff9f3; }
+.status-resolved-internal { color: #166534; border-color: #bbf7d0; background: #dcfce7; font-weight: 600; }
+.assigned-to-you-badge { display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 4px; background: #e0f2fe; color: #0369a1; font-size: 8px; font-weight: 600; }
+.internal-solved-notice { display: flex; align-items: center; gap: 10px; padding: 10px 14px; margin: 12px 18px 0; border: 1px solid #bbf7d0; border-radius: 8px; background: #f0fdf4; color: #166534; }
+.internal-solved-notice strong { display: block; font-size: 12px; font-weight: 600; color: #14532d; }
+.internal-solved-notice span { font-size: 10px; color: #15803d; }
+.internal-consultant-handoff-card { margin: 12px 18px; padding: 12px 16px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; display: flex; flex-direction: column; gap: 8px; }
+.handoff-header strong { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: #1e293b; }
+.handoff-header p { margin: 2px 0 0; font-size: 10px; color: #64748b; }
+.handoff-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.handoff-controls select { flex: 1; min-width: 180px; height: 32px; border: 1px solid #cbd5e1; border-radius: 6px; padding: 0 8px; font-size: 11px; background: #ffffff; color: #1e293b; }
+.handoff-controls .button { height: 32px; padding: 0 12px; font-size: 11px; display: inline-flex; align-items: center; gap: 5px; }
 .list-footer { height: 39px; flex: none; display: flex; align-items: center; justify-content: space-between; color: #9ba4af; font-size: 9px; }
 .list-footer strong { color: #677487; }
 .footer-refresh-wrap { display: flex; align-items: center; gap: 9px; }

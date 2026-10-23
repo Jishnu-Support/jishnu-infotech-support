@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowUp, BarChart3, Bell, Check,
-  CheckCheck, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2, ClipboardPlus,
+  Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowRightLeft, ArrowUp, BarChart3, Bell, Check,
+  CheckCheck, CheckCircle2, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2, ClipboardPlus,
   Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen, Megaphone, Pencil, ExternalLink, Youtube,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
@@ -14,10 +14,13 @@ type TicketCategory = "Functional" | "Technical" | "Account access" | "Billing" 
 type ConsultantSpecialty = "functional" | "technical" | "both";
 type User = {
   id: number; name: string; username: string; email: string | null; role: Role; isAdmin?: boolean;
-  isCompanyAdmin?: boolean; companyId?: number | null; companyName?: string | null; companySupportValidUntil?: string | null;
+  isCompanyAdmin?: boolean; isInternalConsultant?: boolean; internalRoutingPriority?: number; companyId?: number | null; companyName?: string | null; companySupportValidUntil?: string | null;
 };
-type CompanyMembership = { id: number; name: string; supportValidUntil?: string | null; isCompanyAdmin?: boolean };
-type Company = { id: number; name: string; domain?: string | null; supportValidUntil?: string | null; isActive?: boolean | number };
+type CompanyMembership = { id: number; name: string; supportValidUntil?: string | null; isCompanyAdmin?: boolean; isInternalConsultant?: boolean; hasInternalConsultants?: boolean; internalRoutingPriority?: number };
+type Company = {
+  id: number; name: string; domain?: string | null; supportValidUntil?: string | null; isActive?: boolean | number;
+  internalConsultantId?: number | null; internalConsultantName?: string | null; internalConsultantRole?: string | null;
+};
 type Ticket = {
   id: number; subject: string; description: string; status: Status; priority: Priority;
   category: TicketCategory; tags: string[]; customFields: Record<string, string>;
@@ -25,7 +28,9 @@ type Ticket = {
   solution?: string | null; solutionConsultantName?: string | null; createdAt: string; updatedAt: string;
   customer: { id: number | null; name: string; email: string | null; contactNumber: string | null };
   company: Company | null;
-  assignee: { id: number; name: string; email: string | null; contactNumber: string | null } | null;
+  assignee: { id: number; name: string; email: string | null; contactNumber: string | null; role?: string } | null;
+  resolvedBy?: { id: number; name: string; role?: string; isInternalConsultant?: boolean } | null;
+  resolvedByInternalConsultant?: boolean;
   messageCount: number; lastMessage: string;
   firstResponseDueAt: string; resolutionDueAt: string;
   firstResponseAt: string | null; isFirstResponseOverdue: boolean; isResolutionOverdue: boolean;
@@ -49,6 +54,9 @@ type Notification = {
 type AnalyticsReport = {
   days: number; startDate: string; endDate: string;
   summary: { created: number; activeInPeriod: number; activeBacklog: number; waiting: number };
+  solvedByInternal?: number;
+  solvedByExternal?: number;
+  internalConsultantWorkload?: Array<{ id: number; name: string; email: string | null; companyName: string | null; routingPriority: number; active: number; resolvedInPeriod: number }>;
   statuses: Array<{ status: Status; count: number }>;
   priorities: Array<{ priority: Priority; count: number }>;
   sources: Array<{ source: "portal" | "email"; count: number }>;
@@ -201,7 +209,10 @@ function CompanyLogo({ className }: { className: string }) {
   return <img className={className} src="/jishnu-infotech-logo.webp" alt="Jishnu Infotech" />;
 }
 
-function StatusPill({ status }: { status: Status }) {
+function StatusPill({ status, resolvedByInternal }: { status: Status; resolvedByInternal?: boolean }) {
+  if (status === "resolved" && resolvedByInternal) {
+    return <span className="status-pill status-resolved status-resolved-internal"><span className="status-dot" />Ticket solved by Internal Consultant</span>;
+  }
   const labels: Record<Status, string> = {
     open: "Open", in_progress: "In progress", waiting: "Waiting", resolved: "Closed",
   };
@@ -214,7 +225,11 @@ function AssignmentHistorySection({ entries }: { entries: AssignmentEvent[] }) {
   return <section className="assignment-history" aria-label="Assignment history">
     <strong>Assignment history</strong>
     {visibleEntries.map((entry) => <span key={entry.id}>
-      {entry.agentName}{entry.assignedByName ? ` · assigned by ${entry.assignedByName}` : " · automatic assignment"} · {timeAgo(entry.createdAt)}
+      {entry.source === "switched_by_internal_consultant"
+        ? `Switched to ${entry.agentName}${entry.assignedByName ? ` by Internal Consultant ${entry.assignedByName}` : ""}`
+        : entry.source === "internal_consultant_auto" || entry.source === "internal_consultant_email"
+          ? `Assigned to Internal Consultant ${entry.agentName}`
+          : `${entry.agentName}${entry.assignedByName ? ` · assigned by ${entry.assignedByName}` : " · automatic assignment"}`} · {timeAgo(entry.createdAt)}
     </span>)}
     {entries.length > 2 && <button type="button" className="assignment-history-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
       {expanded ? "Show less" : `Show all ${entries.length} assignments`}
@@ -292,6 +307,9 @@ function App() {
   const [feedbackSubmittedId, setFeedbackSubmittedId] = useState<number | null>(null);
   const [dismissedFeedbackIds, setDismissedFeedbackIds] = useState<Set<number>>(() => new Set());
   const [prefillCustomerId, setPrefillCustomerId] = useState<number | null>(null);
+  const [switchConsultantId, setSwitchConsultantId] = useState("");
+  const [switchingTicket, setSwitchingTicket] = useState(false);
+  const [companyHasInternalConsultants, setCompanyHasInternalConsultants] = useState(false);
   const [prefillCompanyId, setPrefillCompanyId] = useState<number | null>(null);
   const [loginError, setLoginError] = useState("");
   const [loginNotice, setLoginNotice] = useState("");
@@ -327,8 +345,13 @@ function App() {
   }, [user]);
 
   useEffect(() => {
-    api<{ user: User; companies?: CompanyMembership[] }>("/auth/me")
-      .then(({ user: currentUser, companies = [] }) => { setUser(currentUser); setAvailableCompanies(companies); return api<{ tickets: Ticket[] }>("/tickets"); })
+    api<{ user: User; companies?: CompanyMembership[]; companyHasInternalConsultants?: boolean }>("/auth/me")
+      .then(({ user: currentUser, companies = [], companyHasInternalConsultants: hasInternal = false }) => {
+        setUser(currentUser);
+        setAvailableCompanies(companies);
+        setCompanyHasInternalConsultants(Boolean(hasInternal));
+        return api<{ tickets: Ticket[] }>("/tickets");
+      })
       .then(({ tickets: loaded }) => { knownTicketIds.current = new Set(loaded.map((ticket) => ticket.id)); setTickets(loaded); setSelectedId(null); })
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
@@ -470,7 +493,7 @@ function App() {
     const matchCompany = !consultantInbox || companyFilter === "all" || ticket.company?.id === Number(companyFilter);
     const query = search.trim().toLowerCase();
     const matchSearch = !query || `${ticket.subject} ${ticket.customer.name} ${ticket.lastMessage}`.toLowerCase().includes(query);
-    const matchView = activeView !== "assigned" || (user?.role === "agent"
+    const matchView = activeView !== "assigned" || ((user?.role === "agent" || user?.isInternalConsultant)
       ? ticket.assignee?.id === user.id
       : ticket.customer.id === user?.id);
     return matchStatus && matchPriority && matchCompany && matchSearch && matchView;
@@ -485,12 +508,14 @@ function App() {
   }), [tickets]);
 
   const myTicketCount = useMemo(
-    () => tickets.filter((ticket) => ticket.customer.id === user?.id).length,
-    [tickets, user?.id],
+    () => user?.isInternalConsultant && activeView === "assigned"
+      ? tickets.filter((ticket) => ticket.assignee?.id === user?.id).length
+      : tickets.filter((ticket) => ticket.customer.id === user?.id).length,
+    [activeView, tickets, user?.id, user?.isInternalConsultant],
   );
 
   const inboxCounts = useMemo(() => {
-    const scopedTickets = user?.role === "agent" && activeView === "assigned"
+    const scopedTickets = (user?.role === "agent" || user?.isInternalConsultant) && activeView === "assigned"
       ? tickets.filter((ticket) => ticket.assignee?.id === user.id)
       : user?.role === "agent" && activeView === "inbox" && companyFilter !== "all"
         ? tickets.filter((ticket) => ticket.company?.id === Number(companyFilter))
@@ -553,6 +578,7 @@ function App() {
           password: form.get("password"),
           companyId: form.get("companyId"),
           joinCode: form.get("joinCode"),
+          isInternalConsultant: form.get("isInternalConsultant") === "on",
         }),
       });
       if (result.pendingApproval) {
@@ -754,10 +780,23 @@ function App() {
   const isSuperAdmin = isAgent && Boolean(user.isAdmin);
   const isCompanyAdmin = user.role === "customer" && Boolean(user.isCompanyAdmin);
   const selectedTicket = detail?.ticket;
+  const isInternalConsultantForTicket = Boolean(
+    selectedTicket && (
+      user.isInternalConsultant ||
+      (user.role === "customer" && (
+        selectedTicket.assignee?.id === user.id ||
+        selectedTicket.company?.internalConsultantId === user.id
+      ))
+    )
+  );
+  const canSwitchToConsultant = Boolean(selectedTicket && (
+    (isAgent && (isSuperAdmin || selectedTicket.assignee?.id === user.id)) ||
+    isInternalConsultantForTicket
+  ));
   const canChangeAssignment = Boolean(selectedTicket && (
     isAgent && (isSuperAdmin || selectedTicket.assignee?.id === user.id)
   ));
-  const heading = isAgent ? "Support inbox" : activeView === "assigned" ? "My tickets" : "Company inbox";
+  const heading = isAgent ? "Support inbox" : activeView === "assigned" ? (user.isInternalConsultant ? "Assigned to me" : "My tickets") : "Company inbox";
   async function openNewTicketForm() {
     if (!isAgent) {
       try {
@@ -791,10 +830,12 @@ function App() {
           <button aria-label={isAgent ? "Inbox" : "Company inbox"} title={isAgent ? "Inbox" : "Company inbox"} className={`nav-item ${activeView === "inbox" ? "active" : ""}`} onClick={() => { setActiveView("inbox"); setFilter("all"); }}>
             <Inbox size={17} /><span>{isAgent ? "Inbox" : "Company inbox"}</span><span className="nav-count">{isAgent ? counts.open : counts.all}</span>
           </button>
-          {isAgent && <>
+          {(isAgent || user.isInternalConsultant) && (
             <button aria-label="Assigned to me" title="Assigned to me" className={`nav-item ${activeView === "assigned" ? "active" : ""}`} onClick={() => { setActiveView("assigned"); setFilter("all"); }}>
               <UserRound size={17} /><span>Assigned to me</span><span className="nav-count">{tickets.filter((ticket) => ticket.assignee?.id === user.id && ticket.status !== "resolved").length}</span>
             </button>
+          )}
+          {isAgent && <>
             <button aria-label="Customers" title="Customers" className={`nav-item ${activeView === "customers" ? "active" : ""}`} onClick={() => setActiveView("customers")}>
               <Users size={17} /><span>Customers</span>
             </button>
@@ -861,8 +902,8 @@ function App() {
               <div className="page-heading">
                 <div>
                   <div className="eyebrow"><span className="eyebrow-live" />{isAgent ? "YOUR TEAM, IN SYNC" : "WE'RE HERE TO HELP"}</div>
-                  <h1>{activeView === "assigned" && isAgent ? "Assigned to me" : heading}</h1>
-                  <p>{isAgent ? "Stay on top of every customer conversation." : activeView === "assigned" ? "Track the support tickets you opened." : "See support tickets opened by you and your teammates."}</p>
+                  <h1>{activeView === "assigned" && (isAgent || user.isInternalConsultant) ? "Assigned to me" : heading}</h1>
+                  <p>{isAgent ? "Stay on top of every customer conversation." : activeView === "assigned" ? (user.isInternalConsultant ? "Tickets assigned to you to review, solve, or switch to a Consultant." : "Track the support tickets you opened.") : "See support tickets opened by you and your teammates."}</p>
                 </div>
                 <button className="button button-primary" onClick={openNewTicketForm}><Plus size={16} /> New ticket</button>
               </div>
@@ -905,7 +946,7 @@ function App() {
                         <span className={`tiny-avatar ${ticket.source === "email" ? "email-avatar" : ""}`}>{initials(ticket.customer.name)}</span>
                         <span>{displayClientName(ticket.customer.name)}</span>
                       </div>
-                      <div className="ticket-row-meta"><PriorityIcon priority={ticket.priority} /><StatusPill status={ticket.status} /></div>
+                      <div className="ticket-row-meta"><PriorityIcon priority={ticket.priority} />{ticket.assignee?.id === user.id && !isAgent && <span className="assigned-to-you-badge">Assigned to you</span>}<StatusPill status={ticket.status} resolvedByInternal={ticket.resolvedByInternalConsultant} /></div>
                     </div>
                   </button>
                 ))}
@@ -921,10 +962,10 @@ function App() {
                 </div>
                 <div className="detail-scroll-area">
                 <div className="detail-statusbar">
-                  <StatusPill status={selectedTicket.status} />
+                  <StatusPill status={selectedTicket.status} resolvedByInternal={selectedTicket.resolvedByInternalConsultant} />
                   <span className="detail-status-separator" />
                   <PriorityIcon priority={selectedTicket.priority} />
-                  {isAgent && <div className="status-actions">
+                  {(isAgent || isInternalConsultantForTicket) && <div className="status-actions">
                     <select aria-label="Update status" value={selectedTicket.status} onChange={(event) => updateTicket({ status: event.target.value as Status })}>
                       <option value="open">Open</option><option value="in_progress">In progress</option><option value="waiting">Waiting</option><option value="resolved">Closed</option>
                     </select>
@@ -933,6 +974,15 @@ function App() {
                     </select>
                   </div>}
                 </div>
+                {selectedTicket.status === "resolved" && selectedTicket.resolvedByInternalConsultant && (
+                  <div className="internal-solved-notice" role="status">
+                    <CheckCircle2 size={16} />
+                    <div>
+                      <strong>Ticket solved by Internal Consultant</strong>
+                      <span>Resolved by {selectedTicket.resolvedBy?.name || "Internal Consultant"} · {timeAgo(selectedTicket.updatedAt)}</span>
+                    </div>
+                  </div>
+                )}
                 <div className="detail-info">
                   {isAgent
                     ? <div className="detail-person"><div className="avatar customer-avatar">{initials(selectedTicket.customer.name)}</div><div><strong>Client · {displayClientName(selectedTicket.customer.name)}</strong><span>{selectedTicket.customer.email || "No email provided"}</span><span className="detail-contact-number">Contact: {selectedTicket.customer.contactNumber || "Unavailable"}</span></div></div>
@@ -945,6 +995,72 @@ function App() {
                   {canChangeAssignment ? <label className="detail-assignee"><div className="assignee-avatar">{selectedTicket.assignee ? initials(selectedTicket.assignee.name) : <UserRound size={14} />}</div><select aria-label="Assign ticket to consultant" value={selectedTicket.assignee?.id ?? ""} onChange={(event) => updateTicket({ assigneeId: event.target.value ? Number(event.target.value) : null })}><option value="">Unassigned</option>{agents.filter((agent) => consultantSupportsCategory(agent, selectedTicket.category)).map((agent) => <option key={agent.id} value={agent.id}>{agent.priorityLabel} · {agent.name}</option>)}</select></label>
                     : <div className="detail-assignee"><div className="assignee-avatar">{selectedTicket.assignee ? initials(selectedTicket.assignee.name) : <UserRound size={14} />}</div><span>{selectedTicket.assignee?.name || "Unassigned"}</span></div>}
                 </div>
+                {canSwitchToConsultant && !isAgent && (
+                  <div className="internal-consultant-handoff-card">
+                    <div className="handoff-header">
+                      <strong><ArrowRightLeft size={14} /> Transfer ticket to External Consultant</strong>
+                      <p>Transfer this ticket to an External Consultant in priority order, or choose a specific consultant.</p>
+                    </div>
+                    <div className="handoff-controls" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <button
+                        type="button"
+                        className="button button-primary"
+                        disabled={switchingTicket}
+                        onClick={async () => {
+                          setSwitchingTicket(true);
+                          try {
+                            const res = await api<{ ticket: Ticket }>(`/tickets/${selectedTicket.id}`, {
+                              method: "PATCH",
+                              body: JSON.stringify({ transferToExternal: true }),
+                            });
+                            setDetail((current) => current ? { ...current, ticket: res.ticket } : null);
+                            await refreshTickets();
+                            setActionMessage(`Ticket transferred to External Consultant (${res.ticket.assignee?.name || "Consultant"}).`);
+                          } catch (err) {
+                            setActionError(err instanceof Error ? err.message : "Could not transfer ticket.");
+                          } finally {
+                            setSwitchingTicket(false);
+                          }
+                        }}
+                      >
+                        <ArrowRightLeft size={13} /> {switchingTicket ? "Transferring..." : "Transfer to External Consultant (Priority Order)"}
+                      </button>
+                      <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                        <select
+                          aria-label="Switch ticket to specific Consultant"
+                          value={switchConsultantId}
+                          onChange={(event) => setSwitchConsultantId(event.target.value)}
+                        >
+                          <option value="">Or choose a specific Consultant</option>
+                          {agents.filter((agent) => consultantSupportsCategory(agent, selectedTicket.category)).map((agent) => (
+                            <option key={agent.id} value={agent.id}>{agent.priorityLabel} · {agent.name}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="button button-quiet"
+                          disabled={!switchConsultantId || switchingTicket}
+                          onClick={async () => {
+                            if (!switchConsultantId) return;
+                            setSwitchingTicket(true);
+                            try {
+                              const chosenAgent = agents.find((a) => a.id === Number(switchConsultantId));
+                              await updateTicket({ assigneeId: Number(switchConsultantId) });
+                              setActionMessage(`Ticket successfully switched to ${chosenAgent?.name || "Consultant"}.`);
+                              setSwitchConsultantId("");
+                            } catch (err) {
+                              setActionError(err instanceof Error ? err.message : "Could not switch ticket.");
+                            } finally {
+                              setSwitchingTicket(false);
+                            }
+                          }}
+                        >
+                          Switch
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 {(selectedTicket.isFirstResponseOverdue || selectedTicket.isResolutionOverdue) && <div className="detail-sla detail-sla-overdue" role="status">
                   <Clock3 size={14} /><strong>SLA overdue</strong>
                   {selectedTicket.isFirstResponseOverdue && <span>First response target missed</span>}
@@ -976,7 +1092,7 @@ function App() {
                   })}
                 </div>
                 </div>
-                {isAgent || isCompanyAdmin || selectedTicket.customer.id === user.id ? <div className="reply-wrap">
+                {isAgent || isCompanyAdmin || selectedTicket.customer.id === user.id || isInternalConsultantForTicket ? <div className="reply-wrap">
                   {actionError && <div className="inline-error">{actionError}<button onClick={() => setActionError("")}><X size={13} /></button></div>}
                   {actionMessage && <div className="inline-success">{actionMessage}<button onClick={() => setActionMessage("")}><X size={13} /></button></div>}
                   {isAgent && <div className="reply-mode-toggle" role="group" aria-label="Reply type">
@@ -1058,6 +1174,21 @@ function App() {
         <form className="create-modal" onSubmit={createTicket}>
           <div className="modal-heading"><div><div className="eyebrow">SUPPORT REQUEST</div><h2>Create a ticket</h2></div><button type="button" className="icon-button" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); setNewTicketCategory(""); }} aria-label="Close"><X size={18} /></button></div>
           <label>Category<select name="category" required value={newTicketCategory} onChange={(event) => setNewTicketCategory(event.target.value as TicketCategory | "")}><option value="" disabled>Select Functional or Technical</option><option value="Functional">Functional</option><option value="Technical">Technical</option></select></label>
+          {!isAgent && companyHasInternalConsultants && !user?.isInternalConsultant && (
+            <label>
+              Consultant type
+              <select name="routingPreference" defaultValue="internal" required>
+                <option value="internal">Internal Consultant</option>
+                <option value="external">External Consultant</option>
+              </select>
+              <span className="form-hint">Choose whether to assign this ticket to your company's Internal Consultant or an External Consultant.</span>
+            </label>
+          )}
+          {!isAgent && user?.isInternalConsultant && (
+            <div className="form-hint" style={{ padding: "4px 0", color: "#666" }}>
+              As an Internal Consultant, your tickets are automatically routed to an External Consultant in priority order.
+            </div>
+          )}
           {isAgent && <label>Customer<select name="customerSelection" required value={prefillCustomerId && prefillCompanyId ? `${prefillCompanyId}:${prefillCustomerId}` : ""} onChange={(event) => { const [companyId, customerId] = event.target.value.split(":").map(Number); setPrefillCompanyId(companyId || null); setPrefillCustomerId(customerId || null); }}><option value="" disabled>Select a customer</option>{customers.map((customer) => <option key={`${customer.companyId}:${customer.id}`} value={`${customer.companyId}:${customer.id}`}>{customer.companyName ? `${customer.companyName} · ` : ""}{customer.name} · {customer.username || customer.email || `Client ${customer.id}`}</option>)}</select><input type="hidden" name="customerId" value={prefillCustomerId ?? ""} /><input type="hidden" name="companyId" value={prefillCompanyId ?? ""} /></label>}
           <label>Subject<input name="subject" required minLength={4} maxLength={160} placeholder="What do you need help with?" autoFocus /></label>
           <label>Description<textarea name="description" required minLength={10} maxLength={5000} placeholder="Share a few details so we can help…" rows={5} /></label>
@@ -1221,11 +1352,22 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
       ["Active", report.summary.activeBacklog],
       ["Waiting", report.summary.waiting],
       ["Active tickets created in period", report.summary.activeInPeriod],
+      ["Tickets solved by Internal Consultant", report.solvedByInternal ?? 0],
+      ["Tickets solved by External Consultant", report.solvedByExternal ?? 0],
       ["First response SLA on time", `${report.sla.firstResponse.onTime}/${report.sla.firstResponse.evaluated}`],
       ["Resolution SLA on time", `${report.sla.resolution.onTime}/${report.sla.resolution.evaluated}`],
       [],
       ["Daily activity", "Created", "Closed"],
       ...report.daily.map((entry) => [entry.day, entry.created, entry.resolved]),
+      [],
+      ["Internal Consultant", "Company", "Priority", "Active", "Closed in period"],
+      ...(report.internalConsultantWorkload || []).map((entry) => [
+        entry.name,
+        entry.companyName || "",
+        entry.routingPriority === 1 ? "Primary" : entry.routingPriority === 2 ? "Secondary" : entry.routingPriority === 3 ? "Tertiary" : `#${entry.routingPriority}`,
+        entry.active,
+        entry.resolvedInPeriod,
+      ]),
       [],
       ["Status", "Tickets created in period"],
       ...report.statuses.map((entry) => [entry.status === "resolved" ? "closed" : entry.status, entry.count]),
@@ -1285,9 +1427,57 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
         <ReportMetric icon={<Inbox size={16} />} label="Tickets created" value={report.summary.created} tone="blue" caption={`In the last ${report.days} days`} />
         <ReportMetric icon={<Activity size={16} />} label="Active" value={report.summary.activeBacklog} tone="amber" caption="Open across this report's scope" />
         <ReportMetric icon={<CheckCheck size={16} />} label="Closed" value={resolvedInPeriod} tone="green" caption="Closed during this period" />
+        <ReportMetric icon={<CheckCircle2 size={16} />} label="Solved by Internal" value={report.solvedByInternal ?? 0} tone="teal" caption="Solved by Internal Consultant" />
         <ReportMetric icon={<Clock3 size={16} />} label="Waiting" value={report.summary.waiting} tone="violet" caption="Currently waiting across this report's scope" />
       </div>
       <div className="report-grid">
+        <section className="report-card report-wide-card">
+          <div className="report-card-heading">
+            <div>
+              <h2>Tickets solved by Internal Consultant</h2>
+              <p>Breakdown of tickets resolved internally vs externally, and company internal consultant activity</p>
+            </div>
+            <Users size={16} />
+          </div>
+          <div style={{ display: "flex", gap: "24px", margin: "10px 0 16px", padding: "12px 16px", background: "var(--color-surface, #f8f9fa)", borderRadius: "8px", border: "1px solid #e5e7eb" }}>
+            <div>
+              <span style={{ fontSize: "12px", color: "#6b7280", display: "block" }}>Solved by Internal Consultant</span>
+              <strong style={{ fontSize: "22px", color: "#0f766e" }}>{report.solvedByInternal ?? 0}</strong>
+            </div>
+            <div style={{ borderLeft: "1px solid #e5e7eb", paddingLeft: "24px" }}>
+              <span style={{ fontSize: "12px", color: "#6b7280", display: "block" }}>Solved by External Consultant</span>
+              <strong style={{ fontSize: "22px", color: "#2563eb" }}>{report.solvedByExternal ?? 0}</strong>
+            </div>
+          </div>
+          {report.internalConsultantWorkload && report.internalConsultantWorkload.length > 0 ? (
+            <div className="report-table-wrap">
+              <table className="report-data-table">
+                <thead>
+                  <tr>
+                    <th>Priority</th>
+                    <th>Internal Consultant</th>
+                    <th>Company</th>
+                    <th>Active</th>
+                    <th>Closed in period</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.internalConsultantWorkload.map((entry) => (
+                    <tr key={entry.id}>
+                      <td>{entry.routingPriority === 1 ? "Primary" : entry.routingPriority === 2 ? "Secondary" : entry.routingPriority === 3 ? "Tertiary" : `#${entry.routingPriority}`}</td>
+                      <td>{entry.name}</td>
+                      <td>{entry.companyName || "—"}</td>
+                      <td>{entry.active}</td>
+                      <td>{entry.resolvedInPeriod}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="report-empty">No internal consultants recorded for this period.</p>
+          )}
+        </section>
         <section className="report-card report-trend-card">
           <div className="report-card-heading"><div><h2>Ticket activity</h2><p>Created and closed each day</p></div><span>{report.days} days</span></div>
           <div className="report-chart-legend"><span><i className="legend-created" />Created</span><span><i className="legend-resolved" />Closed</span></div>
@@ -1550,6 +1740,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
 }) {
   type CompanyUser = {
     id: number; name: string; username: string; email: string | null; contactNumber: string | null; isCompanyAdmin: boolean;
+    isInternalConsultant?: boolean; internalRoutingPriority?: number;
     approvalStatus: "approved" | "pending" | "rejected"; disabledAt: string | null;
   };
   type JoinCode = { id: number; expiresAt: string | null; revokedAt: string | null; createdAt: string };
@@ -1557,7 +1748,8 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(initialCompanyId);
   const [companyName, setCompanyName] = useState("");
   const [newCompanySupportValidUntil, setNewCompanySupportValidUntil] = useState("");
-  const [companyDetailsDraft, setCompanyDetailsDraft] = useState({ name: "", domain: "", supportValidUntil: "" });
+  const [companyDetailsDraft, setCompanyDetailsDraft] = useState<{ name: string; domain: string; supportValidUntil: string; internalConsultantId: number | null }>({ name: "", domain: "", supportValidUntil: "", internalConsultantId: null });
+  const [consultants, setConsultants] = useState<Customer[]>([]);
   const [companyUsers, setCompanyUsers] = useState<CompanyUser[]>([]);
   const [editingClientId, setEditingClientId] = useState<number | null>(null);
   const [clientDetailsDraft, setClientDetailsDraft] = useState({ name: "", contactNumber: "", email: "" });
@@ -1669,7 +1861,13 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create invitation code."); }
   }
 
-  async function updateUser(user: CompanyUser, changes: { approvalStatus?: "approved" | "rejected"; isCompanyAdmin?: boolean; disabled?: boolean }) {
+  async function updateUser(user: CompanyUser, changes: {
+    approvalStatus?: "approved" | "rejected";
+    isCompanyAdmin?: boolean;
+    isInternalConsultant?: boolean;
+    internalRoutingPriority?: number;
+    disabled?: boolean;
+  }) {
     setError("");
     setMessage("");
     try {
@@ -1677,7 +1875,9 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       await Promise.all([loadCompanyUsers(), loadCompanies(), onChanged()]);
       setMessage(changes.approvalStatus === "approved" ? `${user.name} approved to join the company.`
         : changes.approvalStatus === "rejected" ? `${user.name}'s request was declined.`
-          : changes.disabled !== undefined ? `${user.name} access updated.` : `${user.name}'s company role updated.`);
+        : changes.isInternalConsultant !== undefined ? `${user.name}'s internal consultant status updated.`
+        : changes.internalRoutingPriority !== undefined ? `${user.name}'s internal routing priority updated.`
+        : changes.disabled !== undefined ? `${user.name} access updated.` : `${user.name}'s company role updated.`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update client account."); }
   }
 
@@ -1718,12 +1918,20 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
 
   const selectedCompany = companies.find((company) => company.id === selectedCompanyId);
   useEffect(() => {
+    if (!workspaceAdmin) return;
+    api<{ agents: Customer[] }>("/agents")
+      .then(({ agents: loaded }) => setConsultants(loaded))
+      .catch(() => {});
+  }, [workspaceAdmin]);
+
+  useEffect(() => {
     setCompanyDetailsDraft({
       name: selectedCompany?.name || "",
       domain: selectedCompany?.domain || "",
       supportValidUntil: selectedCompany?.supportValidUntil?.slice(0, 10) || "",
+      internalConsultantId: selectedCompany?.internalConsultantId ?? null,
     });
-  }, [selectedCompany?.id, selectedCompany?.name, selectedCompany?.domain, selectedCompany?.supportValidUntil]);
+  }, [selectedCompany?.id, selectedCompany?.name, selectedCompany?.domain, selectedCompany?.supportValidUntil, selectedCompany?.internalConsultantId]);
 
   async function updateCompanyDetails(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1779,7 +1987,7 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
       <div className="company-list">
         {companies.map((company) => <div className="company-directory-row" key={company.id}>
           <button type="button" className={`company-select-row ${company.id === selectedCompanyId ? "selected" : ""}`} onClick={() => setSelectedCompanyId(company.id)}>
-            <span><strong>{company.name}{!Boolean(company.isActive) && <span className="team-state team-disabled">Disabled</span>}</strong><small>{company.domain || "No email domain mapped"} · {company.userCount} users · {company.pendingCount} pending · Support valid until {company.supportValidUntil ? dateLabel(company.supportValidUntil) : "Not set"}</small></span><ArrowRight size={15} />
+            <span><strong>{company.name}{!Boolean(company.isActive) && <span className="team-state team-disabled">Disabled</span>}</strong><small>{company.domain || "No email domain mapped"} · {company.userCount} users · {company.pendingCount} pending · Support valid until {company.supportValidUntil ? dateLabel(company.supportValidUntil) : "Not set"}{company.internalConsultantName ? ` · Internal Consultant: ${company.internalConsultantName}` : ""}</small></span><ArrowRight size={15} />
           </button>
           <button type="button" className="button button-quiet company-list-status-button" onClick={() => toggleCompanyStatus(company)}>{Boolean(company.isActive) ? "Disable" : "Enable"}</button>
         </div>)}
@@ -1793,7 +2001,32 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
         <label>Company name<input value={companyDetailsDraft.name} onChange={(event) => setCompanyDetailsDraft((current) => ({ ...current, name: event.target.value }))} minLength={2} maxLength={120} required /></label>
         <label>Company email domain (optional)<input value={companyDetailsDraft.domain} onChange={(event) => setCompanyDetailsDraft((current) => ({ ...current, domain: event.target.value }))} maxLength={253} placeholder="example.com" autoCapitalize="none" /></label>
         <label>Support valid until (optional)<input type="date" value={companyDetailsDraft.supportValidUntil} onChange={(event) => setCompanyDetailsDraft((current) => ({ ...current, supportValidUntil: event.target.value }))} /></label>
-        <span>Changes here update the company profile, email-domain mapping, and support contract.</span>
+        <label>Internal Consultant (optional)
+          <select
+            value={companyDetailsDraft.internalConsultantId ?? ""}
+            onChange={(event) => setCompanyDetailsDraft((current) => ({
+              ...current,
+              internalConsultantId: event.target.value ? Number(event.target.value) : null,
+            }))}
+          >
+            <option value="">None (Standard automatic routing)</option>
+            {companyUsers.filter((u) => u.approvalStatus === "approved" && !u.disabledAt).length > 0 && (
+              <optgroup label="Company Clients">
+                {companyUsers.filter((u) => u.approvalStatus === "approved" && !u.disabledAt).map((u) => (
+                  <option key={`client-${u.id}`} value={u.id}>Client: {u.name} ({u.username})</option>
+                ))}
+              </optgroup>
+            )}
+            {consultants.length > 0 && (
+              <optgroup label="Consultants">
+                {consultants.map((agent) => (
+                  <option key={`agent-${agent.id}`} value={agent.id}>Consultant: {agent.name}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </label>
+        <span>Changes here update the company profile, email-domain mapping, support contract, and assigned internal consultant.</span>
         <button className="button button-primary" type="submit" disabled={companyDetailsDraft.name.trim().length < 2}>Save company details</button>
       </form>}
       {workspaceAdmin && selectedCompany && <div className="company-status-control">
@@ -1840,12 +2073,45 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
             <label>Mobile number<input type="tel" value={clientDetailsDraft.contactNumber} onChange={(event) => setClientDetailsDraft((current) => ({ ...current, contactNumber: event.target.value }))} maxLength={25} required /></label>
             <label>Email (optional)<input type="email" value={clientDetailsDraft.email} onChange={(event) => setClientDetailsDraft((current) => ({ ...current, email: event.target.value }))} maxLength={254} /></label>
             <div className="client-user-edit-actions"><button className="button button-primary" type="submit">Save details</button><button className="button button-quiet" type="button" onClick={() => setEditingClientId(null)}>Cancel</button></div>
-          </form> : <div className="directory-customer"><strong>{user.name}{Boolean(user.isCompanyAdmin) && <span className="admin-badge">COMPANY ADMIN</span>}</strong><span>{user.username}{user.email ? ` · ${user.email}` : ""}{user.contactNumber ? ` · ${user.contactNumber}` : ""}</span></div>}
+          </form> : <div className="directory-customer">
+            <strong>
+              {user.name}
+              {Boolean(user.isCompanyAdmin) && <span className="admin-badge">COMPANY ADMIN</span>}
+              {Boolean(user.isInternalConsultant) && (
+                <span className="admin-badge internal-consultant-badge" style={{ background: "#0f766e", color: "#fff", marginLeft: "6px" }}>
+                  INTERNAL CONSULTANT ({user.internalRoutingPriority === 1 ? "Primary" : user.internalRoutingPriority === 2 ? "Secondary" : user.internalRoutingPriority === 3 ? "Tertiary" : `#${user.internalRoutingPriority || 1}`})
+                </span>
+              )}
+            </strong>
+            <span>{user.username}{user.email ? ` · ${user.email}` : ""}{user.contactNumber ? ` · ${user.contactNumber}` : ""}</span>
+          </div>}
           {editingClientId !== user.id && <button className="button button-quiet" onClick={() => { setEditingClientId(user.id); setClientDetailsDraft({ name: user.name, contactNumber: user.contactNumber || "", email: user.email || "" }); }}>Edit details</button>}
           {editingClientId !== user.id && <>
             {user.approvalStatus === "approved" && <button className="button button-quiet" onClick={() => resetClientPassword(user)}>Reset password</button>}
             <span className={`team-state ${user.disabledAt || user.approvalStatus === "rejected" ? "team-disabled" : ""}`}>{user.approvalStatus === "rejected" ? "Declined" : user.disabledAt ? "Disabled" : "Active"}</span>
             {(workspaceAdmin || !user.isCompanyAdmin) && user.approvalStatus === "approved" && <button className="button button-quiet" onClick={() => updateUser(user, { isCompanyAdmin: !user.isCompanyAdmin })}>{user.isCompanyAdmin ? "Remove admin" : "Make admin"}</button>}
+            {user.approvalStatus === "approved" && (
+              <button className="button button-quiet" onClick={() => updateUser(user, { isInternalConsultant: !user.isInternalConsultant })}>
+                {user.isInternalConsultant ? "Remove internal consultant" : "Make internal consultant"}
+              </button>
+            )}
+            {Boolean(user.isInternalConsultant) && user.approvalStatus === "approved" && (
+              <label style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px" }}>
+                <span>Priority:</span>
+                <select
+                  value={user.internalRoutingPriority || 1}
+                  aria-label={`Internal consultant priority for ${user.name}`}
+                  onChange={(e) => updateUser(user, { internalRoutingPriority: Number(e.target.value) })}
+                  style={{ padding: "2px 6px", fontSize: "11px", borderRadius: "4px", border: "1px solid #ccc" }}
+                >
+                  <option value={1}>1 - Primary</option>
+                  <option value={2}>2 - Secondary</option>
+                  <option value={3}>3 - Tertiary</option>
+                  <option value={4}>4 - 4th</option>
+                  <option value={5}>5 - 5th</option>
+                </select>
+              </label>
+            )}
             <button className="button button-quiet" onClick={() => updateUser(user, { disabled: !user.disabledAt })}>{user.disabledAt ? "Enable" : "Disable"}</button>
           </>}
         </div>)}
@@ -2190,6 +2456,12 @@ function LoginScreen({ error, notice, portal, mode, onPortalChange, onModeChange
         <label>Username<input name="username" autoComplete="username" autoCapitalize="none" spellCheck={false} minLength={mode === "register" ? 3 : undefined} maxLength={32} pattern={mode === "register" ? "[A-Za-z0-9][A-Za-z0-9._-]{2,31}" : undefined} placeholder={mode === "register" ? "Choose a username" : "Enter your username"} required /></label>
         {mode === "register" && portal === "customer" && <label>Email address (optional)<input name="email" type="email" autoComplete="email" placeholder="you@company.com" /></label>}
         <label>Password<div className="password-field"><input name="password" type="password" autoComplete={mode === "register" ? "new-password" : "current-password"} minLength={mode === "register" ? 8 : undefined} maxLength={128} placeholder={mode === "register" ? "At least 8 characters" : "Enter your password"} required /></div></label>
+        {mode === "register" && portal === "customer" && (
+          <label className="checkbox-label" style={{ display: "inline-flex", alignItems: "center", gap: "8px", margin: "6px 0 10px", cursor: "pointer", fontSize: "13px" }}>
+            <input name="isInternalConsultant" type="checkbox" style={{ width: "16px", height: "16px", cursor: "pointer" }} />
+            <span>Internal Consultant</span>
+          </label>
+        )}
         {error && <div className="inline-error">{error}</div>}
         <button className="button button-primary login-button" type="submit">{mode === "register" ? "Create account" : "Sign in"} <ArrowRight size={16} /></button>
       </form>
