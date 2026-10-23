@@ -963,6 +963,7 @@ app.post("/api/auth/logout", (_req, res) => {
 });
 
 app.get("/api/tickets", requireAuth, async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   const rows = req.user.role === "agent"
     ? await db.prepare(`${ticketSelect} ORDER BY
         CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'waiting' THEN 2 ELSE 3 END,

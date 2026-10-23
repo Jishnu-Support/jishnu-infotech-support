@@ -323,6 +323,7 @@ function App() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [actionMessage, setActionMessage] = useState("");
   const [refreshingInbox, setRefreshingInbox] = useState(false);
+  const [refreshSuccess, setRefreshSuccess] = useState(false);
   const [inboxRefreshError, setInboxRefreshError] = useState("");
   const [replyInternal, setReplyInternal] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -425,9 +426,40 @@ function App() {
     if (refreshingInbox) return;
     setRefreshingInbox(true);
     setInboxRefreshError("");
+    setRefreshSuccess(false);
     try {
-      await refreshTickets();
-      if (user?.role === "agent") await refreshNotifications();
+      const minSpin = new Promise((resolve) => window.setTimeout(resolve, 600));
+      const tasks: Promise<unknown>[] = [refreshTickets()];
+      if (selectedId) {
+        tasks.push(
+          api<TicketDetail>(`/tickets/${selectedId}`, { cache: "no-store" })
+            .then(setDetail)
+            .catch(() => {})
+        );
+      }
+      if (user?.role === "agent") {
+        tasks.push(refreshNotifications());
+        tasks.push(
+          api<{ agents: Customer[] }>("/agents")
+            .then(({ agents: loaded }) => setAgents(loaded))
+            .catch(() => {})
+        );
+        tasks.push(
+          api<{ customers: Customer[] }>("/customers")
+            .then(({ customers: loaded }) => setCustomers(loaded))
+            .catch(() => {})
+        );
+      }
+      if (user?.role === "customer" && user.companyId) {
+        tasks.push(
+          api<{ companyHasInternalConsultants: boolean }>("/tickets/routing-options")
+            .then((res) => setCompanyHasInternalConsultants(Boolean(res.companyHasInternalConsultants)))
+            .catch(() => {})
+        );
+      }
+      await Promise.all([...tasks, minSpin]);
+      setRefreshSuccess(true);
+      window.setTimeout(() => setRefreshSuccess(false), 2500);
     } catch (error) {
       setInboxRefreshError(error instanceof Error ? error.message : "Could not refresh the inbox.");
     } finally {
@@ -962,7 +994,24 @@ function App() {
                   </button>
                 ))}
               </div>
-              <div className="list-footer"><span>Showing <strong>{filteredTickets.length}</strong> of {activeView === "assigned" ? (isAgent ? inboxCounts.all : myTicketCount) : activeView === "inbox" && isAgent ? inboxCounts.all : tickets.length} tickets</span><span className="footer-refresh-wrap">{inboxRefreshError && <span className="footer-refresh-error" role="alert">{inboxRefreshError}</span>}<button type="button" className="footer-refresh" onClick={refreshInboxNow} disabled={refreshingInbox} aria-live="polite"><RefreshCw size={13} className={refreshingInbox ? "refresh-spinning" : ""} />{refreshingInbox ? "Refreshing…" : "Refresh"}</button></span></div>
+              <div className="list-footer">
+                <span>Showing <strong>{filteredTickets.length}</strong> of {activeView === "assigned" ? (isAgent ? inboxCounts.all : myTicketCount) : activeView === "inbox" && isAgent ? inboxCounts.all : tickets.length} tickets</span>
+                <span className="footer-refresh-wrap">
+                  {inboxRefreshError && <span className="footer-refresh-error" role="alert">{inboxRefreshError}</span>}
+                  {refreshSuccess && <span className="footer-refresh-success" role="status"><Check size={11} /> Refreshed</span>}
+                  <button
+                    type="button"
+                    className={`footer-refresh ${refreshingInbox ? "is-refreshing" : ""}`}
+                    onClick={refreshInboxNow}
+                    disabled={refreshingInbox}
+                    aria-label="Refresh tickets and inbox"
+                    title="Click to refresh tickets and updates"
+                  >
+                    <RefreshCw size={12} className={refreshingInbox ? "refresh-spinning" : ""} />
+                    {refreshingInbox ? "Refreshing…" : "Refresh"}
+                  </button>
+                </span>
+              </div>
             </section>
 
             {selectedTicket ? (

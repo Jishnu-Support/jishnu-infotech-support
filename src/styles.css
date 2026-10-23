@@ -142,14 +142,18 @@ h1, h2, p { margin-top: 0; }
 .handoff-manual-row { display: flex; align-items: center; gap: 6px; }
 .handoff-manual-row select { flex: 1; min-width: 0; height: 26px; border: 1px solid #cbd5e1; border-radius: 4px; padding: 0 6px; font-size: 10px; background: #ffffff; color: #1e293b; }
 .handoff-manual-row .button { height: 26px; padding: 0 8px; font-size: 10px; }
-.list-footer { height: 39px; flex: none; display: flex; align-items: center; justify-content: space-between; color: #9ba4af; font-size: 9px; }
+.list-footer { height: 39px; flex: none; display: flex; align-items: center; justify-content: space-between; color: #9ba4af; font-size: 10px; }
 .list-footer strong { color: #677487; }
-.footer-refresh-wrap { display: flex; align-items: center; gap: 9px; }
-.footer-refresh { display: flex; align-items: center; gap: 5px; border: 0; color: #7b8797; background: transparent; font-size: 9px; cursor: pointer; }
-.footer-refresh:disabled { color: #aab2bc; cursor: wait; }
-.footer-refresh-error { color: #c34848; font-size: 9px; }
-.refresh-spinning { animation: refresh-spin 0.8s linear infinite; }
+.footer-refresh-wrap { display: flex; align-items: center; gap: 8px; }
+.footer-refresh { display: inline-flex; align-items: center; gap: 5px; border: 1px solid transparent; color: #64748b; background: transparent; font-size: 10px; font-weight: 500; cursor: pointer; padding: 3px 8px; border-radius: 5px; transition: all 0.15s ease; }
+.footer-refresh:hover:not(:disabled) { background: #f1f5f9; color: #1e293b; border-color: #e2e8f0; }
+.footer-refresh:active:not(:disabled) { background: #e2e8f0; }
+.footer-refresh:disabled { color: #94a3b8; cursor: wait; }
+.footer-refresh-error { color: #dc2626; font-size: 10px; }
+.footer-refresh-success { display: inline-flex; align-items: center; gap: 3px; color: #16a34a; font-size: 10px; font-weight: 600; animation: refresh-fade 0.2s ease; }
+.refresh-spinning { animation: refresh-spin 0.75s linear infinite; }
 @keyframes refresh-spin { to { transform: rotate(360deg); } }
+@keyframes refresh-fade { from { opacity: 0; transform: translateY(1px); } to { opacity: 1; transform: translateY(0); } }
 .empty-list { height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #a0aab6; }
 .empty-list strong { color: #627083; font-size: 11px; }
 .empty-list span { font-size: 10px; }
