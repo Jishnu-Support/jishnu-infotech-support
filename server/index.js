@@ -153,7 +153,7 @@ async function companyMemberships(userId) {
            m.internal_routing_priority AS internalRoutingPriority,
            (SELECT COUNT(*) FROM company_memberships cm2
             JOIN users u2 ON u2.id = cm2.user_id
-            WHERE cm2.company_id = c.id AND cm2.is_internal_consultant = 1
+            WHERE cm2.company_id = c.id AND (cm2.is_internal_consultant = 1 OR u2.is_internal_consultant = 1)
               AND u2.role = 'customer' AND u2.approval_status = 'approved' AND u2.disabled_at IS NULL
            ) AS internalConsultantCount
     FROM company_memberships m JOIN companies c ON c.id = m.company_id
@@ -356,6 +356,28 @@ async function selectInternalConsultant(companyId, excludeUserId = null) {
              u.id ASC
     LIMIT 1
   `).get(...params);
+}
+
+async function companyHasInternalConsultants(companyId) {
+  if (!companyId) return false;
+  const match = await db.prepare(`
+    SELECT 1 FROM companies c
+    LEFT JOIN company_memberships cm ON cm.company_id = c.id
+    LEFT JOIN users u ON u.id = cm.user_id
+    WHERE c.id = ? AND c.is_active = 1 AND (
+      (c.internal_consultant_id IS NOT NULL AND c.internal_consultant_id > 0)
+      OR
+      (cm.is_internal_consultant = 1 AND u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL)
+      OR
+      EXISTS (
+        SELECT 1 FROM users u2
+        WHERE u2.company_id = c.id AND u2.is_internal_consultant = 1
+          AND u2.role = 'customer' AND u2.approval_status = 'approved' AND u2.disabled_at IS NULL
+      )
+    )
+    LIMIT 1
+  `).get(companyId);
+  return Boolean(match);
 }
 
 async function normalizeCompanyInternalPriorities(companyId) {
@@ -567,7 +589,10 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
     sameSite: "lax",
     maxAge: 8 * 60 * 60 * 1000,
   });
-  res.json({ user: publicUser(user), companies });
+  const hasInternal = user.role === "customer" && user.company_id
+    ? await companyHasInternalConsultants(user.company_id)
+    : false;
+  res.json({ user: publicUser(user), companies, companyHasInternalConsultants: hasInternal });
 });
 
 app.get("/api/companies/available", async (_req, res) => {
@@ -883,20 +908,21 @@ app.get("/api/agent-invitations", requireAuth, requireAdmin, async (_req, res) =
 });
 
 app.get("/api/auth/me", requireAuth, async (req, res) => {
-  const companyHasInternalConsultants = req.user.role === "customer" && req.user.company_id ? Boolean(
-    await db.prepare(`
-      SELECT 1 FROM company_memberships cm
-      JOIN users u ON u.id = cm.user_id
-      WHERE cm.company_id = ? AND cm.is_internal_consultant = 1 AND u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL
-      LIMIT 1
-    `).get(req.user.company_id)
-  ) : false;
+  const hasInternal = req.user.role === "customer" && req.user.company_id
+    ? await companyHasInternalConsultants(req.user.company_id)
+    : false;
 
   res.json({
     user: publicUser(req.user),
     companies: req.user.role === "customer" ? await companyMemberships(req.user.id) : [],
-    companyHasInternalConsultants,
+    companyHasInternalConsultants: hasInternal,
   });
+});
+
+app.get("/api/tickets/routing-options", requireAuth, async (req, res) => {
+  const companyId = req.user.role === "customer" ? req.user.company_id : Number(req.query.companyId);
+  const hasInternal = await companyHasInternalConsultants(companyId);
+  res.json({ companyHasInternalConsultants: hasInternal });
 });
 
 app.post("/api/auth/select-company", requireAuth, async (req, res) => {
@@ -923,7 +949,12 @@ app.post("/api/auth/select-company", requireAuth, async (req, res) => {
     sameSite: "lax",
     maxAge: 8 * 60 * 60 * 1000,
   });
-  res.json({ user: publicUser(activeUser), companies: await companyMemberships(req.user.id) });
+  const hasInternal = await companyHasInternalConsultants(membership.id);
+  res.json({
+    user: publicUser(activeUser),
+    companies: await companyMemberships(req.user.id),
+    companyHasInternalConsultants: hasInternal,
+  });
 });
 
 app.post("/api/auth/logout", (_req, res) => {
@@ -3029,16 +3060,7 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
       (await db.prepare("SELECT 1 FROM company_memberships WHERE user_id = ? AND company_id = ? AND is_internal_consultant = 1").get(req.user.id, companyId))
     )
   );
-  const companyHasInternalConsultants = Boolean(
-    companyRecord?.internal_consultant_id ||
-    (await db.prepare(`
-      SELECT 1 FROM company_memberships cm
-      JOIN users u ON u.id = cm.user_id
-      WHERE cm.company_id = ? AND (cm.is_internal_consultant = 1 OR u.is_internal_consultant = 1)
-        AND u.role = 'customer' AND u.approval_status = 'approved' AND u.disabled_at IS NULL
-      LIMIT 1
-    `).get(companyId))
-  );
+  const companyHasInternal = await companyHasInternalConsultants(companyId);
 
   const routingPreference = req.body.routingPreference === "external" ? "external" : (req.body.routingPreference === "internal" ? "internal" : null);
 
@@ -3051,10 +3073,10 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
     // Internal consultant raising a ticket must be routed to external consultant in priority order
     agent = await selectRoutingAgent(metadata.category);
     assignmentSource = "external_consultant_auto";
-  } else if (companyHasInternalConsultants && routingPreference === "external") {
+  } else if (companyHasInternal && routingPreference === "external") {
     agent = await selectRoutingAgent(metadata.category);
     assignmentSource = "external_consultant_priority";
-  } else if (companyHasInternalConsultants) {
+  } else if (companyHasInternal) {
     const internalConsultant = await selectInternalConsultant(companyId);
     if (internalConsultant) {
       agent = { id: internalConsultant.id };

@@ -377,6 +377,14 @@ function App() {
   useEffect(() => { setReplyInternal(false); }, [selectedId]);
 
   useEffect(() => {
+    if (showCreate && user?.role === "customer") {
+      api<{ companyHasInternalConsultants: boolean }>("/tickets/routing-options")
+        .then((res) => setCompanyHasInternalConsultants(Boolean(res.companyHasInternalConsultants)))
+        .catch(() => {});
+    }
+  }, [showCreate, user?.role, user?.companyId]);
+
+  useEffect(() => {
     if (user?.role !== "customer") {
       setFeedbackTicketId(null);
       setFeedbackSubmittedId(null);
@@ -534,7 +542,7 @@ function App() {
     setLoginError("");
     const form = new FormData(event.currentTarget);
     try {
-      const result = await api<{ user: User; companies?: CompanyMembership[] }>("/auth/login", {
+      const result = await api<{ user: User; companies?: CompanyMembership[]; companyHasInternalConsultants?: boolean }>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ username: form.get("username"), password: form.get("password"), portal }),
       });
@@ -544,6 +552,7 @@ function App() {
       }
       localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(Date.now()));
       setUser(result.user);
+      setCompanyHasInternalConsultants(Boolean(result.companyHasInternalConsultants));
       knownNotificationIds.current = null;
       const companies = result.companies || [];
       setAvailableCompanies(companies);
@@ -664,11 +673,12 @@ function App() {
   async function selectCompany(companyId: number) {
     setActionError("");
     try {
-      const result = await api<{ user: User; companies: CompanyMembership[] }>("/auth/select-company", {
+      const result = await api<{ user: User; companies: CompanyMembership[]; companyHasInternalConsultants?: boolean }>("/auth/select-company", {
         method: "POST", body: JSON.stringify({ companyId }),
       });
       setUser(result.user);
       setAvailableCompanies(result.companies);
+      setCompanyHasInternalConsultants(Boolean(result.companyHasInternalConsultants));
       setShowCompanySelection(false);
       setActiveView("inbox");
       setFilter("all");
@@ -800,8 +810,9 @@ function App() {
   async function openNewTicketForm() {
     if (!isAgent) {
       try {
-        const result = await api<{ user: User }>("/auth/me");
+        const result = await api<{ user: User; companyHasInternalConsultants?: boolean }>("/auth/me");
         setUser(result.user);
+        setCompanyHasInternalConsultants(Boolean(result.companyHasInternalConsultants));
         if (isContractExpired(result.user.companySupportValidUntil)) {
           setRenewalPopup(true);
           return;
@@ -1174,20 +1185,15 @@ function App() {
         <form className="create-modal" onSubmit={createTicket}>
           <div className="modal-heading"><div><div className="eyebrow">SUPPORT REQUEST</div><h2>Create a ticket</h2></div><button type="button" className="icon-button" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); setNewTicketCategory(""); }} aria-label="Close"><X size={18} /></button></div>
           <label>Category<select name="category" required value={newTicketCategory} onChange={(event) => setNewTicketCategory(event.target.value as TicketCategory | "")}><option value="" disabled>Select Functional or Technical</option><option value="Functional">Functional</option><option value="Technical">Technical</option></select></label>
-          {!isAgent && companyHasInternalConsultants && !user?.isInternalConsultant && (
+          {!isAgent && companyHasInternalConsultants && (
             <label>
-              Consultant type
-              <select name="routingPreference" defaultValue="internal" required>
+              Consultant
+              <select name="routingPreference" defaultValue="internal" required aria-label="Select Internal or External Consultant">
                 <option value="internal">Internal Consultant</option>
                 <option value="external">External Consultant</option>
               </select>
               <span className="form-hint">Choose whether to assign this ticket to your company's Internal Consultant or an External Consultant.</span>
             </label>
-          )}
-          {!isAgent && user?.isInternalConsultant && (
-            <div className="form-hint" style={{ padding: "4px 0", color: "#666" }}>
-              As an Internal Consultant, your tickets are automatically routed to an External Consultant in priority order.
-            </div>
           )}
           {isAgent && <label>Customer<select name="customerSelection" required value={prefillCustomerId && prefillCompanyId ? `${prefillCompanyId}:${prefillCustomerId}` : ""} onChange={(event) => { const [companyId, customerId] = event.target.value.split(":").map(Number); setPrefillCompanyId(companyId || null); setPrefillCustomerId(customerId || null); }}><option value="" disabled>Select a customer</option>{customers.map((customer) => <option key={`${customer.companyId}:${customer.id}`} value={`${customer.companyId}:${customer.id}`}>{customer.companyName ? `${customer.companyName} · ` : ""}{customer.name} · {customer.username || customer.email || `Client ${customer.id}`}</option>)}</select><input type="hidden" name="customerId" value={prefillCustomerId ?? ""} /><input type="hidden" name="companyId" value={prefillCompanyId ?? ""} /></label>}
           <label>Subject<input name="subject" required minLength={4} maxLength={160} placeholder="What do you need help with?" autoFocus /></label>
