@@ -3069,13 +3069,25 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
   if (req.user.role === "agent") {
     agent = { id: req.user.id };
     assignmentSource = "agent_created";
-  } else if (isCreatorInternalConsultant) {
-    // Internal consultant raising a ticket must be routed to external consultant in priority order
-    agent = await selectRoutingAgent(metadata.category);
-    assignmentSource = "external_consultant_auto";
+  } else if (companyHasInternal && routingPreference === "internal") {
+    let internalConsultant = await selectInternalConsultant(companyId, isCreatorInternalConsultant ? req.user.id : null);
+    if (!internalConsultant && !isCreatorInternalConsultant) {
+      internalConsultant = await selectInternalConsultant(companyId);
+    }
+    if (internalConsultant) {
+      agent = { id: internalConsultant.id };
+      assignmentSource = "internal_consultant_auto";
+    } else {
+      agent = await selectRoutingAgent(metadata.category);
+      assignmentSource = "external_consultant_auto";
+    }
   } else if (companyHasInternal && routingPreference === "external") {
     agent = await selectRoutingAgent(metadata.category);
     assignmentSource = "external_consultant_priority";
+  } else if (isCreatorInternalConsultant) {
+    // Internal consultant raising a ticket without preference routes to external consultant in priority order
+    agent = await selectRoutingAgent(metadata.category);
+    assignmentSource = "external_consultant_auto";
   } else if (companyHasInternal) {
     const internalConsultant = await selectInternalConsultant(companyId);
     if (internalConsultant) {

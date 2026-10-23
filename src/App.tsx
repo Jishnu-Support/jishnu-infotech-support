@@ -1009,13 +1009,13 @@ function App() {
                 {canSwitchToConsultant && !isAgent && (
                   <div className="internal-consultant-handoff-card">
                     <div className="handoff-header">
-                      <strong><ArrowRightLeft size={14} /> Transfer ticket to External Consultant</strong>
-                      <p>Transfer this ticket to an External Consultant in priority order, or choose a specific consultant.</p>
+                      <strong><ArrowRightLeft size={12} /> Transfer ticket to External Consultant</strong>
+                      <p>Transfer to an External Consultant in priority order, or choose a specific consultant.</p>
                     </div>
-                    <div className="handoff-controls" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <div className="handoff-controls">
                       <button
                         type="button"
-                        className="button button-primary"
+                        className="button button-primary handoff-primary-btn"
                         disabled={switchingTicket}
                         onClick={async () => {
                           setSwitchingTicket(true);
@@ -1034,9 +1034,9 @@ function App() {
                           }
                         }}
                       >
-                        <ArrowRightLeft size={13} /> {switchingTicket ? "Transferring..." : "Transfer to External Consultant (Priority Order)"}
+                        <ArrowRightLeft size={11} /> {switchingTicket ? "Transferring..." : "Transfer to External Consultant"}
                       </button>
-                      <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                      <div className="handoff-manual-row">
                         <select
                           aria-label="Switch ticket to specific Consultant"
                           value={switchConsultantId}
@@ -1185,7 +1185,7 @@ function App() {
         <form className="create-modal" onSubmit={createTicket}>
           <div className="modal-heading"><div><div className="eyebrow">SUPPORT REQUEST</div><h2>Create a ticket</h2></div><button type="button" className="icon-button" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); setNewTicketCategory(""); }} aria-label="Close"><X size={18} /></button></div>
           <label>Category<select name="category" required value={newTicketCategory} onChange={(event) => setNewTicketCategory(event.target.value as TicketCategory | "")}><option value="" disabled>Select Functional or Technical</option><option value="Functional">Functional</option><option value="Technical">Technical</option></select></label>
-          {!isAgent && companyHasInternalConsultants && (
+          {!isAgent && (companyHasInternalConsultants || Boolean(user?.isInternalConsultant)) && (
             <label>
               Consultant
               <select name="routingPreference" defaultValue="internal" required aria-label="Select Internal or External Consultant">
