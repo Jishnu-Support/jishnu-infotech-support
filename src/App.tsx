@@ -299,6 +299,7 @@ function App() {
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
   const [companyFilter, setCompanyFilter] = useState("all");
   const [search, setSearch] = useState("");
+  const [myTicketsScope, setMyTicketsScope] = useState<"all" | "assigned" | "raised">("all");
   const [showCreate, setShowCreate] = useState(false);
   const [renewalPopup, setRenewalPopup] = useState(false);
   const [newTicketCategory, setNewTicketCategory] = useState<TicketCategory | "">("");
@@ -536,10 +537,16 @@ function App() {
     const matchView = activeView === "assigned"
       ? ticket.assignee?.id === user?.id
       : activeView === "my-tickets"
-        ? ticket.customer.id === user?.id
+        ? (user?.isInternalConsultant
+            ? (myTicketsScope === "assigned"
+                ? ticket.assignee?.id === user?.id
+                : myTicketsScope === "raised"
+                  ? ticket.customer.id === user?.id
+                  : (ticket.customer.id === user?.id || ticket.assignee?.id === user?.id))
+            : ticket.customer.id === user?.id)
         : true;
     return matchStatus && matchPriority && matchCompany && matchSearch && matchView;
-  }), [activeView, companyFilter, filter, priorityFilter, search, tickets, user]);
+  }), [activeView, companyFilter, filter, myTicketsScope, priorityFilter, search, tickets, user]);
 
   const counts = useMemo(() => ({
     all: tickets.length,
@@ -549,10 +556,13 @@ function App() {
     resolved: tickets.filter((ticket) => ticket.status === "resolved").length,
   }), [tickets]);
 
-  const myTicketCount = useMemo(
-    () => tickets.filter((ticket) => ticket.customer.id === user?.id).length,
-    [tickets, user?.id],
-  );
+  const myTicketCount = useMemo(() => {
+    if (!user) return 0;
+    if (user.isInternalConsultant) {
+      return tickets.filter((t) => (t.customer.id === user.id || t.assignee?.id === user.id) && t.status !== "resolved").length;
+    }
+    return tickets.filter((t) => t.customer.id === user.id && t.status !== "resolved").length;
+  }, [tickets, user]);
 
   const assignedTicketCount = useMemo(
     () => tickets.filter((ticket) => ticket.assignee?.id === user?.id && ticket.status !== "resolved").length,
@@ -563,7 +573,13 @@ function App() {
     const scopedTickets = activeView === "assigned"
       ? tickets.filter((ticket) => ticket.assignee?.id === user?.id)
       : activeView === "my-tickets"
-        ? tickets.filter((ticket) => ticket.customer.id === user?.id)
+        ? (user?.isInternalConsultant
+            ? (myTicketsScope === "assigned"
+                ? tickets.filter((t) => t.assignee?.id === user?.id)
+                : myTicketsScope === "raised"
+                  ? tickets.filter((t) => t.customer.id === user?.id)
+                  : tickets.filter((t) => t.customer.id === user?.id || t.assignee?.id === user?.id))
+            : tickets.filter((ticket) => ticket.customer.id === user?.id))
         : user?.role === "agent" && activeView === "inbox" && companyFilter !== "all"
           ? tickets.filter((ticket) => ticket.company?.id === Number(companyFilter))
           : tickets;
@@ -574,7 +590,7 @@ function App() {
       waiting: scopedTickets.filter((ticket) => ticket.status === "waiting").length,
       resolved: scopedTickets.filter((ticket) => ticket.status === "resolved").length,
     };
-  }, [activeView, companyFilter, tickets, user]);
+  }, [activeView, companyFilter, myTicketsScope, tickets, user]);
 
   async function signIn(event: FormEvent<HTMLFormElement>, portal: Role) {
     event.preventDefault();
@@ -847,11 +863,9 @@ function App() {
   ));
   const heading = isAgent
     ? (activeView === "assigned" ? "Assigned to me" : "Support inbox")
-    : activeView === "assigned"
-      ? "Assigned to me"
-      : activeView === "my-tickets"
-        ? "My tickets"
-        : "Company inbox";
+    : activeView === "my-tickets"
+      ? (user?.isInternalConsultant ? "My tickets & assignments" : "My tickets")
+      : "Company inbox";
   async function openNewTicketForm() {
     if (!isAgent) {
       try {
@@ -886,7 +900,7 @@ function App() {
           <button aria-label={isAgent ? "Inbox" : "Company inbox"} title={isAgent ? "Inbox" : "Company inbox"} className={`nav-item ${activeView === "inbox" ? "active" : ""}`} onClick={() => { setActiveView("inbox"); setFilter("all"); }}>
             <Inbox size={17} /><span>{isAgent ? "Inbox" : "Company inbox"}</span><span className="nav-count">{isAgent ? counts.open : counts.all}</span>
           </button>
-          {(isAgent || user.isInternalConsultant) && (
+          {isAgent && (
             <button aria-label="Assigned to me" title="Assigned to me" className={`nav-item ${activeView === "assigned" ? "active" : ""}`} onClick={() => { setActiveView("assigned"); setFilter("all"); }}>
               <UserRound size={17} /><span>Assigned to me</span><span className="nav-count">{assignedTicketCount}</span>
             </button>
@@ -980,6 +994,34 @@ function App() {
                     </button>
                   ))}
                 </div>
+                {user.role === "customer" && user.isInternalConsultant && activeView === "my-tickets" && (
+                  <div className="filter-scope-toggle" style={{ display: "inline-flex", gap: "3px", alignItems: "center", marginLeft: "8px" }}>
+                    <button
+                      type="button"
+                      className={`button button-quiet ${myTicketsScope === "all" ? "scope-selected" : ""}`}
+                      style={{ height: "23px", fontSize: "10px", padding: "0 7px", borderRadius: "4px", background: myTicketsScope === "all" ? "#edf3ff" : "transparent", color: myTicketsScope === "all" ? "#245bd0" : "#64748b", fontWeight: myTicketsScope === "all" ? 600 : 400, border: myTicketsScope === "all" ? "1px solid #cbdcfc" : "1px solid transparent" }}
+                      onClick={() => setMyTicketsScope("all")}
+                    >
+                      All
+                    </button>
+                    <button
+                      type="button"
+                      className={`button button-quiet ${myTicketsScope === "assigned" ? "scope-selected" : ""}`}
+                      style={{ height: "23px", fontSize: "10px", padding: "0 7px", borderRadius: "4px", background: myTicketsScope === "assigned" ? "#edf3ff" : "transparent", color: myTicketsScope === "assigned" ? "#245bd0" : "#64748b", fontWeight: myTicketsScope === "assigned" ? 600 : 400, border: myTicketsScope === "assigned" ? "1px solid #cbdcfc" : "1px solid transparent" }}
+                      onClick={() => setMyTicketsScope("assigned")}
+                    >
+                      Assigned to me ({tickets.filter((t) => t.assignee?.id === user.id).length})
+                    </button>
+                    <button
+                      type="button"
+                      className={`button button-quiet ${myTicketsScope === "raised" ? "scope-selected" : ""}`}
+                      style={{ height: "23px", fontSize: "10px", padding: "0 7px", borderRadius: "4px", background: myTicketsScope === "raised" ? "#edf3ff" : "transparent", color: myTicketsScope === "raised" ? "#245bd0" : "#64748b", fontWeight: myTicketsScope === "raised" ? 600 : 400, border: myTicketsScope === "raised" ? "1px solid #cbdcfc" : "1px solid transparent" }}
+                      onClick={() => setMyTicketsScope("raised")}
+                    >
+                      Raised by me ({tickets.filter((t) => t.customer.id === user.id).length})
+                    </button>
+                  </div>
+                )}
                 {user.role === "agent" && activeView === "inbox"
                   ? <label className="priority-filter"><span>Customer</span><select aria-label="Filter by customer" value={companyFilter} onChange={(event) => setCompanyFilter(event.target.value)}><option value="all">All customers</option>{inboxCompanies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></label>
                   : <label className="priority-filter"><span>Priority</span><select aria-label="Filter by priority" value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as Priority | "all")}><option value="all">All</option><option value="urgent">Urgent</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option></select></label>}
