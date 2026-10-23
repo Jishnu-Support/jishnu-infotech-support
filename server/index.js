@@ -329,7 +329,7 @@ async function selectRoutingAgent(category) {
     LEFT JOIN tickets t ON t.assignee_id = u.id AND t.status != 'resolved'
     WHERE u.role = 'agent' AND u.disabled_at IS NULL
       ${specialtyFilter}
-    GROUP BY u.id
+    GROUP BY u.id, u.routing_priority
     ORDER BY u.routing_priority, COUNT(t.id), u.id
     LIMIT 1
   `).get(...(specialty ? [specialty] : []));
@@ -350,7 +350,7 @@ async function selectInternalConsultant(companyId, excludeUserId = null) {
       AND u.approval_status = 'approved'
       AND u.disabled_at IS NULL
       ${excludeClause}
-    GROUP BY u.id, cm.internal_routing_priority
+    GROUP BY u.id, u.name, u.email, cm.internal_routing_priority
     ORDER BY COALESCE(NULLIF(cm.internal_routing_priority, 0), 999999) ASC,
              COUNT(t.id) ASC,
              u.id ASC
@@ -1029,12 +1029,12 @@ app.get("/api/reports", requireAuth, async (req, res) => {
   `).all(...createdRangeParams);
   const createdByDay = await db.prepare(`
     SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS count
-    FROM tickets WHERE ${createdRangeClause} GROUP BY day
+    FROM tickets WHERE ${createdRangeClause} GROUP BY 1
   `).all(...createdRangeParams);
   const resolvedByDay = await db.prepare(`
     SELECT substr(resolved_at, 1, 10) AS day, COUNT(*) AS count
     FROM tickets WHERE ${scopeClause} AND resolved_at >= ? AND resolved_at < ?
-    GROUP BY day
+    GROUP BY 1
   `).all(...scopeParams, startAt, endAt);
   const sla = await slaConfiguration();
   const slaTickets = await db.prepare(`
@@ -1084,7 +1084,7 @@ app.get("/api/reports", requireAuth, async (req, res) => {
     LEFT JOIN ticket_assignment_history h ON h.agent_id = u.id
       AND ${isAllCompaniesScope ? "1 = 1" : "EXISTS (SELECT 1 FROM tickets scoped WHERE scoped.id = h.ticket_id AND scoped.company_id = ?)"}
     WHERE u.role = 'agent' AND u.disabled_at IS NULL
-    GROUP BY u.id ORDER BY u.routing_priority, active, u.id
+    GROUP BY u.id, u.name, u.routing_priority ORDER BY u.routing_priority, active, u.id
   `).all(
     startAt, endAt, startAt, endAt,
     ...(isAllCompaniesScope ? [] : [scopeCompanyId, scopeCompanyId]),
@@ -1104,7 +1104,7 @@ app.get("/api/reports", requireAuth, async (req, res) => {
         WHERE u.role = 'customer' AND u.approval_status = 'approved'
           AND c.is_active = 1
           AND ${isAllCompaniesScope ? "1 = 1" : "m.company_id = ?"}
-        GROUP BY u.id, c.name ORDER BY 5 DESC, u.name
+        GROUP BY u.id, u.name, u.email, c.name ORDER BY 5 DESC, u.name
       `).all(
         startAt, endAt, startAt, endAt,
         ...(isAllCompaniesScope ? [] : [scopeCompanyId, scopeCompanyId]),
@@ -1114,7 +1114,7 @@ app.get("/api/reports", requireAuth, async (req, res) => {
     SELECT c.name, COUNT(t.id) AS count FROM tickets t
     JOIN companies c ON c.id = t.company_id
     WHERE t.created_at >= ? AND t.created_at < ?
-    GROUP BY c.id ORDER BY count DESC, c.name LIMIT 8
+    GROUP BY c.id, c.name ORDER BY count DESC, c.name LIMIT 8
   `).all(startAt, endAt) : [];
 
   const solvedByInternalRow = await db.prepare(`
@@ -1131,7 +1131,7 @@ app.get("/api/reports", requireAuth, async (req, res) => {
     LEFT JOIN companies co ON co.id = t.company_id
     LEFT JOIN users res ON res.id = t.resolved_by
     LEFT JOIN company_memberships res_cm ON res_cm.user_id = t.resolved_by AND res_cm.company_id = t.company_id
-    WHERE ${scopeClause} AND t.status = 'resolved' AND t.resolved_at >= ? AND t.resolved_at < ?
+    WHERE ${isAllCompaniesScope ? "1 = 1" : "t.company_id = ?"} AND t.status = 'resolved' AND t.resolved_at >= ? AND t.resolved_at < ?
   `).get(...scopeParams, startAt, endAt);
 
   const internalConsultantWorkload = await db.prepare(`
@@ -1146,8 +1146,8 @@ app.get("/api/reports", requireAuth, async (req, res) => {
       AND ${isAllCompaniesScope ? "1 = 1" : "t.company_id = ?"}
     WHERE u.role = 'customer' AND u.disabled_at IS NULL
       AND ${isAllCompaniesScope ? "1 = 1" : "m.company_id = ?"}
-    GROUP BY u.id, c.name, m.internal_routing_priority
-    ORDER BY resolvedInPeriod DESC, m.internal_routing_priority ASC, u.name
+    GROUP BY u.id, u.name, u.email, c.name, m.internal_routing_priority
+    ORDER BY 7 DESC, m.internal_routing_priority ASC, u.name
   `).all(
     startAt, endAt,
     ...(isAllCompaniesScope ? [] : [scopeCompanyId, scopeCompanyId]),
