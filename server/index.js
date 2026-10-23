@@ -3244,6 +3244,12 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
     if (!perms.isInternalConsultant && req.user.role !== "agent") {
       return res.status(403).json({ error: "Only an Internal Consultant or Consultant can transfer this ticket to an external consultant." });
     }
+    if (req.user.role === "customer" && existing.assignee_id) {
+      const currentAssignee = await db.prepare("SELECT role FROM users WHERE id = ?").get(existing.assignee_id);
+      if (currentAssignee?.role === "agent") {
+        return res.status(400).json({ error: "This ticket is already assigned to an External Consultant." });
+      }
+    }
     const externalAgent = await selectRoutingAgent(existing.category);
     if (!externalAgent) {
       return res.status(400).json({ error: "No external consultant is currently available to take this ticket." });

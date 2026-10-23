@@ -829,6 +829,9 @@ function App() {
   const isSuperAdmin = isAgent && Boolean(user.isAdmin);
   const isCompanyAdmin = user.role === "customer" && Boolean(user.isCompanyAdmin);
   const selectedTicket = detail?.ticket;
+  const isAssignedToExternal = Boolean(
+    selectedTicket?.assignee && (selectedTicket.assignee.role === "agent" || agents.some((a) => a.id === selectedTicket.assignee?.id))
+  );
   const isInternalConsultantForTicket = Boolean(
     selectedTicket && (
       user.isInternalConsultant ||
@@ -840,7 +843,7 @@ function App() {
   );
   const canSwitchToConsultant = Boolean(selectedTicket && (
     (isAgent && (isSuperAdmin || selectedTicket.assignee?.id === user.id)) ||
-    isInternalConsultantForTicket
+    (isInternalConsultantForTicket && !isAssignedToExternal && selectedTicket.status !== "resolved")
   ));
   const canChangeAssignment = Boolean(selectedTicket && (
     isAgent && (isSuperAdmin || selectedTicket.assignee?.id === user.id)
