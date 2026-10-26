@@ -170,6 +170,7 @@ const schema = `
     original_name TEXT NOT NULL,
     mime_type TEXT NOT NULL,
     size_bytes BIGINT NOT NULL,
+    message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
   );
 
@@ -478,6 +479,10 @@ const schemaMigrations = [
     SET is_internal_consultant = 1, internal_routing_priority = 1
     FROM companies c
     WHERE u.id = c.internal_consultant_id;
+  `) },
+  { version: 22, apply: () => db.exec(`
+    ALTER TABLE ticket_attachments ADD COLUMN IF NOT EXISTS message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS ticket_attachments_message_id_idx ON ticket_attachments(message_id);
   `) },
 ];
 

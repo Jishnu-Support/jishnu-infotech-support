@@ -1,5 +1,30 @@
 export const ticketCategories = ["Functional", "Technical", "Account access", "Billing", "Technical support", "Feature request", "Other"];
 
+export const blockedAttachmentExtensions = new Set([
+  ".exe", ".bat", ".cmd", ".sh", ".vbs", ".js", ".scr", ".msi", ".com", ".ps1", ".jar"
+]);
+
+export function isAllowedAttachment(filename) {
+  if (typeof filename !== "string" || !filename.trim()) return false;
+  const lastDot = filename.lastIndexOf(".");
+  const ext = lastDot >= 0 ? filename.slice(lastDot).toLowerCase() : "";
+  return !blockedAttachmentExtensions.has(ext);
+}
+
+export function sanitizeAttachmentName(originalName) {
+  if (typeof originalName !== "string") return "attachment";
+  const name = originalName.split(/[/\\]/).pop() || "";
+  const lastDot = name.lastIndexOf(".");
+  const ext = lastDot >= 0 ? name.slice(lastDot).slice(0, 20) : "";
+  const rawBase = (lastDot >= 0 ? name.slice(0, lastDot) : name)
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/[<>:"/\\|?*]/g, "_")
+    .replace(/[. ]+$/, "")
+    .slice(0, 150);
+  const cleanBase = rawBase || "attachment";
+  return `${cleanBase}${ext}`;
+}
+
 export function normalizedTicketMetadata(body, defaults = {}) {
   const category = body.category === undefined ? defaults.category || "Other" : body.category;
   if (typeof category !== "string" || !ticketCategories.includes(category)) {

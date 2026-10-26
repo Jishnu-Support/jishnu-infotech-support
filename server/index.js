@@ -16,7 +16,7 @@ import { parseHistoricalTicketWorkbook } from "./historical-ticket-import.js";
 import { db, initializeDatabase } from "./db.js";
 import { applicationUrl, emailIsConfigured, sendEmail } from "./email.js";
 import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket } from "./authz.js";
-import { normalizedTicketMetadata, ticketCategories } from "./validation.js";
+import { normalizedTicketMetadata, ticketCategories, isAllowedAttachment, sanitizeAttachmentName } from "./validation.js";
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -54,12 +54,34 @@ const attachmentUpload = multer({
     destination: attachmentsRoot,
     filename: (_req, _file, callback) => callback(null, randomUUID()),
   }),
-  limits: { files: 5, fields: 8, parts: 13, fileSize: 10 * 1024 * 1024 },
-  fileFilter: (_req, file, callback) => callback(
-    permittedAttachmentTypes.has(file.mimetype) ? null : new Error("Only PDF, JPEG, PNG, and WebP attachments are allowed."),
-    permittedAttachmentTypes.has(file.mimetype),
-  ),
+  limits: { files: 5, fields: 12, parts: 20, fileSize: 25 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    if (!isAllowedAttachment(file.originalname)) {
+      return callback(new Error(`The file "${file.originalname}" is an executable format and cannot be attached.`), false);
+    }
+    callback(null, true);
+  },
 });
+
+async function verifyTicketFiles(files = []) {
+  const verifiedFiles = [];
+  for (const file of files) {
+    if (!isAllowedAttachment(file.originalname)) {
+      throw new Error(`The attachment "${file.originalname}" is an executable format and cannot be attached.`);
+    }
+    let detectedMime = null;
+    try {
+      const detected = await fileTypeFromFile(file.path);
+      detectedMime = detected?.mime;
+    } catch {
+      // ignore detection failures for non-binary formats
+    }
+    const mimeType = detectedMime || file.mimetype || "application/octet-stream";
+    const originalName = sanitizeAttachmentName(file.originalname);
+    verifiedFiles.push({ ...file, originalName, mimeType, size: file.size });
+  }
+  return verifiedFiles;
+}
 const permittedManualMediaTypes = new Map([
   ["audio/mpeg", { extension: ".mp3", kind: "audio" }],
   ["audio/mp4", { extension: ".m4a", kind: "audio" }],
@@ -1920,7 +1942,7 @@ app.get("/api/information-center/:id/attachments/:attachmentId", requireAuth, as
   `).get(attachmentId, informationId);
   if (!attachment) return res.status(404).json({ error: "Attachment not found." });
   res.type(attachment.mime_type);
-  res.setHeader("Content-Disposition", "inline");
+  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(attachment.original_name)}"`);
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.sendFile(resolve(attachmentsRoot, attachment.storage_name), (error) => {
     if (error && !res.headersSent) res.status(error.code === "ENOENT" ? 404 : 500).json({ error: "Could not retrieve this attachment." });
@@ -2871,12 +2893,33 @@ app.get("/api/tickets/:id", requireAuth, async (req, res) => {
 
   const ticket = await db.prepare(`${ticketSelect} WHERE t.id = ?`).get(ticketId);
   if (!ticket) return res.status(404).json({ error: "Ticket not found." });
-  const messages = (await db.prepare(`
+  const attachments = await db.prepare(`
+    SELECT id, original_name AS name, mime_type AS mimeType, size_bytes AS sizeBytes,
+           created_at AS createdAt, uploaded_by AS uploadedBy, message_id AS messageId
+    FROM ticket_attachments WHERE ticket_id = ? ORDER BY id
+  `).all(ticketId);
+
+  const attachmentsByMessage = new Map();
+  for (const att of attachments) {
+    if (att.messageId) {
+      const list = attachmentsByMessage.get(att.messageId) || [];
+      list.push(att);
+      attachmentsByMessage.set(att.messageId, list);
+    }
+  }
+
+  const rawMessages = (await db.prepare(`
     SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, u.id AS authorId, u.name AS authorName, u.role AS authorRole
     FROM messages m JOIN users u ON u.id = m.author_id
     WHERE m.ticket_id = ? AND (? = 1 OR m.is_internal = 0) ORDER BY m.id
   `).all(ticketId, req.user.role === "agent" ? 1 : 0)
-  ).map((message) => ({ ...message, isInternal: Boolean(message.isInternal) }));
+  ).map((message) => ({
+    ...message,
+    isInternal: Boolean(message.isInternal),
+    attachments: attachmentsByMessage.get(message.id) || [],
+  }));
+
+  const messages = [...rawMessages];
   if (ticket.import_key) {
     const consultantRaised = Boolean(ticket.historical_consultant_name);
     messages.unshift({
@@ -2889,13 +2932,14 @@ app.get("/api/tickets/:id", requireAuth, async (req, res) => {
         ? ticket.assignee_name || ticket.historical_consultant_name
         : ticket.reported_client_name || "Client",
       authorRole: consultantRaised ? "agent" : "customer",
+      attachments: attachments.filter((att) => !att.messageId),
     });
+  } else if (messages.length > 0) {
+    const unlinkedAttachments = attachments.filter((att) => !att.messageId);
+    if (unlinkedAttachments.length > 0 && (!messages[0].attachments || messages[0].attachments.length === 0)) {
+      messages[0].attachments = unlinkedAttachments;
+    }
   }
-  const attachments = await db.prepare(`
-    SELECT id, original_name AS name, mime_type AS mimeType, size_bytes AS sizeBytes,
-           created_at AS createdAt, uploaded_by AS uploadedBy
-    FROM ticket_attachments WHERE ticket_id = ? ORDER BY id
-  `).all(ticketId);
   const assignmentHistory = req.user.role === "agent" || req.user.is_company_admin || req.user.is_internal_consultant || ticket.assignee_id === req.user.id
     ? await db.prepare(`
         SELECT h.id, h.source, h.created_at AS createdAt,
@@ -2922,7 +2966,7 @@ function receiveAttachments(req, res, next) {
     if (!error) return next();
     const message = error instanceof multer.MulterError
       ? error.code === "LIMIT_FILE_SIZE"
-        ? "Each attachment must be 10 MB or smaller."
+        ? "Each attachment must be 25 MB or smaller."
         : error.code === "LIMIT_FILE_COUNT"
           ? "Attach up to 5 files."
           : error.message
@@ -2950,7 +2994,7 @@ app.get("/api/tickets/:id/attachments/:attachmentId", requireAuth, async (req, r
     .get(attachmentId, ticketId);
   if (!attachment) return res.status(404).json({ error: "Attachment not found." });
   res.type(attachment.mime_type);
-  res.setHeader("Content-Disposition", "inline");
+  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(attachment.original_name)}"`);
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.sendFile(resolve(attachmentsRoot, attachment.storage_name), (error) => {
     if (error && !res.headersSent) res.status(error.code === "ENOENT" ? 404 : 500).json({ error: "Could not retrieve this attachment." });
@@ -3106,22 +3150,9 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
     assignmentSource = "automatic";
   }
   const files = req.files || [];
-  const verifiedFiles = [];
+  let verifiedFiles = [];
   try {
-    for (const file of files) {
-      const detected = await fileTypeFromFile(file.path);
-      const requiredExtension = permittedAttachmentTypes.get(detected?.mime);
-      if (!detected || !requiredExtension || file.mimetype !== detected.mime) {
-        throw new Error(`The attachment "${file.originalname}" does not match an allowed PDF or image file.`);
-      }
-      const displayName = basename(file.originalname)
-        .replace(/[\u0000-\u001f\u007f]/g, "")
-        .replace(/[<>:"/\\|?*]/g, "_")
-        .replace(/[. ]+$/, "")
-        .slice(0, 150);
-      const baseName = displayName.replace(/\.[^.]*$/, "").trim() || "attachment";
-      verifiedFiles.push({ ...file, originalName: `${baseName}${requiredExtension}`, mimeType: detected.mime });
-    }
+    verifiedFiles = await verifyTicketFiles(files);
   } catch (error) {
     discardUploadedFiles(files);
     return res.status(400).json({ error: error.message });
@@ -3138,7 +3169,9 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
         JSON.stringify(metadata.customFields), customerId, companyId || null, agent?.id || null,
       );
       const ticketId = Number(result.lastInsertRowid);
-      await db.prepare("INSERT INTO messages (ticket_id, author_id, body) VALUES (?, ?, ?)").run(ticketId, req.user.id, description);
+      const initialMsg = await db.prepare("INSERT INTO messages (ticket_id, author_id, body) VALUES (?, ?, ?)")
+        .run(ticketId, req.user.id, description);
+      const initialMessageId = Number(initialMsg.lastInsertRowid);
       await recordTicketAssignment(ticketId, agent?.id, req.user.id, assignmentSource);
       if (req.user.role === "customer" && agent?.id) {
         const customer = await db.prepare("SELECT name FROM users WHERE id = ?").get(customerId);
@@ -3148,12 +3181,14 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
           ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
         `).run(agent.id, ticketId, `New ticket from ${customer?.name || "a customer"}: ${priority} priority · ${metadata.category} · ${subject}`);
       }
-      const insertAttachment = db.prepare(`
-        INSERT INTO ticket_attachments (ticket_id, uploaded_by, storage_name, original_name, mime_type, size_bytes)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      for (const file of verifiedFiles) {
-        await insertAttachment.run(ticketId, req.user.id, file.filename, file.originalName, file.mimeType, file.size);
+      if (verifiedFiles.length > 0) {
+        const insertAttachment = db.prepare(`
+          INSERT INTO ticket_attachments (ticket_id, uploaded_by, storage_name, original_name, mime_type, size_bytes, message_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const file of verifiedFiles) {
+          await insertAttachment.run(ticketId, req.user.id, file.filename, file.originalName, file.mimeType, file.size, initialMessageId);
+        }
       }
       return ticketId;
     });
@@ -3166,19 +3201,38 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
   res.status(201).json({ ticket: await ticketSummary(ticket) });
 });
 
-app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
+app.post("/api/tickets/:id/messages", requireAuth, receiveAttachments, async (req, res) => {
   const ticketId = Number(req.params.id);
-  const body = typeof req.body.body === "string" ? req.body.body.trim() : "";
-  const isInternal = req.body.internal === true;
-  if (!Number.isInteger(ticketId) || ticketId < 1) return res.status(400).json({ error: "Invalid ticket id." });
-  if (!await canAccessTicket(req.user, ticketId)) return res.status(404).json({ error: "Ticket not found." });
-  if (isInternal && req.user.role !== "agent") return res.status(403).json({ error: "Internal notes are only available to Consultants." });
-  if (body.length < 1 || body.length > 5000) return res.status(400).json({ error: "Reply must be between 1 and 5,000 characters." });
+  const files = req.files || [];
+  let body = typeof req.body.body === "string" ? req.body.body.trim() : "";
+  const isInternal = req.body.internal === true || req.body.internal === "true" || req.body.internal === "1";
+  if (!Number.isInteger(ticketId) || ticketId < 1) {
+    discardUploadedFiles(files);
+    return res.status(400).json({ error: "Invalid ticket id." });
+  }
+  if (!await canAccessTicket(req.user, ticketId)) {
+    discardUploadedFiles(files);
+    return res.status(404).json({ error: "Ticket not found." });
+  }
+  if (isInternal && req.user.role !== "agent") {
+    discardUploadedFiles(files);
+    return res.status(403).json({ error: "Internal notes are only available to Consultants." });
+  }
+  if (!body && files.length > 0) {
+    body = `Attached ${files.length} file${files.length > 1 ? "s" : ""}.`;
+  }
+  if (body.length < 1 || body.length > 5000) {
+    discardUploadedFiles(files);
+    return res.status(400).json({ error: "Reply must be between 1 and 5,000 characters." });
+  }
   const ticket = await db.prepare(`
     SELECT t.status, t.first_response_at, t.email_thread_id, t.subject, t.customer_id, t.company_id, t.assignee_id, c.email AS customer_email
     FROM tickets t LEFT JOIN users c ON c.id = t.customer_id WHERE t.id = ?
   `).get(ticketId);
-  if (!ticket) return res.status(404).json({ error: "Ticket not found." });
+  if (!ticket) {
+    discardUploadedFiles(files);
+    return res.status(404).json({ error: "Ticket not found." });
+  }
   const companyRecord = await db.prepare("SELECT internal_consultant_id FROM companies WHERE id = ?").get(ticket.company_id);
   const isInternalUser = Boolean(
     req.user.is_internal_consultant ||
@@ -3186,7 +3240,16 @@ app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
     Number(ticket.assignee_id) === Number(req.user.id)
   );
   if (req.user.role === "customer" && ticket.customer_id !== req.user.id && !req.user.is_company_admin && !isInternalUser) {
+    discardUploadedFiles(files);
     return res.status(403).json({ error: "Only the ticket creator, internal consultant, or a company administrator can reply to this ticket." });
+  }
+
+  let verifiedFiles = [];
+  try {
+    verifiedFiles = await verifyTicketFiles(files);
+  } catch (error) {
+    discardUploadedFiles(files);
+    return res.status(400).json({ error: error.message });
   }
 
   const insertMessage = db.transaction(async () => {
@@ -3195,6 +3258,18 @@ app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
       : null;
     const result = await db.prepare("INSERT INTO messages (ticket_id, author_id, body, is_internal, email_message_id) VALUES (?, ?, ?, ?, ?)")
       .run(ticketId, req.user.id, body, isInternal ? 1 : 0, emailMessageId);
+    const messageId = Number(result.lastInsertRowid);
+
+    if (verifiedFiles.length > 0) {
+      const insertAttachment = db.prepare(`
+        INSERT INTO ticket_attachments (ticket_id, uploaded_by, storage_name, original_name, mime_type, size_bytes, message_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const file of verifiedFiles) {
+        await insertAttachment.run(ticketId, req.user.id, file.filename, file.originalName, file.mimeType, file.size, messageId);
+      }
+    }
+
     await db.prepare("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticketId);
     if (!isInternal && req.user.role === "customer" && req.user.id === ticket.customer_id && ticket.status === "resolved") {
       await db.prepare("UPDATE tickets SET status = 'open', resolved_at = NULL, resolved_by = NULL WHERE id = ?").run(ticketId);
@@ -3204,7 +3279,7 @@ app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
     }
     if (emailMessageId) {
       const previous = await db.prepare("SELECT email_message_id FROM messages WHERE ticket_id = ? AND id < ? AND email_message_id IS NOT NULL ORDER BY id DESC LIMIT 1")
-        .get(ticketId, result.lastInsertRowid);
+        .get(ticketId, messageId);
       const referencesHeader = [...new Set([ticket.email_thread_id, previous?.email_message_id].filter(Boolean))].join(" ");
       await db.prepare("INSERT INTO mail_outbox (recipient, subject, body, message_id, references_header) VALUES (?, ?, ?, ?, ?)")
         .run(
@@ -3214,16 +3289,28 @@ app.post("/api/tickets/:id/messages", requireAuth, async (req, res) => {
           emailMessageId,
           referencesHeader || null,
         );
-      await db.prepare("UPDATE messages SET email_message_id = ? WHERE id = ?").run(emailMessageId, result.lastInsertRowid);
+      await db.prepare("UPDATE messages SET email_message_id = ? WHERE id = ?").run(emailMessageId, messageId);
     }
-    return result.lastInsertRowid;
+    return messageId;
   });
-  const id = await insertMessage();
+
+  let id;
+  try {
+    id = await insertMessage();
+  } catch (error) {
+    discardUploadedFiles(files);
+    throw error;
+  }
   const messageRow = await db.prepare(`
     SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, u.id AS authorId, u.name AS authorName, u.role AS authorRole
     FROM messages m JOIN users u ON u.id = m.author_id WHERE m.id = ?
   `).get(id);
-  const message = { ...messageRow, isInternal: Boolean(messageRow.isInternal) };
+  const messageAttachments = await db.prepare(`
+    SELECT id, original_name AS name, mime_type AS mimeType, size_bytes AS sizeBytes,
+           created_at AS createdAt, uploaded_by AS uploadedBy, message_id AS messageId
+    FROM ticket_attachments WHERE message_id = ? ORDER BY id
+  `).all(id);
+  const message = { ...messageRow, isInternal: Boolean(messageRow.isInternal), attachments: messageAttachments };
   res.status(201).json({ message, emailQueued: !isInternal && req.user.role !== "customer" && Boolean(ticket.customer_email) && emailIsConfigured() });
 });
 

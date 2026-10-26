@@ -213,6 +213,9 @@ h1, h2, p { margin-top: 0; }
 .agent-badge, .original-label { padding: 2px 4px; border-radius: 3px; color: #5775b4; background: #edf2ff; font-size: 7px; font-weight: 700; letter-spacing: .35px; }
 .original-label { color: #9a7b4c; background: #fbf4e7; }
 .message-content p { margin: 5px 0 0; color: #788494; font-size: 9px; line-height: 1.65; white-space: pre-wrap; }
+.message-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.message-attachment-item { min-width: 130px; max-width: 220px; padding: 5px 8px; font-size: 8px; border-radius: 5px; border-color: #e2e8f0; background: #f8fafc; }
+.message-attachment-item:hover { border-color: #cbd5e1; background: #f1f5f9; }
 .message-internal { margin: 4px -8px; padding: 12px 8px; border: 1px solid #f0e3c8; border-radius: 6px; background: #fffbf1; }
 .internal-note-badge { padding: 3px 5px; border-radius: 4px; color: #9c7135; background: #f8edda; font-size: 7px; font-weight: 700; letter-spacing: .3px; }
 .internal-note-notice { display: flex; flex: none; align-items: center; gap: 5px; padding: 5px 21px; color: #9b793f; background: #fffaf0; font-size: 8px; }
@@ -223,9 +226,19 @@ h1, h2, p { margin-top: 0; }
 .reply-composer { padding: 9px; border: 1px solid #e4e8ed; border-radius: 7px; background: #fff; }
 .reply-composer textarea { width: 100%; min-height: 52px; resize: vertical; outline: none; border: 0; color: #435064; font-size: 10px; line-height: 1.5; }
 .reply-composer textarea::placeholder { color: #a2abb5; }
+.reply-attachment-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0 8px; }
+.reply-attachment-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 200px; padding: 3px 7px; border: 1px solid #dbeafe; border-radius: 5px; background: #eff6ff; color: #1e40af; font-size: 8px; }
+.reply-attachment-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reply-attachment-chip small { color: #60a5fa; font-size: 7px; flex: none; }
+.reply-attachment-chip button { display: flex; align-items: center; padding: 0; border: none; background: transparent; color: #64748b; cursor: pointer; }
+.reply-attachment-chip button:hover { color: #ef4444; }
 .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 7px; border-top: 1px solid #f0f2f4; }
-.composer-footer > span { display: flex; align-items: center; gap: 5px; color: #929daa; font-size: 8px; }
-.composer-footer > span svg { color: #7794d3; }
+.composer-actions { display: flex; align-items: center; gap: 10px; }
+.reply-attach-button { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid #e2e8f0; border-radius: 5px; background: #f8fafc; color: #475569; font-size: 8px; font-weight: 500; cursor: pointer; transition: all .15s ease; user-select: none; }
+.reply-attach-button:hover { background: #edf2f7; border-color: #cbd5e1; color: #1e293b; }
+.reply-attach-button svg { color: #5c7fbe; }
+.composer-footer > span, .composer-actions > span { display: flex; align-items: center; gap: 5px; color: #929daa; font-size: 8px; }
+.composer-footer > span svg, .composer-actions > span svg { color: #7794d3; }
 .send-button { height: 29px; padding: 0 9px; font-size: 9px; }
 .rating-star-picker { display: flex; gap: 4px; margin-bottom: 7px; }
 .rating-star-picker button { padding: 2px; border: 0; color: #d7dce3; background: transparent; font-size: 30px; line-height: 1; cursor: pointer; }

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket } from "../server/authz.js";
-import { normalizedTicketMetadata } from "../server/validation.js";
+import { normalizedTicketMetadata, isAllowedAttachment, sanitizeAttachmentName } from "../server/validation.js";
 import {
   priorityLabel,
   sortInternalConsultants,
@@ -235,4 +235,38 @@ test("isTicketSolvedByInternal correctly attributes resolutions", () => {
     resolvedByRole: "customer",
     resolvedByIsInternalConsultant: 1,
   }), false);
+});
+
+test("isAllowedAttachment permits all non-executable file formats", () => {
+  // Documents and spreadsheets
+  assert.equal(isAllowedAttachment("report.pdf"), true);
+  assert.equal(isAllowedAttachment("budget.xlsx"), true);
+  assert.equal(isAllowedAttachment("legacy.doc"), true);
+  assert.equal(isAllowedAttachment("contract.docx"), true);
+  assert.equal(isAllowedAttachment("data.csv"), true);
+  assert.equal(isAllowedAttachment("notes.txt"), true);
+  assert.equal(isAllowedAttachment("slides.pptx"), true);
+
+  // Images, media, archives
+  assert.equal(isAllowedAttachment("screenshot.png"), true);
+  assert.equal(isAllowedAttachment("photo.jpg"), true);
+  assert.equal(isAllowedAttachment("recording.mp3"), true);
+  assert.equal(isAllowedAttachment("screencast.mp4"), true);
+  assert.equal(isAllowedAttachment("bundle.zip"), true);
+  assert.equal(isAllowedAttachment("archive.7z"), true);
+
+  // Blocked dangerous executables
+  assert.equal(isAllowedAttachment("installer.exe"), false);
+  assert.equal(isAllowedAttachment("script.bat"), false);
+  assert.equal(isAllowedAttachment("command.cmd"), false);
+  assert.equal(isAllowedAttachment("deploy.sh"), false);
+  assert.equal(isAllowedAttachment("macro.vbs"), false);
+  assert.equal(isAllowedAttachment("exploit.scr"), false);
+});
+
+test("sanitizeAttachmentName sanitizes dangerous characters while preserving extensions", () => {
+  assert.equal(sanitizeAttachmentName("my report (final).pdf"), "my report (final).pdf");
+  assert.equal(sanitizeAttachmentName("illegal<file>:name?.xlsx"), "illegal_file__name_.xlsx");
+  assert.equal(sanitizeAttachmentName("../../etc/passwd.txt"), "passwd.txt");
+  assert.equal(sanitizeAttachmentName(""), "attachment");
 });

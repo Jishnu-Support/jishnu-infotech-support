@@ -36,8 +36,8 @@ type Ticket = {
   firstResponseAt: string | null; isFirstResponseOverdue: boolean; isResolutionOverdue: boolean;
   rating: { rating: number; comment: string; createdAt: string; customerId: number } | null;
 };
-type Message = { id: number; body: string; isInternal: boolean; createdAt: string; authorId: number | null; authorName: string; authorRole: Role };
-type TicketAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string; uploadedBy: number };
+type Message = { id: number; body: string; isInternal: boolean; createdAt: string; authorId: number | null; authorName: string; authorRole: Role; attachments?: TicketAttachment[] };
+type TicketAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string; uploadedBy: number; messageId?: number | null };
 type TicketDetail = { ticket: Ticket; messages: Message[]; attachments: TicketAttachment[]; assignmentHistory: AssignmentEvent[]; categories: TicketCategory[]; canRate: boolean };
 type Customer = {
   id: number; name: string; username?: string; email: string | null; companyId?: number; companyName?: string;
@@ -326,6 +326,9 @@ function App() {
   const [refreshSuccess, setRefreshSuccess] = useState(false);
   const [inboxRefreshError, setInboxRefreshError] = useState("");
   const [replyInternal, setReplyInternal] = useState(false);
+  const [replyFiles, setReplyFiles] = useState<File[]>([]);
+  const [sendingReply, setSendingReply] = useState(false);
+  const replyFileInputRef = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const knownTicketIds = useRef<Set<number> | null>(null);
   const knownNotificationIds = useRef<Set<number> | null>(null);
@@ -375,7 +378,7 @@ function App() {
     return () => window.clearInterval(intervalId);
   }, [activeView, selectedId, user]);
 
-  useEffect(() => { setReplyInternal(false); }, [selectedId]);
+  useEffect(() => { setReplyInternal(false); setReplyFiles([]); }, [selectedId]);
 
   useEffect(() => {
     if (showCreate && user?.role === "customer") {
@@ -750,15 +753,30 @@ function App() {
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     const body = String(form.get("reply") || "").trim();
-    if (!body) return;
+    if (!body && replyFiles.length === 0) return;
     setActionError("");
+    setSendingReply(true);
     try {
-      const result = await api<{ emailQueued: boolean }>(`/tickets/${selectedId}/messages`, { method: "POST", body: JSON.stringify({ body, internal: isAgent && replyInternal }) });
+      form.delete("attachments");
+      for (const file of replyFiles) {
+        form.append("attachments", file);
+      }
+      form.set("body", body || (replyFiles.length > 0 ? `Attached ${replyFiles.length} file${replyFiles.length > 1 ? "s" : ""}.` : ""));
+      form.set("internal", String(isAgent && replyInternal));
+
+      const result = await api<{ emailQueued: boolean }>(`/tickets/${selectedId}/messages`, {
+        method: "POST",
+        body: form,
+      });
       setActionMessage(replyInternal ? "Internal note added for the support team." : result.emailQueued ? "Reply added and queued for email delivery." : "Reply added to the ticket conversation.");
-      await refreshTickets();
+      setReplyFiles([]);
+      if (replyFileInputRef.current) replyFileInputRef.current.value = "";
       formElement.reset();
+      await refreshTickets();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Could not send reply.");
+    } finally {
+      setSendingReply(false);
     }
   }
 
@@ -1163,6 +1181,27 @@ function App() {
                       <div className="message-content">
                         <div className="message-meta"><strong>{message.authorName}</strong>{message.isInternal ? <span className="internal-note-badge">INTERNAL NOTE</span> : fromAgent && <span className="agent-badge">SUPPORT</span>}<time>{timeAgo(message.createdAt)}</time>{index === 0 && !message.isInternal && <span className="original-label">Original request</span>}</div>
                         <p>{message.body}</p>
+                        {message.attachments && message.attachments.length > 0 && (
+                          <div className="message-attachments" aria-label="Message attachments">
+                            {message.attachments.map((attachment) => (
+                              <button
+                                key={attachment.id}
+                                type="button"
+                                className="ticket-attachment message-attachment-item"
+                                onClick={() => setFilePreview({
+                                  name: attachment.name,
+                                  mimeType: attachment.mimeType,
+                                  sizeBytes: attachment.sizeBytes,
+                                  url: `/api/tickets/${selectedTicket.id}/attachments/${attachment.id}`,
+                                })}
+                              >
+                                <span className="attachment-icon"><Paperclip size={13} /></span>
+                                <span><strong>{attachment.name}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span>
+                                <span className="attachment-view-label">View</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </article>;
                   })}
@@ -1176,8 +1215,61 @@ function App() {
                     <button type="button" className={replyInternal ? "selected" : ""} onClick={() => setReplyInternal(true)}>Internal note</button>
                   </div>}
                   <form className="reply-composer" onSubmit={sendReply}>
-                    <textarea name="reply" placeholder={isAgent ? (replyInternal ? "Write an internal note for the support team…" : "Write a reply to the customer…") : "Reply to this conversation…"} maxLength={5000} required />
-                    <div className="composer-footer"><span>{replyInternal ? <><ShieldCheck size={14} /> Only Consultants can see this note</> : <><Sparkles size={14} /> Replies are visible to the customer</>}</span><button className="button button-primary send-button" type="submit">{replyInternal ? "Add note" : "Send reply"} <Send size={14} /></button></div>
+                    <textarea
+                      name="reply"
+                      placeholder={isAgent ? (replyInternal ? "Write an internal note for the support team…" : "Write a reply to the customer…") : "Reply to this conversation…"}
+                      maxLength={5000}
+                      required={replyFiles.length === 0}
+                    />
+                    {replyFiles.length > 0 && (
+                      <div className="reply-attachment-chips" aria-label="Attached files">
+                        {replyFiles.map((file, idx) => (
+                          <span key={`${file.name}-${idx}`} className="reply-attachment-chip">
+                            <Paperclip size={12} />
+                            <span title={file.name}>{file.name}</span>
+                            <small>({formatBytes(file.size)})</small>
+                            <button
+                              type="button"
+                              onClick={() => setReplyFiles((prev) => prev.filter((_, i) => i !== idx))}
+                              aria-label={`Remove ${file.name}`}
+                            >
+                              <X size={12} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="composer-footer">
+                      <div className="composer-actions">
+                        <label className="reply-attach-button" title="Attach files (all formats supported, up to 5 files, 25 MB each)">
+                          <Paperclip size={13} />
+                          <span>Attach files</span>
+                          <input
+                            ref={replyFileInputRef}
+                            type="file"
+                            multiple
+                            style={{ display: "none" }}
+                            onChange={(e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (!files.length) return;
+                              setReplyFiles((prev) => {
+                                const combined = [...prev, ...files];
+                                if (combined.length > 5) {
+                                  setActionError("You can attach up to 5 files per reply.");
+                                  return combined.slice(0, 5);
+                                }
+                                return combined;
+                              });
+                              e.target.value = "";
+                            }}
+                          />
+                        </label>
+                        <span>{replyInternal ? <><ShieldCheck size={14} /> Only Consultants can see this note</> : <><Sparkles size={14} /> Replies are visible to the customer</>}</span>
+                      </div>
+                      <button className="button button-primary send-button" type="submit" disabled={sendingReply}>
+                        {sendingReply ? "Sending…" : replyInternal ? "Add note" : "Send reply"} <Send size={14} />
+                      </button>
+                    </div>
                   </form>
                 </div> : <div className="internal-note-notice"><ShieldCheck size={13} /><span>You can view this company ticket. Only its creator or a company administrator can reply.</span></div>}
               </section>
@@ -1264,7 +1356,7 @@ function App() {
           <label>Subject<input name="subject" required minLength={4} maxLength={160} placeholder="What do you need help with?" autoFocus /></label>
           <label>Description<textarea name="description" required minLength={10} maxLength={5000} placeholder="Share a few details so we can help…" rows={5} /></label>
           <label>Priority<select name="priority" defaultValue="normal"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
-          <label>Attachments<input name="attachments" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" /><span className="form-hint">Up to 5 PDF or image files, 10 MB each.</span></label>
+          <label>Attachments<input name="attachments" type="file" multiple /><span className="form-hint">Up to 5 files (all file formats supported), 25 MB each.</span></label>
           {actionError && <div className="inline-error">{actionError}</div>}
           <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); setNewTicketCategory(""); }}>Cancel</button><button className="button button-primary" type="submit"><Plus size={15} /> Create ticket</button></div>
         </form>
@@ -2942,7 +3034,29 @@ function KnowledgeBase({ companies }: { companies: Array<{ id: number; name: str
           {openTicket.messages.length ? <div className="conversation">{openTicket.messages.map((message, index) => {
             const fromConsultant = message.authorRole === "agent";
             return <article key={message.id} className={`message ${fromConsultant ? "message-agent" : ""} ${message.isInternal ? "message-internal" : ""}`}>
-              <div className={`message-avatar ${fromConsultant ? "agent-message-avatar" : ""}`}>{initials(message.authorName)}</div><div className="message-content"><div className="message-meta"><strong>{message.authorName}</strong>{message.isInternal ? <span className="internal-note-badge">INTERNAL NOTE</span> : fromConsultant && <span className="agent-badge">CONSULTANT</span>}<time>{timeAgo(message.createdAt)}</time>{index === 0 && !message.isInternal && <span className="original-label">Original request</span>}</div><p>{message.body}</p></div>
+              <div className={`message-avatar ${fromConsultant ? "agent-message-avatar" : ""}`}>{initials(message.authorName)}</div><div className="message-content"><div className="message-meta"><strong>{message.authorName}</strong>{message.isInternal ? <span className="internal-note-badge">INTERNAL NOTE</span> : fromConsultant && <span className="agent-badge">CONSULTANT</span>}<time>{timeAgo(message.createdAt)}</time>{index === 0 && !message.isInternal && <span className="original-label">Original request</span>}</div><p>{message.body}</p>
+              {message.attachments && message.attachments.length > 0 && (
+                <div className="message-attachments" aria-label="Message attachments">
+                  {message.attachments.map((attachment) => (
+                    <button
+                      key={attachment.id}
+                      type="button"
+                      className="ticket-attachment message-attachment-item"
+                      onClick={() => setFilePreview({
+                        name: attachment.name,
+                        mimeType: attachment.mimeType,
+                        sizeBytes: attachment.sizeBytes,
+                        url: `/api/tickets/${openTicket.ticket.id}/attachments/${attachment.id}`,
+                      })}
+                    >
+                      <span className="attachment-icon"><Paperclip size={13} /></span>
+                      <span><strong>{attachment.name}</strong><small>{formatBytes(attachment.sizeBytes)}</small></span>
+                      <span className="attachment-view-label">View</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              </div>
             </article>;
           })}</div> : <p className="knowledge-no-messages">No conversation messages were recorded for this ticket.</p>}
         </div>
