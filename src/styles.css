@@ -220,6 +220,10 @@ h1, h2, p { margin-top: 0; }
 .message-edit-form textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #bfdbfe; }
 .message-edit-actions { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
 .message-edit-actions button { height: 26px; padding: 0 10px; font-size: 9.5px; font-weight: 600; }
+.message-edit-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.message-edit-add-file-btn { height: 26px; padding: 0 9px; font-size: 9.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+.message-edit-existing-files { margin-top: 6px; }
+.message-edit-section-label { font-size: 8px; color: #64748b; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 2px; }
 .message-edited-badge { display: inline-block; margin-left: 6px; color: #94a3b8; font-size: 8px; font-style: italic; user-select: none; }
 .message-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .message-attachment-item { min-width: 130px; max-width: 220px; padding: 5px 8px; font-size: 8px; border-radius: 5px; border-color: #e2e8f0; background: #f8fafc; }

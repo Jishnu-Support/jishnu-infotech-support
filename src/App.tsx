@@ -330,7 +330,9 @@ function App() {
   const [sendingReply, setSendingReply] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
   const [editingMessageText, setEditingMessageText] = useState("");
+  const [editingMessageFiles, setEditingMessageFiles] = useState<File[]>([]);
   const [savingMessageEdit, setSavingMessageEdit] = useState(false);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
   const replyFileInputRef = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const knownTicketIds = useRef<Set<number> | null>(null);
@@ -386,6 +388,7 @@ function App() {
     setReplyFiles([]);
     setEditingMessageId(null);
     setEditingMessageText("");
+    setEditingMessageFiles([]);
   }, [selectedId]);
 
   useEffect(() => {
@@ -792,23 +795,43 @@ function App() {
     event.preventDefault();
     if (!selectedId || !messageId) return;
     const body = editingMessageText.trim();
-    if (!body) return;
+    if (!body && editingMessageFiles.length === 0) return;
     setActionError("");
     setSavingMessageEdit(true);
     try {
-      const result = await api<{ message: Message }>(`/tickets/${selectedId}/messages/${messageId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ body }),
-      });
+      const formData = new FormData();
+      formData.append("body", body);
+      for (const file of editingMessageFiles) {
+        formData.append("attachments", file);
+      }
+      const result = await api<{ message: Message; ticketAttachments?: TicketAttachment[] }>(
+        `/tickets/${selectedId}/messages/${messageId}`,
+        {
+          method: "PATCH",
+          body: formData,
+        }
+      );
       setDetail((prev) => {
         if (!prev) return prev;
+        const updatedMessages = prev.messages.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                body: result.message.body,
+                editedAt: result.message.editedAt,
+                attachments: result.message.attachments || m.attachments,
+              }
+            : m
+        );
         return {
           ...prev,
-          messages: prev.messages.map((m) => (m.id === messageId ? { ...m, body: result.message.body, editedAt: result.message.editedAt } : m)),
+          messages: updatedMessages,
+          attachments: result.ticketAttachments || prev.attachments,
         };
       });
       setEditingMessageId(null);
       setEditingMessageText("");
+      setEditingMessageFiles([]);
       setActionMessage("Message updated.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Could not update message.");
@@ -1231,7 +1254,7 @@ function App() {
                             <button
                               type="button"
                               className="message-edit-btn"
-                              onClick={() => { setEditingMessageId(message.id); setEditingMessageText(message.body); }}
+                              onClick={() => { setEditingMessageId(message.id); setEditingMessageText(message.body); setEditingMessageFiles([]); }}
                               title="Edit message"
                             >
                               <Pencil size={11} /> <span>Edit</span>
@@ -1244,26 +1267,92 @@ function App() {
                               value={editingMessageText}
                               onChange={(e) => setEditingMessageText(e.target.value)}
                               maxLength={5000}
-                              required
                               rows={3}
+                              placeholder="Edit your message…"
                               autoFocus
                             />
-                            <div className="message-edit-actions">
+                            {message.attachments && message.attachments.length > 0 && (
+                              <div className="message-edit-existing-files">
+                                <span className="message-edit-section-label">Existing attachments:</span>
+                                <div className="message-attachments">
+                                  {message.attachments.map((att) => (
+                                    <span key={att.id} className="ticket-attachment message-attachment-item">
+                                      <Paperclip size={12} />
+                                      <span title={att.name}>{att.name}</span>
+                                      <small>({formatBytes(att.sizeBytes)})</small>
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {editingMessageFiles.length > 0 && (
+                              <div className="reply-attachment-chips" aria-label="New attachments">
+                                {editingMessageFiles.map((file, idx) => (
+                                  <span key={`${file.name}-${idx}`} className="reply-attachment-chip">
+                                    <Paperclip size={12} />
+                                    <span title={file.name}>{file.name}</span>
+                                    <small>({formatBytes(file.size)})</small>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingMessageFiles((prev) => prev.filter((_, i) => i !== idx))}
+                                      aria-label={`Remove ${file.name}`}
+                                    >
+                                      <X size={12} />
+                                    </button>
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            <div className="message-edit-toolbar">
+                              <input
+                                ref={editFileInputRef}
+                                type="file"
+                                multiple
+                                style={{ display: "none" }}
+                                onChange={(e) => {
+                                  const files = Array.from(e.target.files || []);
+                                  if (!files.length) return;
+                                  setEditingMessageFiles((prev) => {
+                                    const combined = [...prev, ...files];
+                                    if (combined.length > 5) {
+                                      setActionError("You can attach up to 5 files per edit.");
+                                      return combined.slice(0, 5);
+                                    }
+                                    return combined;
+                                  });
+                                  e.target.value = "";
+                                }}
+                              />
                               <button
                                 type="button"
-                                className="button button-quiet"
-                                onClick={() => { setEditingMessageId(null); setEditingMessageText(""); }}
-                                disabled={savingMessageEdit}
+                                className="button button-quiet message-edit-add-file-btn"
+                                onClick={() => editFileInputRef.current?.click()}
+                                title="Attach files to this message"
                               >
-                                Cancel
+                                <Paperclip size={13} />
+                                <span>Add attachment</span>
                               </button>
-                              <button
-                                type="submit"
-                                className="button button-primary"
-                                disabled={savingMessageEdit || !editingMessageText.trim()}
-                              >
-                                {savingMessageEdit ? "Saving…" : "Save changes"}
-                              </button>
+                              <div className="message-edit-actions">
+                                <button
+                                  type="button"
+                                  className="button button-quiet"
+                                  onClick={() => {
+                                    setEditingMessageId(null);
+                                    setEditingMessageText("");
+                                    setEditingMessageFiles([]);
+                                  }}
+                                  disabled={savingMessageEdit}
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="submit"
+                                  className="button button-primary"
+                                  disabled={savingMessageEdit || (!editingMessageText.trim() && editingMessageFiles.length === 0)}
+                                >
+                                  {savingMessageEdit ? "Saving…" : "Save changes"}
+                                </button>
+                              </div>
                             </div>
                           </form>
                         ) : (

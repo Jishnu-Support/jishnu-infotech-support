@@ -3324,37 +3324,69 @@ app.post("/api/tickets/:id/messages", requireAuth, receiveAttachments, async (re
   res.status(201).json({ message, emailQueued: !isInternal && req.user.role !== "customer" && Boolean(ticket.customer_email) && emailIsConfigured() });
 });
 
-app.patch("/api/tickets/:ticketId/messages/:messageId", requireAuth, async (req, res) => {
+app.patch("/api/tickets/:ticketId/messages/:messageId", requireAuth, receiveAttachments, async (req, res) => {
   const ticketId = Number(req.params.ticketId);
   const messageId = Number(req.params.messageId);
+  const files = req.files || [];
   const body = typeof req.body.body === "string" ? req.body.body.trim() : "";
   if (!Number.isInteger(ticketId) || ticketId < 1 || !Number.isInteger(messageId) || messageId < 1) {
+    discardUploadedFiles(files);
     return res.status(400).json({ error: "Invalid ticket or message id." });
   }
 
   const isConsultant = req.user.role === "agent" || Boolean(req.user.is_internal_consultant || req.user.isInternalConsultant);
   if (!isConsultant) {
+    discardUploadedFiles(files);
     return res.status(403).json({ error: "Only consultants can edit chat messages." });
   }
 
   if (!await canAccessTicket(req.user, ticketId)) {
+    discardUploadedFiles(files);
     return res.status(404).json({ error: "Ticket not found." });
   }
 
   const existing = await db.prepare("SELECT * FROM messages WHERE id = ? AND ticket_id = ?").get(messageId, ticketId);
   if (!existing) {
+    discardUploadedFiles(files);
     return res.status(404).json({ error: "Message not found." });
   }
 
   if (!canEditChatMessage(req.user, existing)) {
+    discardUploadedFiles(files);
     return res.status(403).json({ error: "You can only edit consultant messages." });
   }
 
-  if (body.length < 1 || body.length > 5000) {
-    return res.status(400).json({ error: "Message must be between 1 and 5,000 characters." });
+  let verifiedFiles = [];
+  try {
+    verifiedFiles = await verifyTicketFiles(files);
+  } catch (error) {
+    discardUploadedFiles(files);
+    return res.status(400).json({ error: error.message });
   }
 
-  await db.prepare("UPDATE messages SET body = ?, edited_at = CURRENT_TIMESTAMP WHERE id = ?").run(body, messageId);
+  if (body.length < 1 && verifiedFiles.length === 0) {
+    discardUploadedFiles(files);
+    return res.status(400).json({ error: "Message body or attachment is required." });
+  }
+
+  if (body.length > 5000) {
+    discardUploadedFiles(files);
+    return res.status(400).json({ error: "Message must be 5,000 characters or fewer." });
+  }
+
+  const newBody = body.length > 0 ? body : existing.body;
+  await db.prepare("UPDATE messages SET body = ?, edited_at = CURRENT_TIMESTAMP WHERE id = ?").run(newBody, messageId);
+
+  if (verifiedFiles.length > 0) {
+    const insertAttachment = db.prepare(`
+      INSERT INTO ticket_attachments (ticket_id, uploaded_by, storage_name, original_name, mime_type, size_bytes, message_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const file of verifiedFiles) {
+      await insertAttachment.run(ticketId, req.user.id, file.filename, file.originalName, file.mimeType, file.size, messageId);
+    }
+    await db.prepare("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticketId);
+  }
 
   const updatedRow = await db.prepare(`
     SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, m.edited_at AS editedAt,
@@ -3363,19 +3395,26 @@ app.patch("/api/tickets/:ticketId/messages/:messageId", requireAuth, async (req,
     FROM messages m JOIN users u ON u.id = m.author_id WHERE m.id = ?
   `).get(messageId);
 
-  const attachments = await db.prepare(`
+  const messageAttachments = await db.prepare(`
     SELECT id, original_name AS name, mime_type AS mimeType, size_bytes AS sizeBytes,
            created_at AS createdAt, uploaded_by AS uploadedBy, message_id AS messageId
     FROM ticket_attachments WHERE message_id = ? ORDER BY id
   `).all(messageId);
+
+  const ticketAttachments = await db.prepare(`
+    SELECT id, original_name AS name, mime_type AS mimeType, size_bytes AS sizeBytes,
+           created_at AS createdAt, uploaded_by AS uploadedBy, message_id AS messageId
+    FROM ticket_attachments WHERE ticket_id = ? ORDER BY id
+  `).all(ticketId);
 
   res.json({
     message: {
       ...updatedRow,
       isInternal: Boolean(updatedRow.isInternal),
       authorIsInternalConsultant: Boolean(updatedRow.authorIsInternalConsultant),
-      attachments,
+      attachments: messageAttachments,
     },
+    ticketAttachments,
   });
 });
 
