@@ -213,14 +213,14 @@ h1, h2, p { margin-top: 0; }
 .agent-badge, .original-label { padding: 2px 4px; border-radius: 3px; color: #5775b4; background: #edf2ff; font-size: 7px; font-weight: 700; letter-spacing: .35px; }
 .original-label { color: #9a7b4c; background: #fbf4e7; }
 .message-content p { margin: 5px 0 0; color: #788494; font-size: 9px; line-height: 1.65; white-space: pre-wrap; }
-.message-edit-btn { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; padding: 2px 6px; border: 1px solid #e2e8f0; border-radius: 4px; background: #f8fafc; color: #64748b; font-size: 8px; font-weight: 500; cursor: pointer; transition: all .15s ease; }
-.message-edit-btn:hover { background: #edf2f7; border-color: #cbd5e1; color: #0f172a; }
+.message-edit-btn { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding: 2px 8px; border: 1px solid #cbd5e1; border-radius: 4px; background: #ffffff; color: #2563eb; font-size: 9px; font-weight: 600; cursor: pointer; transition: all .15s ease; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); }
+.message-edit-btn:hover { background: #eff6ff; border-color: #3b82f6; color: #1d4ed8; }
 .message-edit-form { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
-.message-edit-form textarea { width: 100%; min-height: 55px; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; font-size: 9px; line-height: 1.5; color: #334155; resize: vertical; outline: none; }
+.message-edit-form textarea { width: 100%; min-height: 60px; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; font-size: 10px; line-height: 1.5; color: #1e293b; resize: vertical; outline: none; }
 .message-edit-form textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #bfdbfe; }
 .message-edit-actions { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
-.message-edit-actions button { height: 24px; padding: 0 8px; font-size: 8px; }
-.message-edited-badge { display: inline-block; margin-left: 6px; color: #94a3b8; font-size: 7.5px; font-style: italic; user-select: none; }
+.message-edit-actions button { height: 26px; padding: 0 10px; font-size: 9.5px; font-weight: 600; }
+.message-edited-badge { display: inline-block; margin-left: 6px; color: #94a3b8; font-size: 8px; font-style: italic; user-select: none; }
 .message-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .message-attachment-item { min-width: 130px; max-width: 220px; padding: 5px 8px; font-size: 8px; border-radius: 5px; border-color: #e2e8f0; background: #f8fafc; }
 .message-attachment-item:hover { border-color: #cbd5e1; background: #f1f5f9; }

@@ -2910,13 +2910,15 @@ app.get("/api/tickets/:id", requireAuth, async (req, res) => {
 
   const rawMessages = (await db.prepare(`
     SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, m.edited_at AS editedAt,
-           u.id AS authorId, u.name AS authorName, u.role AS authorRole
+           u.id AS authorId, u.name AS authorName, u.role AS authorRole,
+           COALESCE(u.is_internal_consultant, 0) AS authorIsInternalConsultant
     FROM messages m JOIN users u ON u.id = m.author_id
     WHERE m.ticket_id = ? AND (? = 1 OR m.is_internal = 0) ORDER BY m.id
   `).all(ticketId, req.user.role === "agent" ? 1 : 0)
   ).map((message) => ({
     ...message,
     isInternal: Boolean(message.isInternal),
+    authorIsInternalConsultant: Boolean(message.authorIsInternalConsultant),
     attachments: attachmentsByMessage.get(message.id) || [],
   }));
 
@@ -3304,7 +3306,8 @@ app.post("/api/tickets/:id/messages", requireAuth, receiveAttachments, async (re
   }
   const messageRow = await db.prepare(`
     SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, m.edited_at AS editedAt,
-           u.id AS authorId, u.name AS authorName, u.role AS authorRole
+           u.id AS authorId, u.name AS authorName, u.role AS authorRole,
+           COALESCE(u.is_internal_consultant, 0) AS authorIsInternalConsultant
     FROM messages m JOIN users u ON u.id = m.author_id WHERE m.id = ?
   `).get(id);
   const messageAttachments = await db.prepare(`
@@ -3312,7 +3315,12 @@ app.post("/api/tickets/:id/messages", requireAuth, receiveAttachments, async (re
            created_at AS createdAt, uploaded_by AS uploadedBy, message_id AS messageId
     FROM ticket_attachments WHERE message_id = ? ORDER BY id
   `).all(id);
-  const message = { ...messageRow, isInternal: Boolean(messageRow.isInternal), attachments: messageAttachments };
+  const message = {
+    ...messageRow,
+    isInternal: Boolean(messageRow.isInternal),
+    authorIsInternalConsultant: Boolean(messageRow.authorIsInternalConsultant),
+    attachments: messageAttachments,
+  };
   res.status(201).json({ message, emailQueued: !isInternal && req.user.role !== "customer" && Boolean(ticket.customer_email) && emailIsConfigured() });
 });
 
@@ -3323,19 +3331,25 @@ app.patch("/api/tickets/:ticketId/messages/:messageId", requireAuth, async (req,
   if (!Number.isInteger(ticketId) || ticketId < 1 || !Number.isInteger(messageId) || messageId < 1) {
     return res.status(400).json({ error: "Invalid ticket or message id." });
   }
-  if (req.user.role !== "agent") {
+
+  const isConsultant = req.user.role === "agent" || Boolean(req.user.is_internal_consultant || req.user.isInternalConsultant);
+  if (!isConsultant) {
     return res.status(403).json({ error: "Only consultants can edit chat messages." });
   }
+
   if (!await canAccessTicket(req.user, ticketId)) {
     return res.status(404).json({ error: "Ticket not found." });
   }
+
   const existing = await db.prepare("SELECT * FROM messages WHERE id = ? AND ticket_id = ?").get(messageId, ticketId);
   if (!existing) {
     return res.status(404).json({ error: "Message not found." });
   }
+
   if (!canEditChatMessage(req.user, existing)) {
-    return res.status(403).json({ error: "You can only edit your own messages." });
+    return res.status(403).json({ error: "You can only edit consultant messages." });
   }
+
   if (body.length < 1 || body.length > 5000) {
     return res.status(400).json({ error: "Message must be between 1 and 5,000 characters." });
   }
@@ -3344,7 +3358,8 @@ app.patch("/api/tickets/:ticketId/messages/:messageId", requireAuth, async (req,
 
   const updatedRow = await db.prepare(`
     SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, m.edited_at AS editedAt,
-           u.id AS authorId, u.name AS authorName, u.role AS authorRole
+           u.id AS authorId, u.name AS authorName, u.role AS authorRole,
+           COALESCE(u.is_internal_consultant, 0) AS authorIsInternalConsultant
     FROM messages m JOIN users u ON u.id = m.author_id WHERE m.id = ?
   `).get(messageId);
 
@@ -3358,6 +3373,7 @@ app.patch("/api/tickets/:ticketId/messages/:messageId", requireAuth, async (req,
     message: {
       ...updatedRow,
       isInternal: Boolean(updatedRow.isInternal),
+      authorIsInternalConsultant: Boolean(updatedRow.authorIsInternalConsultant),
       attachments,
     },
   });

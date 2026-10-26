@@ -36,7 +36,7 @@ type Ticket = {
   firstResponseAt: string | null; isFirstResponseOverdue: boolean; isResolutionOverdue: boolean;
   rating: { rating: number; comment: string; createdAt: string; customerId: number } | null;
 };
-type Message = { id: number; body: string; isInternal: boolean; createdAt: string; editedAt?: string | null; authorId: number | null; authorName: string; authorRole: Role; attachments?: TicketAttachment[] };
+type Message = { id: number; body: string; isInternal: boolean; createdAt: string; editedAt?: string | null; authorId: number | null; authorName: string; authorRole: Role; authorIsInternalConsultant?: boolean; attachments?: TicketAttachment[] };
 type TicketAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string; uploadedBy: number; messageId?: number | null };
 type TicketDetail = { ticket: Ticket; messages: Message[]; attachments: TicketAttachment[]; assignmentHistory: AssignmentEvent[]; categories: TicketCategory[]; canRate: boolean };
 type Customer = {
@@ -1213,14 +1213,17 @@ function App() {
                 <div className="conversation">
                   {detail?.messages.map((message, index) => {
                     const fromAgent = message.authorRole === "agent";
-                    const canEdit = isAgent && message.authorId === user.id && message.id > 0;
+                    const isConsultantUser = isAgent || Boolean(user.isInternalConsultant) || Boolean(isInternalConsultantForTicket);
+                    const isOwnMessage = Number(message.authorId) === Number(user.id);
+                    const isConsultantMessage = message.authorRole === "agent" || Boolean(message.authorIsInternalConsultant) || Boolean(message.isInternal);
+                    const canEdit = isConsultantUser && (isOwnMessage || isSuperAdmin || (isAgent && isConsultantMessage)) && message.id > 0;
                     const isEditing = editingMessageId === message.id;
                     return <article key={message.id} className={`message ${fromAgent ? "message-agent" : ""} ${message.isInternal ? "message-internal" : ""}`}>
                       <div className={`message-avatar ${fromAgent ? "agent-message-avatar" : ""}`}>{initials(message.authorName)}</div>
                       <div className="message-content">
                         <div className="message-meta">
                           <strong>{message.authorName}</strong>
-                          {message.isInternal ? <span className="internal-note-badge">INTERNAL NOTE</span> : fromAgent && <span className="agent-badge">SUPPORT</span>}
+                          {message.isInternal ? <span className="internal-note-badge">INTERNAL NOTE</span> : fromAgent ? <span className="agent-badge">SUPPORT</span> : message.authorIsInternalConsultant ? <span className="agent-badge internal-consultant-badge" style={{ background: "#0f766e", color: "#fff" }}>INTERNAL CONSULTANT</span> : null}
                           <time>{timeAgo(message.createdAt)}</time>
                           {message.editedAt && <span className="message-edited-badge" title={`Edited on ${new Date(message.editedAt).toLocaleString()}`}>(edited)</span>}
                           {index === 0 && !message.isInternal && <span className="original-label">Original request</span>}
@@ -1229,9 +1232,9 @@ function App() {
                               type="button"
                               className="message-edit-btn"
                               onClick={() => { setEditingMessageId(message.id); setEditingMessageText(message.body); }}
-                              title="Edit your message"
+                              title="Edit message"
                             >
-                              <Pencil size={11} /> Edit
+                              <Pencil size={11} /> <span>Edit</span>
                             </button>
                           )}
                         </div>

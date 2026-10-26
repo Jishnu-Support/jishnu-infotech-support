@@ -74,6 +74,18 @@ export function canManageTicket(user, ticket, company) {
 
 export function canEditChatMessage(user, message) {
   if (!user || !message) return false;
-  if (user.role !== "agent") return false;
-  return Number(user.id) === Number(message.author_id ?? message.authorId);
+  const isConsultant = user.role === "agent" || Boolean(user.is_internal_consultant || user.isInternalConsultant);
+  if (!isConsultant) return false;
+
+  const authorId = Number(message.author_id ?? message.authorId);
+  const userId = Number(user.id);
+
+  if (userId === authorId) return true;
+  if (Boolean(user.is_admin)) return true;
+
+  if (user.role === "agent" && (message.is_internal || message.isInternal || message.authorRole === "agent")) {
+    return true;
+  }
+
+  return false;
 }

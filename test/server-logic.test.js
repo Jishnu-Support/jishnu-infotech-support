@@ -271,25 +271,34 @@ test("sanitizeAttachmentName sanitizes dangerous characters while preserving ext
   assert.equal(sanitizeAttachmentName(""), "attachment");
 });
 
-test("canEditChatMessage allows only consultants to edit their own messages", () => {
+test("canEditChatMessage allows only consultants to edit messages", () => {
   const agentUser = { id: 10, role: "agent" };
   const otherAgentUser = { id: 20, role: "agent" };
   const customerUser = { id: 10, role: "customer" };
   const internalConsultantUser = { id: 10, role: "customer", is_internal_consultant: 1 };
+  const adminUser = { id: 99, role: "agent", is_admin: 1 };
 
   const ownMessage = { id: 1, author_id: 10, body: "Hello" };
   const otherMessage = { id: 2, author_id: 20, body: "Hi" };
+  const agentMessage = { id: 3, author_id: 20, authorRole: "agent", body: "Agent response" };
 
   // Consultant editing own message -> allowed
   assert.equal(canEditChatMessage(agentUser, ownMessage), true);
 
-  // Consultant editing another user's message -> disallowed
-  assert.equal(canEditChatMessage(agentUser, otherMessage), false);
-  assert.equal(canEditChatMessage(otherAgentUser, ownMessage), false);
+  // Internal Consultant editing own message -> allowed
+  assert.equal(canEditChatMessage(internalConsultantUser, ownMessage), true);
 
-  // Customers (including internal consultants) editing message -> disallowed
+  // Agent editing another agent message -> allowed
+  assert.equal(canEditChatMessage(agentUser, agentMessage), true);
+
+  // Super Admin editing any message -> allowed
+  assert.equal(canEditChatMessage(adminUser, ownMessage), true);
+
+  // Consultant editing another customer message -> disallowed
+  assert.equal(canEditChatMessage(agentUser, otherMessage), false);
+
+  // Regular customer editing message -> disallowed
   assert.equal(canEditChatMessage(customerUser, ownMessage), false);
-  assert.equal(canEditChatMessage(internalConsultantUser, ownMessage), false);
 
   // Edge cases
   assert.equal(canEditChatMessage(null, ownMessage), false);
