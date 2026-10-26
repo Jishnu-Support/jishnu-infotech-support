@@ -71,3 +71,9 @@ export function canManageTicket(user, ticket, company) {
     isInternalConsultant: false,
   };
 }
+
+export function canEditChatMessage(user, message) {
+  if (!user || !message) return false;
+  if (user.role !== "agent") return false;
+  return Number(user.id) === Number(message.author_id ?? message.authorId);
+}

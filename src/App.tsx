@@ -36,7 +36,7 @@ type Ticket = {
   firstResponseAt: string | null; isFirstResponseOverdue: boolean; isResolutionOverdue: boolean;
   rating: { rating: number; comment: string; createdAt: string; customerId: number } | null;
 };
-type Message = { id: number; body: string; isInternal: boolean; createdAt: string; authorId: number | null; authorName: string; authorRole: Role; attachments?: TicketAttachment[] };
+type Message = { id: number; body: string; isInternal: boolean; createdAt: string; editedAt?: string | null; authorId: number | null; authorName: string; authorRole: Role; attachments?: TicketAttachment[] };
 type TicketAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string; uploadedBy: number; messageId?: number | null };
 type TicketDetail = { ticket: Ticket; messages: Message[]; attachments: TicketAttachment[]; assignmentHistory: AssignmentEvent[]; categories: TicketCategory[]; canRate: boolean };
 type Customer = {
@@ -328,6 +328,9 @@ function App() {
   const [replyInternal, setReplyInternal] = useState(false);
   const [replyFiles, setReplyFiles] = useState<File[]>([]);
   const [sendingReply, setSendingReply] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
+  const [editingMessageText, setEditingMessageText] = useState("");
+  const [savingMessageEdit, setSavingMessageEdit] = useState(false);
   const replyFileInputRef = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const knownTicketIds = useRef<Set<number> | null>(null);
@@ -378,7 +381,12 @@ function App() {
     return () => window.clearInterval(intervalId);
   }, [activeView, selectedId, user]);
 
-  useEffect(() => { setReplyInternal(false); setReplyFiles([]); }, [selectedId]);
+  useEffect(() => {
+    setReplyInternal(false);
+    setReplyFiles([]);
+    setEditingMessageId(null);
+    setEditingMessageText("");
+  }, [selectedId]);
 
   useEffect(() => {
     if (showCreate && user?.role === "customer") {
@@ -780,6 +788,35 @@ function App() {
     }
   }
 
+  async function saveEditedMessage(event: FormEvent<HTMLFormElement>, messageId: number) {
+    event.preventDefault();
+    if (!selectedId || !messageId) return;
+    const body = editingMessageText.trim();
+    if (!body) return;
+    setActionError("");
+    setSavingMessageEdit(true);
+    try {
+      const result = await api<{ message: Message }>(`/tickets/${selectedId}/messages/${messageId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ body }),
+      });
+      setDetail((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          messages: prev.messages.map((m) => (m.id === messageId ? { ...m, body: result.message.body, editedAt: result.message.editedAt } : m)),
+        };
+      });
+      setEditingMessageId(null);
+      setEditingMessageText("");
+      setActionMessage("Message updated.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not update message.");
+    } finally {
+      setSavingMessageEdit(false);
+    }
+  }
+
   async function createTicket(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -1176,11 +1213,59 @@ function App() {
                 <div className="conversation">
                   {detail?.messages.map((message, index) => {
                     const fromAgent = message.authorRole === "agent";
+                    const canEdit = isAgent && message.authorId === user.id && message.id > 0;
+                    const isEditing = editingMessageId === message.id;
                     return <article key={message.id} className={`message ${fromAgent ? "message-agent" : ""} ${message.isInternal ? "message-internal" : ""}`}>
                       <div className={`message-avatar ${fromAgent ? "agent-message-avatar" : ""}`}>{initials(message.authorName)}</div>
                       <div className="message-content">
-                        <div className="message-meta"><strong>{message.authorName}</strong>{message.isInternal ? <span className="internal-note-badge">INTERNAL NOTE</span> : fromAgent && <span className="agent-badge">SUPPORT</span>}<time>{timeAgo(message.createdAt)}</time>{index === 0 && !message.isInternal && <span className="original-label">Original request</span>}</div>
-                        <p>{message.body}</p>
+                        <div className="message-meta">
+                          <strong>{message.authorName}</strong>
+                          {message.isInternal ? <span className="internal-note-badge">INTERNAL NOTE</span> : fromAgent && <span className="agent-badge">SUPPORT</span>}
+                          <time>{timeAgo(message.createdAt)}</time>
+                          {message.editedAt && <span className="message-edited-badge" title={`Edited on ${new Date(message.editedAt).toLocaleString()}`}>(edited)</span>}
+                          {index === 0 && !message.isInternal && <span className="original-label">Original request</span>}
+                          {canEdit && !isEditing && (
+                            <button
+                              type="button"
+                              className="message-edit-btn"
+                              onClick={() => { setEditingMessageId(message.id); setEditingMessageText(message.body); }}
+                              title="Edit your message"
+                            >
+                              <Pencil size={11} /> Edit
+                            </button>
+                          )}
+                        </div>
+                        {isEditing ? (
+                          <form className="message-edit-form" onSubmit={(e) => saveEditedMessage(e, message.id)}>
+                            <textarea
+                              value={editingMessageText}
+                              onChange={(e) => setEditingMessageText(e.target.value)}
+                              maxLength={5000}
+                              required
+                              rows={3}
+                              autoFocus
+                            />
+                            <div className="message-edit-actions">
+                              <button
+                                type="button"
+                                className="button button-quiet"
+                                onClick={() => { setEditingMessageId(null); setEditingMessageText(""); }}
+                                disabled={savingMessageEdit}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="submit"
+                                className="button button-primary"
+                                disabled={savingMessageEdit || !editingMessageText.trim()}
+                              >
+                                {savingMessageEdit ? "Saving…" : "Save changes"}
+                              </button>
+                            </div>
+                          </form>
+                        ) : (
+                          <p>{message.body}</p>
+                        )}
                         {message.attachments && message.attachments.length > 0 && (
                           <div className="message-attachments" aria-label="Message attachments">
                             {message.attachments.map((attachment) => (

@@ -15,7 +15,7 @@ import { simpleParser } from "mailparser";
 import { parseHistoricalTicketWorkbook } from "./historical-ticket-import.js";
 import { db, initializeDatabase } from "./db.js";
 import { applicationUrl, emailIsConfigured, sendEmail } from "./email.js";
-import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket } from "./authz.js";
+import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket, canEditChatMessage } from "./authz.js";
 import { normalizedTicketMetadata, ticketCategories, isAllowedAttachment, sanitizeAttachmentName } from "./validation.js";
 
 const app = express();
@@ -2909,7 +2909,8 @@ app.get("/api/tickets/:id", requireAuth, async (req, res) => {
   }
 
   const rawMessages = (await db.prepare(`
-    SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, u.id AS authorId, u.name AS authorName, u.role AS authorRole
+    SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, m.edited_at AS editedAt,
+           u.id AS authorId, u.name AS authorName, u.role AS authorRole
     FROM messages m JOIN users u ON u.id = m.author_id
     WHERE m.ticket_id = ? AND (? = 1 OR m.is_internal = 0) ORDER BY m.id
   `).all(ticketId, req.user.role === "agent" ? 1 : 0)
@@ -3302,7 +3303,8 @@ app.post("/api/tickets/:id/messages", requireAuth, receiveAttachments, async (re
     throw error;
   }
   const messageRow = await db.prepare(`
-    SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, u.id AS authorId, u.name AS authorName, u.role AS authorRole
+    SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, m.edited_at AS editedAt,
+           u.id AS authorId, u.name AS authorName, u.role AS authorRole
     FROM messages m JOIN users u ON u.id = m.author_id WHERE m.id = ?
   `).get(id);
   const messageAttachments = await db.prepare(`
@@ -3312,6 +3314,53 @@ app.post("/api/tickets/:id/messages", requireAuth, receiveAttachments, async (re
   `).all(id);
   const message = { ...messageRow, isInternal: Boolean(messageRow.isInternal), attachments: messageAttachments };
   res.status(201).json({ message, emailQueued: !isInternal && req.user.role !== "customer" && Boolean(ticket.customer_email) && emailIsConfigured() });
+});
+
+app.patch("/api/tickets/:ticketId/messages/:messageId", requireAuth, async (req, res) => {
+  const ticketId = Number(req.params.ticketId);
+  const messageId = Number(req.params.messageId);
+  const body = typeof req.body.body === "string" ? req.body.body.trim() : "";
+  if (!Number.isInteger(ticketId) || ticketId < 1 || !Number.isInteger(messageId) || messageId < 1) {
+    return res.status(400).json({ error: "Invalid ticket or message id." });
+  }
+  if (req.user.role !== "agent") {
+    return res.status(403).json({ error: "Only consultants can edit chat messages." });
+  }
+  if (!await canAccessTicket(req.user, ticketId)) {
+    return res.status(404).json({ error: "Ticket not found." });
+  }
+  const existing = await db.prepare("SELECT * FROM messages WHERE id = ? AND ticket_id = ?").get(messageId, ticketId);
+  if (!existing) {
+    return res.status(404).json({ error: "Message not found." });
+  }
+  if (!canEditChatMessage(req.user, existing)) {
+    return res.status(403).json({ error: "You can only edit your own messages." });
+  }
+  if (body.length < 1 || body.length > 5000) {
+    return res.status(400).json({ error: "Message must be between 1 and 5,000 characters." });
+  }
+
+  await db.prepare("UPDATE messages SET body = ?, edited_at = CURRENT_TIMESTAMP WHERE id = ?").run(body, messageId);
+
+  const updatedRow = await db.prepare(`
+    SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, m.edited_at AS editedAt,
+           u.id AS authorId, u.name AS authorName, u.role AS authorRole
+    FROM messages m JOIN users u ON u.id = m.author_id WHERE m.id = ?
+  `).get(messageId);
+
+  const attachments = await db.prepare(`
+    SELECT id, original_name AS name, mime_type AS mimeType, size_bytes AS sizeBytes,
+           created_at AS createdAt, uploaded_by AS uploadedBy, message_id AS messageId
+    FROM ticket_attachments WHERE message_id = ? ORDER BY id
+  `).all(messageId);
+
+  res.json({
+    message: {
+      ...updatedRow,
+      isInternal: Boolean(updatedRow.isInternal),
+      attachments,
+    },
+  });
 });
 
 app.patch("/api/tickets/:id", requireAuth, async (req, res) => {

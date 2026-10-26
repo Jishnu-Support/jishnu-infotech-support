@@ -181,6 +181,7 @@ const schema = `
     body TEXT NOT NULL,
     is_internal INTEGER NOT NULL DEFAULT 0,
     email_message_id TEXT UNIQUE,
+    edited_at TIMESTAMP WITHOUT TIME ZONE,
     created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
   );
 
@@ -483,6 +484,9 @@ const schemaMigrations = [
   { version: 22, apply: () => db.exec(`
     ALTER TABLE ticket_attachments ADD COLUMN IF NOT EXISTS message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL;
     CREATE INDEX IF NOT EXISTS ticket_attachments_message_id_idx ON ticket_attachments(message_id);
+  `) },
+  { version: 23, apply: () => db.exec(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP WITHOUT TIME ZONE;
   `) },
 ];
 

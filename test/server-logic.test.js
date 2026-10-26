@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket } from "../server/authz.js";
+import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket, canEditChatMessage } from "../server/authz.js";
 import { normalizedTicketMetadata, isAllowedAttachment, sanitizeAttachmentName } from "../server/validation.js";
 import {
   priorityLabel,
@@ -269,4 +269,29 @@ test("sanitizeAttachmentName sanitizes dangerous characters while preserving ext
   assert.equal(sanitizeAttachmentName("illegal<file>:name?.xlsx"), "illegal_file__name_.xlsx");
   assert.equal(sanitizeAttachmentName("../../etc/passwd.txt"), "passwd.txt");
   assert.equal(sanitizeAttachmentName(""), "attachment");
+});
+
+test("canEditChatMessage allows only consultants to edit their own messages", () => {
+  const agentUser = { id: 10, role: "agent" };
+  const otherAgentUser = { id: 20, role: "agent" };
+  const customerUser = { id: 10, role: "customer" };
+  const internalConsultantUser = { id: 10, role: "customer", is_internal_consultant: 1 };
+
+  const ownMessage = { id: 1, author_id: 10, body: "Hello" };
+  const otherMessage = { id: 2, author_id: 20, body: "Hi" };
+
+  // Consultant editing own message -> allowed
+  assert.equal(canEditChatMessage(agentUser, ownMessage), true);
+
+  // Consultant editing another user's message -> disallowed
+  assert.equal(canEditChatMessage(agentUser, otherMessage), false);
+  assert.equal(canEditChatMessage(otherAgentUser, ownMessage), false);
+
+  // Customers (including internal consultants) editing message -> disallowed
+  assert.equal(canEditChatMessage(customerUser, ownMessage), false);
+  assert.equal(canEditChatMessage(internalConsultantUser, ownMessage), false);
+
+  // Edge cases
+  assert.equal(canEditChatMessage(null, ownMessage), false);
+  assert.equal(canEditChatMessage(agentUser, null), false);
 });
