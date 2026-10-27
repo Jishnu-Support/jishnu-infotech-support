@@ -1103,12 +1103,14 @@ function App() {
     setInboxRefreshError("");
     setRefreshSuccess(false);
 
-    // If search is active or list is currently empty, clear search and reset filters to restore ticket list
-    if (search || forceResetFilters || filteredTickets.length === 0) {
+    // Only reset search or filters if explicitly requested or if search query was entered
+    if (forceResetFilters) {
       setSearch("");
       setFilter("all");
       setCompanyFilter("all");
       setPriorityFilter("all");
+    } else if (search) {
+      setSearch("");
     }
 
     try {
@@ -1796,17 +1798,67 @@ function App() {
                 {filteredTickets.length === 0 ? (
                   <div className="empty-list">
                     <Inbox size={28} />
-                    <strong>No tickets found</strong>
-                    <span>{search ? `No tickets match "${search}"` : "Try another filter or create a new ticket."}</span>
-                    {(search || filter !== "all" || companyFilter !== "all" || priorityFilter !== "all") && (
-                      <button
-                        type="button"
-                        className="button button-quiet"
-                        style={{ marginTop: 8 }}
-                        onClick={() => refreshInboxNow(true)}
-                      >
-                        Reset filters & refresh
-                      </button>
+                    {search ? (
+                      <>
+                        <strong>No tickets found</strong>
+                        <span>No tickets match "{search}"</span>
+                        <button
+                          type="button"
+                          className="button button-quiet"
+                          style={{ marginTop: 8 }}
+                          onClick={() => setSearch("")}
+                        >
+                          Clear search filter
+                        </button>
+                      </>
+                    ) : companyFilter !== "all" ? (
+                      <>
+                        <strong>No tickets for this customer</strong>
+                        <span>There are no tickets associated with this customer.</span>
+                        <button
+                          type="button"
+                          className="button button-quiet"
+                          style={{ marginTop: 8 }}
+                          onClick={() => setCompanyFilter("all")}
+                        >
+                          Show all customers
+                        </button>
+                      </>
+                    ) : filter !== "all" ? (
+                      <>
+                        <strong>
+                          {filter === "open"
+                            ? "No open tickets"
+                            : filter === "in_progress"
+                              ? "No tickets in progress"
+                              : filter === "waiting"
+                                ? "No waiting tickets"
+                                : "No closed tickets"}
+                        </strong>
+                        <span>
+                          {filter === "open"
+                            ? "There are currently no open tickets."
+                            : filter === "in_progress"
+                              ? "There are currently no tickets in progress."
+                              : filter === "waiting"
+                                ? "There are currently no tickets waiting."
+                                : "There are currently no closed tickets."}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <strong>No tickets found</strong>
+                        <span>Try creating a new ticket or check back later.</span>
+                        <button
+                          type="button"
+                          className="button button-quiet"
+                          style={{ marginTop: 8 }}
+                          onClick={() => refreshInboxNow()}
+                        >
+                          <RefreshCw size={12} className={refreshingInbox ? "refresh-spinning" : ""} />
+                          {refreshingInbox ? "Refreshing…" : "Refresh"}
+                        </button>
+                      </>
                     )}
                   </div>
                 ) : filteredTickets.map((ticket) => (
