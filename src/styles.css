@@ -81,7 +81,11 @@ h1, h2, p { margin-top: 0; }
 .button-quiet { color: #657286; border-color: #e4e8ed; background: white; }
 .button-quiet:hover { background: #f7f9fb; }
 .metrics-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin: 1px 0 21px; }
-.metric-card { min-width: 0; height: 61px; display: flex; align-items: center; gap: 8px; padding: 9px; border: 1px solid #e9edf1; border-radius: 7px; background: #fff; }
+.metric-card { min-width: 0; height: 61px; display: flex; align-items: center; gap: 8px; padding: 9px; border: 1px solid #e9edf1; border-radius: 7px; background: #fff; font: inherit; text-align: left; cursor: pointer; user-select: none; transition: background .15s, border-color .15s, box-shadow .15s, transform .1s; }
+.metric-card:hover { background: #f8fafc; border-color: #dbe3ed; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04); }
+.metric-card:active { transform: translateY(1px); }
+.metric-card.active { background: #f5f8ff; border-color: #3b82f6; box-shadow: 0 0 0 1px #3b82f6; }
+.metric-card.active strong { color: #1d4ed8; }
 .metric-icon { display: grid; flex: none; place-items: center; width: 27px; height: 27px; border-radius: 7px; }
 .metric-icon.blue { color: #4672d5; background: #edf2ff; }
 .metric-icon.violet { color: #8b69d5; background: #f4efff; }

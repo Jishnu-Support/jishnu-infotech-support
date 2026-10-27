@@ -1707,10 +1707,38 @@ function App() {
               </div>
 
               {isAgent && <div className="metrics-row">
-                <Metric icon={<Inbox size={15} />} label="Open tickets" value={inboxCounts.open} tone="blue" />
-                <Metric icon={<Activity size={15} />} label="In progress" value={inboxCounts.in_progress} tone="violet" />
-                <Metric icon={<Clock3 size={15} />} label="Waiting" value={inboxCounts.waiting} tone="amber" />
-                <Metric icon={<CheckCheck size={15} />} label="Closed" value={inboxCounts.resolved} tone="green" />
+                <Metric
+                  icon={<Inbox size={15} />}
+                  label="Open tickets"
+                  value={inboxCounts.open}
+                  tone="blue"
+                  active={filter === "open"}
+                  onClick={() => setFilter(filter === "open" ? "all" : "open")}
+                />
+                <Metric
+                  icon={<Activity size={15} />}
+                  label="In progress"
+                  value={inboxCounts.in_progress}
+                  tone="violet"
+                  active={filter === "in_progress"}
+                  onClick={() => setFilter(filter === "in_progress" ? "all" : "in_progress")}
+                />
+                <Metric
+                  icon={<Clock3 size={15} />}
+                  label="Waiting"
+                  value={inboxCounts.waiting}
+                  tone="amber"
+                  active={filter === "waiting"}
+                  onClick={() => setFilter(filter === "waiting" ? "all" : "waiting")}
+                />
+                <Metric
+                  icon={<CheckCheck size={15} />}
+                  label="Closed"
+                  value={inboxCounts.resolved}
+                  tone="green"
+                  active={filter === "resolved"}
+                  onClick={() => setFilter(filter === "resolved" ? "all" : "resolved")}
+                />
               </div>}
 
               <div className="list-toolbar">
@@ -2639,8 +2667,35 @@ function CustomerRatingForm({ ticket, submitted, onClose, onSubmit }: {
   </div>;
 }
 
-function Metric({ icon, label, value, tone }: { icon: ReactNode; label: string; value: number; tone: string }) {
-  return <div className="metric-card"><div className={`metric-icon ${tone}`}>{icon}</div><div><span>{label}</span><strong>{String(value).padStart(2, "0")}</strong></div></div>;
+function Metric({
+  icon,
+  label,
+  value,
+  tone,
+  active,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: number;
+  tone: string;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`metric-card ${active ? "active" : ""} ${onClick ? "clickable" : ""}`}
+      onClick={onClick}
+      aria-pressed={active}
+    >
+      <div className={`metric-icon ${tone}`}>{icon}</div>
+      <div>
+        <span>{label}</span>
+        <strong>{String(value).padStart(2, "0")}</strong>
+      </div>
+    </button>
+  );
 }
 
 function ManualTicketEntry({ onCreated }: { onCreated: (ticketId: number) => Promise<void> }) {
