@@ -1000,7 +1000,7 @@ function App() {
   const knownNotificationIds = useRef<Set<number> | null>(null);
 
   const refreshTickets = useCallback(async () => {
-    const result = await api<{ tickets: Ticket[] }>("/tickets", { cache: "no-store" });
+    const result = await api<{ tickets: Ticket[] }>(`/tickets?_t=${Date.now()}`, { cache: "no-store" });
     if (user?.role === "customer") {
       const knownIds = knownTicketIds.current;
       if (knownIds) {
@@ -1097,17 +1097,26 @@ function App() {
     setUnreadCount(result.unreadCount);
   }, [user]);
 
-  async function refreshInboxNow() {
+  async function refreshInboxNow(forceResetFilters = false) {
     if (refreshingInbox) return;
     setRefreshingInbox(true);
     setInboxRefreshError("");
     setRefreshSuccess(false);
+
+    // If search is active or list is currently empty, clear search and reset filters to restore ticket list
+    if (search || forceResetFilters || filteredTickets.length === 0) {
+      setSearch("");
+      setFilter("all");
+      setCompanyFilter("all");
+      setPriorityFilter("all");
+    }
+
     try {
       const minSpin = new Promise((resolve) => window.setTimeout(resolve, 600));
       const tasks: Promise<unknown>[] = [refreshTickets()];
       if (selectedId) {
         tasks.push(
-          api<TicketDetail>(`/tickets/${selectedId}`, { cache: "no-store" })
+          api<TicketDetail>(`/tickets/${selectedId}?_t=${Date.now()}`, { cache: "no-store" })
             .then(setDetail)
             .catch(() => {})
         );
@@ -1115,19 +1124,19 @@ function App() {
       if (user?.role === "agent") {
         tasks.push(refreshNotifications());
         tasks.push(
-          api<{ agents: Customer[] }>("/agents")
+          api<{ agents: Customer[] }>(`/agents?_t=${Date.now()}`)
             .then(({ agents: loaded }) => setAgents(loaded))
             .catch(() => {})
         );
         tasks.push(
-          api<{ customers: Customer[] }>("/customers")
+          api<{ customers: Customer[] }>(`/customers?_t=${Date.now()}`)
             .then(({ customers: loaded }) => setCustomers(loaded))
             .catch(() => {})
         );
       }
       if (user?.role === "customer" && user.companyId) {
         tasks.push(
-          api<{ companyHasInternalConsultants: boolean }>("/tickets/routing-options")
+          api<{ companyHasInternalConsultants: boolean }>(`/tickets/routing-options?_t=${Date.now()}`)
             .then((res) => setCompanyHasInternalConsultants(Boolean(res.companyHasInternalConsultants)))
             .catch(() => {})
         );
@@ -1207,7 +1216,12 @@ function App() {
     const matchPriority = consultantInbox || priorityFilter === "all" || ticket.priority === priorityFilter;
     const matchCompany = !consultantInbox || companyFilter === "all" || ticket.company?.id === Number(companyFilter);
     const query = search.trim().toLowerCase();
-    const matchSearch = !query || `${ticket.subject} ${ticket.customer.name} ${ticket.lastMessage}`.toLowerCase().includes(query);
+    const cleanId = query.replace(/^#/, "");
+    const matchSearch = !query ||
+      (cleanId && String(ticket.id) === cleanId) ||
+      (cleanId && String(ticket.id).padStart(4, "0") === cleanId) ||
+      (cleanId && String(ticket.id).includes(cleanId)) ||
+      `${ticket.subject} ${ticket.customer.name} ${ticket.lastMessage}`.toLowerCase().includes(query);
     const matchView = activeView === "assigned"
       ? ticket.assignee?.id === user?.id
       : activeView === "my-tickets"
@@ -1689,7 +1703,30 @@ function App() {
           {user.role === "customer" && user.companyName && <div className="topbar-company-name" title={user.companyName}>{user.companyName}</div>}
           <div className="topbar-actions">
             {user.role === "customer" && availableCompanies.length > 1 && <button type="button" className="company-switcher" onClick={() => setShowCompanySelection(true)}><Building2 size={14} /><span>{user.companyName || "Select a company"}</span><ArrowDown size={13} /></button>}
-            {(activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets") && <div className="search-box"><Search size={15} /><input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tickets…" /><kbd>Ctrl K</kbd></div>}
+            {(activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets") && (
+              <div className="search-box">
+                <Search size={15} />
+                <input
+                  ref={searchInput}
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search tickets by ID, title, customer…"
+                />
+                {search ? (
+                  <button
+                    type="button"
+                    className="search-clear-btn"
+                    aria-label="Clear search"
+                    title="Clear search"
+                    onClick={() => setSearch("")}
+                  >
+                    <X size={13} />
+                  </button>
+                ) : (
+                  <kbd>Ctrl K</kbd>
+                )}
+              </div>
+            )}
             <div className="topbar-avatar">{initials(user.name)}</div>
           </div>
         </header>
@@ -1757,7 +1794,21 @@ function App() {
 
               <div className="ticket-list">
                 {filteredTickets.length === 0 ? (
-                  <div className="empty-list"><Inbox size={28} /><strong>No tickets found</strong><span>Try another filter or create a new ticket.</span></div>
+                  <div className="empty-list">
+                    <Inbox size={28} />
+                    <strong>No tickets found</strong>
+                    <span>{search ? `No tickets match "${search}"` : "Try another filter or create a new ticket."}</span>
+                    {(search || filter !== "all" || companyFilter !== "all" || priorityFilter !== "all") && (
+                      <button
+                        type="button"
+                        className="button button-quiet"
+                        style={{ marginTop: 8 }}
+                        onClick={() => refreshInboxNow(true)}
+                      >
+                        Reset filters & refresh
+                      </button>
+                    )}
+                  </div>
                 ) : filteredTickets.map((ticket) => (
                   <button key={ticket.id} className={`ticket-row ${selectedId === ticket.id ? "selected" : ""}`} onClick={() => setSelectedId(ticket.id)}>
                     <div className="ticket-row-top">
@@ -1785,7 +1836,7 @@ function App() {
                   <button
                     type="button"
                     className={`footer-refresh ${refreshingInbox ? "is-refreshing" : ""}`}
-                    onClick={refreshInboxNow}
+                    onClick={() => refreshInboxNow()}
                     disabled={refreshingInbox}
                     aria-label="Refresh tickets and inbox"
                     title="Click to refresh tickets and updates"
