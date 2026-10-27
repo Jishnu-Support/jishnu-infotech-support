@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { renderAsync } from "docx-preview";
+import * as XLSX from "xlsx";
+import JSZip from "jszip";
 import {
   Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowRightLeft, ArrowUp, BarChart3, Bell, Check,
   CheckCheck, CheckCircle2, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2, ClipboardPlus,
   Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen, Megaphone, Pencil, ExternalLink, Youtube,
+  FileText, FileSpreadsheet, FileArchive, Copy, ZoomIn, ZoomOut, RotateCcw, File as FileIcon,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 
@@ -160,26 +164,483 @@ function formatBytes(bytes: number) {
   return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+type FileCategory = "image" | "audio" | "video" | "pdf" | "docx" | "spreadsheet" | "presentation" | "text" | "zip" | "other";
+
+function getFileCategory(name: string, mimeType: string): FileCategory {
+  const ext = (name.toLowerCase().split(".").pop() || "").trim();
+  const mime = (mimeType || "").toLowerCase();
+
+  if (mime.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "tiff", "tif", "avif"].includes(ext)) {
+    return "image";
+  }
+  if (mime.startsWith("audio/") || ["mp3", "wav", "ogg", "m4a", "aac", "flac", "wma"].includes(ext)) {
+    return "audio";
+  }
+  if (mime.startsWith("video/") || ["mp4", "webm", "ogg", "mov", "mkv", "avi", "wmv", "m4v"].includes(ext)) {
+    return "video";
+  }
+  if (mime === "application/pdf" || ext === "pdf") {
+    return "pdf";
+  }
+  if (
+    ext === "docx" ||
+    ext === "doc" ||
+    mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    mime === "application/msword"
+  ) {
+    return "docx";
+  }
+  if (
+    ["xlsx", "xls", "csv", "tsv", "ods"].includes(ext) ||
+    mime.includes("spreadsheet") ||
+    mime.includes("excel") ||
+    mime === "text/csv"
+  ) {
+    return "spreadsheet";
+  }
+  if (
+    ["pptx", "ppt", "odp"].includes(ext) ||
+    mime.includes("presentation") ||
+    mime.includes("powerpoint")
+  ) {
+    return "presentation";
+  }
+  if (
+    ["zip", "rar", "7z", "tar", "gz"].includes(ext) ||
+    mime.includes("zip") ||
+    mime.includes("compressed")
+  ) {
+    return "zip";
+  }
+  if (
+    mime.startsWith("text/") ||
+    mime === "application/json" ||
+    mime === "application/xml" ||
+    mime === "application/javascript" ||
+    mime === "application/rtf" ||
+    [
+      "txt", "text", "md", "markdown", "log", "json", "xml", "html", "htm",
+      "css", "scss", "sass", "js", "jsx", "ts", "tsx", "py", "sql", "sh",
+      "bat", "cmd", "ps1", "yaml", "yml", "ini", "env", "conf", "config",
+      "rtf", "c", "cpp", "h", "hpp", "cs", "java", "go", "rs", "php", "rb", "diff", "patch"
+    ].includes(ext)
+  ) {
+    return "text";
+  }
+  return "other";
+}
+
 function PlatformFileViewer({ file, onClose }: { file: PlatformFilePreview; onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [textContent, setTextContent] = useState<string>("");
+  const [copied, setCopied] = useState(false);
+  const [imageZoom, setImageZoom] = useState(1);
+
+  const [workbook, setWorkbook] = useState<XLSX.WorkBook | null>(null);
+  const [sheetNames, setSheetNames] = useState<string[]>([]);
+  const [activeSheet, setActiveSheet] = useState<string>("");
+  const [sheetHtml, setSheetHtml] = useState<string>("");
+
+  const [slides, setSlides] = useState<Array<{ number: number; text: string }>>([]);
+  const [zipEntries, setZipEntries] = useState<Array<{ name: string; size: number; isDir: boolean }>>([]);
+
+  const docxContainerRef = useRef<HTMLDivElement>(null);
+  const category = useMemo(() => getFileCategory(file.name, file.mimeType), [file.name, file.mimeType]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
-  const mime = file.mimeType.toLowerCase();
-  const browserPreviewable = mime === "application/pdf" || mime.startsWith("text/") || mime === "application/json" || mime === "application/xml" || mime === "application/rtf";
-  return createPortal(<div className="platform-viewer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="platform-viewer" role="dialog" aria-modal="true" aria-label={`File viewer: ${file.name}`}>
-      <header><div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div><button className="button button-quiet" type="button" onClick={onClose}><X size={15} /> Close</button></header>
-      <div className="platform-viewer-content">
-        {mime.startsWith("image/") ? <img src={file.url} alt={file.name} onContextMenu={(event) => event.preventDefault()} />
-          : mime.startsWith("audio/") ? <audio controls controlsList="nodownload" preload="metadata" src={file.url} onContextMenu={(event) => event.preventDefault()} />
-            : mime.startsWith("video/") ? <video controls controlsList="nodownload" disablePictureInPicture preload="metadata" src={file.url} onContextMenu={(event) => event.preventDefault()} />
-              : browserPreviewable ? <iframe title={`View ${file.name}`} src={file.url} />
-                : <div className="platform-viewer-unsupported"><strong>Preview unavailable for this file type</strong><span>This format needs a compatible viewer. It has not been opened or downloaded.</span></div>}
-      </div>
-    </section>
-  </div>, document.body);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setTextContent("");
+    setWorkbook(null);
+    setSheetNames([]);
+    setActiveSheet("");
+    setSheetHtml("");
+    setSlides([]);
+    setZipEntries([]);
+    setImageZoom(1);
+
+    async function loadContent() {
+      try {
+        if (category === "image" || category === "audio" || category === "video" || category === "pdf" || category === "other") {
+          setLoading(false);
+          return;
+        }
+
+        const response = await fetch(file.url);
+        if (!response.ok) {
+          throw new Error(`Failed to load file (${response.status} ${response.statusText})`);
+        }
+
+        if (cancelled) return;
+
+        if (category === "docx") {
+          const blob = await response.blob();
+          if (cancelled) return;
+          if (docxContainerRef.current) {
+            docxContainerRef.current.innerHTML = "";
+            try {
+              await renderAsync(blob, docxContainerRef.current, undefined, {
+                inWrapper: false,
+                ignoreWidth: false,
+                ignoreHeight: false,
+                breakPages: true,
+              });
+            } catch (renderError) {
+              console.warn("docx-preview failed, attempting fallback text read", renderError);
+              const text = await blob.text();
+              const readable = text.replace(/[^\x20-\x7E\t\r\n]/g, " ").replace(/\s{2,}/g, " ").trim();
+              if (readable.length > 50) {
+                setTextContent(readable.slice(0, 10000));
+              } else {
+                throw new Error("This Word document format could not be rendered inline. Use the Download or Open button above to view it.");
+              }
+            }
+          }
+          setLoading(false);
+          return;
+        }
+
+        if (category === "spreadsheet") {
+          const arrayBuffer = await response.arrayBuffer();
+          if (cancelled) return;
+          const wb = XLSX.read(arrayBuffer, { type: "array" });
+          setWorkbook(wb);
+          setSheetNames(wb.SheetNames);
+          const initialSheet = wb.SheetNames[0] || "";
+          setActiveSheet(initialSheet);
+          if (initialSheet && wb.Sheets[initialSheet]) {
+            const html = XLSX.utils.sheet_to_html(wb.Sheets[initialSheet], {
+              id: "platform-spreadsheet-table",
+              editable: false,
+            });
+            setSheetHtml(html);
+          }
+          setLoading(false);
+          return;
+        }
+
+        if (category === "presentation") {
+          const blob = await response.blob();
+          if (cancelled) return;
+          try {
+            const zip = await JSZip.loadAsync(blob);
+            const slideFiles = Object.keys(zip.files).filter((k) => /^ppt\/slides\/slide\d+\.xml$/i.test(k));
+            slideFiles.sort((a, b) => {
+              const numA = parseInt(a.match(/\d+/)![0], 10);
+              const numB = parseInt(b.match(/\d+/)![0], 10);
+              return numA - numB;
+            });
+            const parsedSlides: Array<{ number: number; text: string }> = [];
+            for (let i = 0; i < slideFiles.length; i++) {
+              const xml = await zip.files[slideFiles[i]].async("text");
+              const matches = xml.match(/<a:t>([^<]*)<\/a:t>/g) || [];
+              const slideText = matches.map((m) => m.replace(/<\/?a:t>/g, "").trim()).filter(Boolean).join(" ");
+              parsedSlides.push({ number: i + 1, text: slideText || "(Slide contains shapes or diagrams)" });
+            }
+            setSlides(parsedSlides);
+          } catch (zipErr) {
+            console.warn("PPTX unzip failed", zipErr);
+            throw new Error("This presentation format could not be extracted inline. Use the Download or Open button above.");
+          }
+          setLoading(false);
+          return;
+        }
+
+        if (category === "zip") {
+          const blob = await response.blob();
+          if (cancelled) return;
+          const zip = await JSZip.loadAsync(blob);
+          const entries: Array<{ name: string; size: number; isDir: boolean }> = [];
+          zip.forEach((relativePath, entry) => {
+            entries.push({
+              name: relativePath,
+              size: (entry as any)._data?.uncompressedSize || 0,
+              isDir: entry.dir,
+            });
+          });
+          entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
+          setZipEntries(entries);
+          setLoading(false);
+          return;
+        }
+
+        if (category === "text") {
+          const text = await response.text();
+          if (cancelled) return;
+          let formatted = text;
+          if (file.name.toLowerCase().endsWith(".json")) {
+            try {
+              formatted = JSON.stringify(JSON.parse(text), null, 2);
+            } catch {}
+          }
+          setTextContent(formatted);
+          setLoading(false);
+          return;
+        }
+
+        setLoading(false);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Could not preview this file.");
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadContent();
+    return () => {
+      cancelled = true;
+    };
+  }, [file.url, file.name, category]);
+
+  function handleSheetChange(sheetName: string) {
+    setActiveSheet(sheetName);
+    if (workbook && workbook.Sheets[sheetName]) {
+      const html = XLSX.utils.sheet_to_html(workbook.Sheets[sheetName], {
+        id: "platform-spreadsheet-table",
+        editable: false,
+      });
+      setSheetHtml(html);
+    }
+  }
+
+  function copyText() {
+    if (!textContent) return;
+    navigator.clipboard.writeText(textContent).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  const badgeLabel = {
+    docx: "Word Document",
+    spreadsheet: "Spreadsheet",
+    presentation: "Presentation",
+    pdf: "PDF Document",
+    image: "Image",
+    video: "Video",
+    audio: "Audio",
+    text: "Code / Text",
+    zip: "ZIP Archive",
+    other: "File",
+  }[category];
+
+  return createPortal(
+    <div className="platform-viewer-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <section className="platform-viewer" role="dialog" aria-modal="true" aria-label={`File viewer: ${file.name}`}>
+        <header className="platform-viewer-header">
+          <div className="platform-viewer-title-area">
+            <div className="platform-viewer-name-row">
+              <strong title={file.name}>{file.name}</strong>
+              <span className={`platform-viewer-badge platform-viewer-badge-${category}`}>{badgeLabel}</span>
+            </div>
+            <small>{formatBytes(file.sizeBytes)}</small>
+          </div>
+          <div className="platform-viewer-header-actions">
+            <a href={file.url} target="_blank" rel="noopener noreferrer" className="button button-quiet" title="Open in new window">
+              <ExternalLink size={14} /> <span>Open</span>
+            </a>
+            <a href={file.url} download={file.name} className="button button-quiet" title="Download file">
+              <Download size={14} /> <span>Download</span>
+            </a>
+            <button className="button button-quiet" type="button" onClick={onClose} aria-label="Close viewer">
+              <X size={15} /> <span>Close</span>
+            </button>
+          </div>
+        </header>
+
+        <div className="platform-viewer-content">
+          {loading && (
+            <div className="platform-viewer-loading">
+              <RefreshCw size={24} className="spinning" />
+              <span>Loading preview for {file.name}…</span>
+            </div>
+          )}
+
+          {error && !loading && (
+            <div className="platform-viewer-unsupported">
+              <FileIcon size={36} color="#94a3b8" />
+              <strong>Preview unavailable inline</strong>
+              <span>{error}</span>
+              <div className="platform-viewer-fallback-actions">
+                <a href={file.url} download={file.name} className="button button-primary">
+                  <Download size={14} /> Download {file.name}
+                </a>
+                <a href={file.url} target="_blank" rel="noopener noreferrer" className="button button-quiet">
+                  <ExternalLink size={14} /> Open in new tab
+                </a>
+              </div>
+            </div>
+          )}
+
+          {!loading && !error && (
+            <>
+              {category === "image" && (
+                <div className="platform-image-wrapper">
+                  <div className="platform-image-toolbar">
+                    <button type="button" className="button button-quiet" onClick={() => setImageZoom((z) => Math.max(0.25, z - 0.25))} title="Zoom out">
+                      <ZoomOut size={13} />
+                    </button>
+                    <span className="platform-zoom-label">{Math.round(imageZoom * 100)}%</span>
+                    <button type="button" className="button button-quiet" onClick={() => setImageZoom((z) => Math.min(3, z + 0.25))} title="Zoom in">
+                      <ZoomIn size={13} />
+                    </button>
+                    <button type="button" className="button button-quiet" onClick={() => setImageZoom(1)} title="Reset zoom">
+                      <RotateCcw size={13} />
+                    </button>
+                  </div>
+                  <div className="platform-image-scroll">
+                    <img
+                      src={file.url}
+                      alt={file.name}
+                      style={{ transform: `scale(${imageZoom})`, transformOrigin: "center center", transition: "transform 0.15s ease" }}
+                      onContextMenu={(e) => e.preventDefault()}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {category === "audio" && (
+                <div className="platform-media-card">
+                  <FileText size={48} color="#2563eb" />
+                  <strong>{file.name}</strong>
+                  <audio controls controlsList="nodownload" preload="metadata" src={file.url} onContextMenu={(e) => e.preventDefault()} />
+                </div>
+              )}
+
+              {category === "video" && (
+                <video controls controlsList="nodownload" disablePictureInPicture preload="metadata" src={file.url} onContextMenu={(e) => e.preventDefault()} />
+              )}
+
+              {category === "pdf" && (
+                <iframe title={`View ${file.name}`} src={file.url} className="platform-viewer-iframe" />
+              )}
+
+              {category === "docx" && (
+                <div className="platform-docx-scroll-container">
+                  <div ref={docxContainerRef} className="platform-docx-host" />
+                  {textContent && (
+                    <div className="platform-docx-text-fallback">
+                      <p>{textContent}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {category === "spreadsheet" && (
+                <div className="platform-spreadsheet-wrapper">
+                  {sheetNames.length > 1 && (
+                    <div className="platform-spreadsheet-tabs">
+                      {sheetNames.map((name) => (
+                        <button
+                          key={name}
+                          type="button"
+                          className={`platform-sheet-tab ${name === activeSheet ? "active" : ""}`}
+                          onClick={() => handleSheetChange(name)}
+                        >
+                          <FileSpreadsheet size={13} />
+                          <span>{name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div
+                    className="platform-spreadsheet-table-host"
+                    dangerouslySetInnerHTML={{ __html: sheetHtml }}
+                  />
+                </div>
+              )}
+
+              {category === "presentation" && (
+                <div className="platform-presentation-scroll">
+                  <div className="platform-slides-list">
+                    {slides.length === 0 ? (
+                      <div className="platform-viewer-unsupported">
+                        <strong>No slides found in this presentation</strong>
+                      </div>
+                    ) : (
+                      slides.map((slide) => (
+                        <article key={slide.number} className="platform-slide-card">
+                          <div className="platform-slide-header">
+                            <span className="platform-slide-number">Slide {slide.number}</span>
+                          </div>
+                          <div className="platform-slide-body">
+                            <p>{slide.text}</p>
+                          </div>
+                        </article>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {category === "zip" && (
+                <div className="platform-zip-wrapper">
+                  <div className="platform-zip-header">
+                    <strong>{zipEntries.length} items in archive</strong>
+                    <small>Total uncompressed: {formatBytes(zipEntries.reduce((acc, e) => acc + e.size, 0))}</small>
+                  </div>
+                  <ul className="platform-zip-list">
+                    {zipEntries.map((entry, idx) => (
+                      <li key={idx} className={`platform-zip-item ${entry.isDir ? "is-dir" : ""}`}>
+                        <span className="platform-zip-item-icon">
+                          {entry.isDir ? <FileArchive size={14} color="#f59e0b" /> : <FileText size={14} color="#64748b" />}
+                        </span>
+                        <span className="platform-zip-item-name">{entry.name}</span>
+                        {!entry.isDir && <small className="platform-zip-item-size">{formatBytes(entry.size)}</small>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {category === "text" && (
+                <div className="platform-code-wrapper">
+                  <div className="platform-code-toolbar">
+                    <span className="platform-code-meta">
+                      {textContent.split("\n").length} lines · {formatBytes(file.sizeBytes)}
+                    </span>
+                    <button type="button" className="button button-quiet platform-copy-btn" onClick={copyText}>
+                      {copied ? <Check size={13} color="#16a34a" /> : <Copy size={13} />}
+                      <span>{copied ? "Copied!" : "Copy content"}</span>
+                    </button>
+                  </div>
+                  <pre className="platform-code-pre">
+                    <code>{textContent}</code>
+                  </pre>
+                </div>
+              )}
+
+              {category === "other" && (
+                <div className="platform-viewer-unsupported">
+                  <FileIcon size={48} color="#2563eb" />
+                  <strong>{file.name}</strong>
+                  <span>{formatBytes(file.sizeBytes)} · {file.mimeType || "Binary document"}</span>
+                  <div className="platform-viewer-fallback-actions">
+                    <a href={file.url} download={file.name} className="button button-primary">
+                      <Download size={14} /> Download File
+                    </a>
+                    <a href={file.url} target="_blank" rel="noopener noreferrer" className="button button-quiet">
+                      <ExternalLink size={14} /> Open in browser
+                    </a>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </section>
+    </div>,
+    document.body
+  );
 }
 
 function initials(name: string) {

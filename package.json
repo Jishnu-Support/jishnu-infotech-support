@@ -21,6 +21,7 @@
     "bcryptjs": "^3.0.2",
     "better-sqlite3": "^12.2.0",
     "cookie-parser": "^1.4.7",
+    "docx-preview": "^0.4.1",
     "dotenv": "^16.6.1",
     "express": "^5.1.0",
     "express-rate-limit": "^8.0.1",
@@ -28,13 +29,15 @@
     "helmet": "^8.1.0",
     "imapflow": "^2.2.10",
     "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.2",
     "lucide-react": "^0.468.0",
     "mailparser": "^3.9.36",
     "multer": "^2.4.0",
     "nodemailer": "^10.0.16",
     "pg": "^8.23.1",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
