@@ -32,6 +32,7 @@
     "jszip": "^3.10.2",
     "lucide-react": "^0.468.0",
     "mailparser": "^3.9.36",
+    "mammoth": "^1.13.0",
     "multer": "^2.4.0",
     "nodemailer": "^10.0.16",
     "pg": "^8.23.1",

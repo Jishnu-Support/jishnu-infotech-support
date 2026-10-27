@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { renderAsync } from "docx-preview";
+import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import {
@@ -230,9 +231,121 @@ function getFileCategory(name: string, mimeType: string): FileCategory {
   return "other";
 }
 
-function PlatformFileViewer({ file, onClose }: { file: PlatformFilePreview; onClose: () => void }) {
+function DocxViewer({ arrayBuffer, name }: { arrayBuffer: ArrayBuffer; name: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [renderMode, setRenderMode] = useState<"preview" | "html" | "empty" | "error">("preview");
+  const [htmlContent, setHtmlContent] = useState<string>("");
+  const [renderError, setRenderError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+      setRenderMode("empty");
+      return;
+    }
+
+    async function renderDocx() {
+      // 1. Attempt with docx-preview
+      if (containerRef.current) {
+        containerRef.current.innerHTML = "";
+        try {
+          await renderAsync(arrayBuffer, containerRef.current, undefined, {
+            inWrapper: false,
+            ignoreWidth: false,
+            ignoreHeight: false,
+            breakPages: true,
+          });
+          const text = (containerRef.current.innerText || "").trim();
+          const hasMedia = containerRef.current.querySelector("img, table, svg, canvas") !== null;
+          if (active && (text.length > 0 || hasMedia)) {
+            setRenderMode("preview");
+            return;
+          }
+        } catch (previewErr) {
+          console.warn("docx-preview failed, attempting mammoth", previewErr);
+        }
+      }
+
+      // 2. Attempt with mammoth
+      try {
+        const result = await mammoth.convertToHtml({ arrayBuffer });
+        if (active) {
+          if (result.value && result.value.trim().length > 0) {
+            setHtmlContent(result.value);
+            setRenderMode("html");
+            return;
+          }
+        }
+      } catch (mammothErr) {
+        console.warn("mammoth conversion failed", mammothErr);
+      }
+
+      // 3. Attempt with JSZip parsing word/document.xml
+      if (active) {
+        try {
+          const zip = await JSZip.loadAsync(arrayBuffer);
+          const docXmlFile = zip.file("word/document.xml");
+          if (docXmlFile) {
+            const xml = await docXmlFile.async("text");
+            const matches = xml.match(/<w:t[^>]*>([^<]+)<\/w:t>/g) || [];
+            const text = matches.map((m) => m.replace(/<[^>]+>/g, "")).join(" ").trim();
+            if (text.length > 0) {
+              setHtmlContent(`<p style="white-space: pre-wrap; font-size: 13px; line-height: 1.6;">${text}</p>`);
+              setRenderMode("html");
+              return;
+            }
+          }
+        } catch (zipErr) {
+          console.warn("zip fallback failed", zipErr);
+          setRenderError("Could not render this Word document.");
+          setRenderMode("error");
+          return;
+        }
+
+        setRenderMode("empty");
+      }
+    }
+
+    void renderDocx();
+    return () => {
+      active = false;
+    };
+  }, [arrayBuffer]);
+
+  return (
+    <div className="platform-docx-scroll-container">
+      {renderMode === "empty" && (
+        <div className="platform-docx-empty-notice">
+          <FileText size={36} color="#94a3b8" />
+          <strong>Document has no text content or is empty</strong>
+          <span>{name}</span>
+        </div>
+      )}
+      {renderMode === "error" && (
+        <div className="platform-docx-empty-notice">
+          <FileText size={36} color="#ef4444" />
+          <strong>{renderError || "Could not render Word document"}</strong>
+          <span>{name}</span>
+        </div>
+      )}
+      {renderMode === "html" && (
+        <div className="platform-docx-paper">
+          <div className="platform-docx-html-body" dangerouslySetInnerHTML={{ __html: htmlContent }} />
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        className="platform-docx-host"
+        style={{ display: renderMode === "preview" ? "flex" : "none" }}
+      />
+    </div>
+  );
+}
+
+function FileContentRenderer({ file }: { file: PlatformFilePreview }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [docxBuffer, setDocxBuffer] = useState<ArrayBuffer | null>(null);
   const [textContent, setTextContent] = useState<string>("");
   const [copied, setCopied] = useState(false);
   const [imageZoom, setImageZoom] = useState(1);
@@ -245,19 +358,13 @@ function PlatformFileViewer({ file, onClose }: { file: PlatformFilePreview; onCl
   const [slides, setSlides] = useState<Array<{ number: number; text: string }>>([]);
   const [zipEntries, setZipEntries] = useState<Array<{ name: string; size: number; isDir: boolean }>>([]);
 
-  const docxContainerRef = useRef<HTMLDivElement>(null);
   const category = useMemo(() => getFileCategory(file.name, file.mimeType), [file.name, file.mimeType]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setDocxBuffer(null);
     setTextContent("");
     setWorkbook(null);
     setSheetNames([]);
@@ -282,28 +389,9 @@ function PlatformFileViewer({ file, onClose }: { file: PlatformFilePreview; onCl
         if (cancelled) return;
 
         if (category === "docx") {
-          const blob = await response.blob();
+          const arrayBuffer = await response.arrayBuffer();
           if (cancelled) return;
-          if (docxContainerRef.current) {
-            docxContainerRef.current.innerHTML = "";
-            try {
-              await renderAsync(blob, docxContainerRef.current, undefined, {
-                inWrapper: false,
-                ignoreWidth: false,
-                ignoreHeight: false,
-                breakPages: true,
-              });
-            } catch (renderError) {
-              console.warn("docx-preview failed, attempting fallback text read", renderError);
-              const text = await blob.text();
-              const readable = text.replace(/[^\x20-\x7E\t\r\n]/g, " ").replace(/\s{2,}/g, " ").trim();
-              if (readable.length > 50) {
-                setTextContent(readable.slice(0, 10000));
-              } else {
-                throw new Error("This Word document format could not be rendered inline. Use the Download or Open button above to view it.");
-              }
-            }
-          }
+          setDocxBuffer(arrayBuffer);
           setLoading(false);
           return;
         }
@@ -348,7 +436,7 @@ function PlatformFileViewer({ file, onClose }: { file: PlatformFilePreview; onCl
             setSlides(parsedSlides);
           } catch (zipErr) {
             console.warn("PPTX unzip failed", zipErr);
-            throw new Error("This presentation format could not be extracted inline. Use the Download or Open button above.");
+            throw new Error("This presentation format could not be extracted inline.");
           }
           setLoading(false);
           return;
@@ -420,6 +508,176 @@ function PlatformFileViewer({ file, onClose }: { file: PlatformFilePreview; onCl
     });
   }
 
+  if (loading) {
+    return (
+      <div className="platform-viewer-loading">
+        <RefreshCw size={24} className="spinning" />
+        <span>Loading preview for {file.name}…</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="platform-viewer-unsupported">
+        <FileIcon size={36} color="#94a3b8" />
+        <strong>Preview unavailable inline</strong>
+        <span>{error}</span>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {category === "image" && (
+        <div className="platform-image-wrapper">
+          <div className="platform-image-toolbar">
+            <button type="button" className="button button-quiet" onClick={() => setImageZoom((z) => Math.max(0.25, z - 0.25))} title="Zoom out">
+              <ZoomOut size={13} />
+            </button>
+            <span className="platform-zoom-label">{Math.round(imageZoom * 100)}%</span>
+            <button type="button" className="button button-quiet" onClick={() => setImageZoom((z) => Math.min(3, z + 0.25))} title="Zoom in">
+              <ZoomIn size={13} />
+            </button>
+            <button type="button" className="button button-quiet" onClick={() => setImageZoom(1)} title="Reset zoom">
+              <RotateCcw size={13} />
+            </button>
+          </div>
+          <div className="platform-image-scroll">
+            <img
+              src={file.url}
+              alt={file.name}
+              style={{ transform: `scale(${imageZoom})`, transformOrigin: "center center", transition: "transform 0.15s ease" }}
+              onContextMenu={(e) => e.preventDefault()}
+            />
+          </div>
+        </div>
+      )}
+
+      {category === "audio" && (
+        <div className="platform-media-card">
+          <FileText size={48} color="#2563eb" />
+          <strong>{file.name}</strong>
+          <audio controls controlsList="nodownload" preload="metadata" src={file.url} onContextMenu={(e) => e.preventDefault()} />
+        </div>
+      )}
+
+      {category === "video" && (
+        <video controls controlsList="nodownload" disablePictureInPicture preload="metadata" src={file.url} onContextMenu={(e) => e.preventDefault()} />
+      )}
+
+      {category === "pdf" && (
+        <iframe title={`View ${file.name}`} src={file.url} className="platform-viewer-iframe" />
+      )}
+
+      {category === "docx" && docxBuffer && (
+        <DocxViewer arrayBuffer={docxBuffer} name={file.name} />
+      )}
+
+      {category === "spreadsheet" && (
+        <div className="platform-spreadsheet-wrapper">
+          {sheetNames.length > 1 && (
+            <div className="platform-spreadsheet-tabs">
+              {sheetNames.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  className={`platform-sheet-tab ${name === activeSheet ? "active" : ""}`}
+                  onClick={() => handleSheetChange(name)}
+                >
+                  <FileSpreadsheet size={13} />
+                  <span>{name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div
+            className="platform-spreadsheet-table-host"
+            dangerouslySetInnerHTML={{ __html: sheetHtml }}
+          />
+        </div>
+      )}
+
+      {category === "presentation" && (
+        <div className="platform-presentation-scroll">
+          <div className="platform-slides-list">
+            {slides.length === 0 ? (
+              <div className="platform-viewer-unsupported">
+                <strong>No slides found in this presentation</strong>
+              </div>
+            ) : (
+              slides.map((slide) => (
+                <article key={slide.number} className="platform-slide-card">
+                  <div className="platform-slide-header">
+                    <span className="platform-slide-number">Slide {slide.number}</span>
+                  </div>
+                  <div className="platform-slide-body">
+                    <p>{slide.text}</p>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {category === "zip" && (
+        <div className="platform-zip-wrapper">
+          <div className="platform-zip-header">
+            <strong>{zipEntries.length} items in archive</strong>
+            <small>Total uncompressed: {formatBytes(zipEntries.reduce((acc, e) => acc + e.size, 0))}</small>
+          </div>
+          <ul className="platform-zip-list">
+            {zipEntries.map((entry, idx) => (
+              <li key={idx} className={`platform-zip-item ${entry.isDir ? "is-dir" : ""}`}>
+                <span className="platform-zip-item-icon">
+                  {entry.isDir ? <FileArchive size={14} color="#f59e0b" /> : <FileText size={14} color="#64748b" />}
+                </span>
+                <span className="platform-zip-item-name">{entry.name}</span>
+                {!entry.isDir && <small className="platform-zip-item-size">{formatBytes(entry.size)}</small>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {category === "text" && (
+        <div className="platform-code-wrapper">
+          <div className="platform-code-toolbar">
+            <span className="platform-code-meta">
+              {textContent.split("\n").length} lines · {formatBytes(file.sizeBytes)}
+            </span>
+            <button type="button" className="button button-quiet platform-copy-btn" onClick={copyText}>
+              {copied ? <Check size={13} color="#16a34a" /> : <Copy size={13} />}
+              <span>{copied ? "Copied!" : "Copy content"}</span>
+            </button>
+          </div>
+          <pre className="platform-code-pre">
+            <code>{textContent}</code>
+          </pre>
+        </div>
+      )}
+
+      {category === "other" && (
+        <div className="platform-viewer-unsupported">
+          <FileIcon size={48} color="#2563eb" />
+          <strong>{file.name}</strong>
+          <span>{formatBytes(file.sizeBytes)} · {file.mimeType || "Binary document"}</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+function PlatformFileViewer({ file, onClose }: { file: PlatformFilePreview; onClose: () => void }) {
+  const category = useMemo(() => getFileCategory(file.name, file.mimeType), [file.name, file.mimeType]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   const badgeLabel = {
     docx: "Word Document",
     spreadsheet: "Spreadsheet",
@@ -433,6 +691,8 @@ function PlatformFileViewer({ file, onClose }: { file: PlatformFilePreview; onCl
     other: "File",
   }[category];
 
+  const viewerTabUrl = `/view-attachment?url=${encodeURIComponent(file.url)}&name=${encodeURIComponent(file.name)}&mime=${encodeURIComponent(file.mimeType)}&size=${file.sizeBytes}`;
+
   return createPortal(
     <div className="platform-viewer-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <section className="platform-viewer" role="dialog" aria-modal="true" aria-label={`File viewer: ${file.name}`}>
@@ -445,11 +705,8 @@ function PlatformFileViewer({ file, onClose }: { file: PlatformFilePreview; onCl
             <small>{formatBytes(file.sizeBytes)}</small>
           </div>
           <div className="platform-viewer-header-actions">
-            <a href={file.url} target="_blank" rel="noopener noreferrer" className="button button-quiet" title="Open in new window">
-              <ExternalLink size={14} /> <span>Open</span>
-            </a>
-            <a href={file.url} download={file.name} className="button button-quiet" title="Download file">
-              <Download size={14} /> <span>Download</span>
+            <a href={viewerTabUrl} target="_blank" rel="noopener noreferrer" className="button button-quiet" title="Open in separate tab">
+              <ExternalLink size={14} /> <span>Open in other tab</span>
             </a>
             <button className="button button-quiet" type="button" onClick={onClose} aria-label="Close viewer">
               <X size={15} /> <span>Close</span>
@@ -458,188 +715,63 @@ function PlatformFileViewer({ file, onClose }: { file: PlatformFilePreview; onCl
         </header>
 
         <div className="platform-viewer-content">
-          {loading && (
-            <div className="platform-viewer-loading">
-              <RefreshCw size={24} className="spinning" />
-              <span>Loading preview for {file.name}…</span>
-            </div>
-          )}
-
-          {error && !loading && (
-            <div className="platform-viewer-unsupported">
-              <FileIcon size={36} color="#94a3b8" />
-              <strong>Preview unavailable inline</strong>
-              <span>{error}</span>
-              <div className="platform-viewer-fallback-actions">
-                <a href={file.url} download={file.name} className="button button-primary">
-                  <Download size={14} /> Download {file.name}
-                </a>
-                <a href={file.url} target="_blank" rel="noopener noreferrer" className="button button-quiet">
-                  <ExternalLink size={14} /> Open in new tab
-                </a>
-              </div>
-            </div>
-          )}
-
-          {!loading && !error && (
-            <>
-              {category === "image" && (
-                <div className="platform-image-wrapper">
-                  <div className="platform-image-toolbar">
-                    <button type="button" className="button button-quiet" onClick={() => setImageZoom((z) => Math.max(0.25, z - 0.25))} title="Zoom out">
-                      <ZoomOut size={13} />
-                    </button>
-                    <span className="platform-zoom-label">{Math.round(imageZoom * 100)}%</span>
-                    <button type="button" className="button button-quiet" onClick={() => setImageZoom((z) => Math.min(3, z + 0.25))} title="Zoom in">
-                      <ZoomIn size={13} />
-                    </button>
-                    <button type="button" className="button button-quiet" onClick={() => setImageZoom(1)} title="Reset zoom">
-                      <RotateCcw size={13} />
-                    </button>
-                  </div>
-                  <div className="platform-image-scroll">
-                    <img
-                      src={file.url}
-                      alt={file.name}
-                      style={{ transform: `scale(${imageZoom})`, transformOrigin: "center center", transition: "transform 0.15s ease" }}
-                      onContextMenu={(e) => e.preventDefault()}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {category === "audio" && (
-                <div className="platform-media-card">
-                  <FileText size={48} color="#2563eb" />
-                  <strong>{file.name}</strong>
-                  <audio controls controlsList="nodownload" preload="metadata" src={file.url} onContextMenu={(e) => e.preventDefault()} />
-                </div>
-              )}
-
-              {category === "video" && (
-                <video controls controlsList="nodownload" disablePictureInPicture preload="metadata" src={file.url} onContextMenu={(e) => e.preventDefault()} />
-              )}
-
-              {category === "pdf" && (
-                <iframe title={`View ${file.name}`} src={file.url} className="platform-viewer-iframe" />
-              )}
-
-              {category === "docx" && (
-                <div className="platform-docx-scroll-container">
-                  <div ref={docxContainerRef} className="platform-docx-host" />
-                  {textContent && (
-                    <div className="platform-docx-text-fallback">
-                      <p>{textContent}</p>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {category === "spreadsheet" && (
-                <div className="platform-spreadsheet-wrapper">
-                  {sheetNames.length > 1 && (
-                    <div className="platform-spreadsheet-tabs">
-                      {sheetNames.map((name) => (
-                        <button
-                          key={name}
-                          type="button"
-                          className={`platform-sheet-tab ${name === activeSheet ? "active" : ""}`}
-                          onClick={() => handleSheetChange(name)}
-                        >
-                          <FileSpreadsheet size={13} />
-                          <span>{name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <div
-                    className="platform-spreadsheet-table-host"
-                    dangerouslySetInnerHTML={{ __html: sheetHtml }}
-                  />
-                </div>
-              )}
-
-              {category === "presentation" && (
-                <div className="platform-presentation-scroll">
-                  <div className="platform-slides-list">
-                    {slides.length === 0 ? (
-                      <div className="platform-viewer-unsupported">
-                        <strong>No slides found in this presentation</strong>
-                      </div>
-                    ) : (
-                      slides.map((slide) => (
-                        <article key={slide.number} className="platform-slide-card">
-                          <div className="platform-slide-header">
-                            <span className="platform-slide-number">Slide {slide.number}</span>
-                          </div>
-                          <div className="platform-slide-body">
-                            <p>{slide.text}</p>
-                          </div>
-                        </article>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {category === "zip" && (
-                <div className="platform-zip-wrapper">
-                  <div className="platform-zip-header">
-                    <strong>{zipEntries.length} items in archive</strong>
-                    <small>Total uncompressed: {formatBytes(zipEntries.reduce((acc, e) => acc + e.size, 0))}</small>
-                  </div>
-                  <ul className="platform-zip-list">
-                    {zipEntries.map((entry, idx) => (
-                      <li key={idx} className={`platform-zip-item ${entry.isDir ? "is-dir" : ""}`}>
-                        <span className="platform-zip-item-icon">
-                          {entry.isDir ? <FileArchive size={14} color="#f59e0b" /> : <FileText size={14} color="#64748b" />}
-                        </span>
-                        <span className="platform-zip-item-name">{entry.name}</span>
-                        {!entry.isDir && <small className="platform-zip-item-size">{formatBytes(entry.size)}</small>}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {category === "text" && (
-                <div className="platform-code-wrapper">
-                  <div className="platform-code-toolbar">
-                    <span className="platform-code-meta">
-                      {textContent.split("\n").length} lines · {formatBytes(file.sizeBytes)}
-                    </span>
-                    <button type="button" className="button button-quiet platform-copy-btn" onClick={copyText}>
-                      {copied ? <Check size={13} color="#16a34a" /> : <Copy size={13} />}
-                      <span>{copied ? "Copied!" : "Copy content"}</span>
-                    </button>
-                  </div>
-                  <pre className="platform-code-pre">
-                    <code>{textContent}</code>
-                  </pre>
-                </div>
-              )}
-
-              {category === "other" && (
-                <div className="platform-viewer-unsupported">
-                  <FileIcon size={48} color="#2563eb" />
-                  <strong>{file.name}</strong>
-                  <span>{formatBytes(file.sizeBytes)} · {file.mimeType || "Binary document"}</span>
-                  <div className="platform-viewer-fallback-actions">
-                    <a href={file.url} download={file.name} className="button button-primary">
-                      <Download size={14} /> Download File
-                    </a>
-                    <a href={file.url} target="_blank" rel="noopener noreferrer" className="button button-quiet">
-                      <ExternalLink size={14} /> Open in browser
-                    </a>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
+          <FileContentRenderer file={file} />
         </div>
       </section>
     </div>,
     document.body
+  );
+}
+
+function StandaloneFileViewerPage() {
+  const params = new URLSearchParams(window.location.search);
+  const url = params.get("url") || "";
+  const name = params.get("name") || "Document";
+  const mimeType = params.get("mime") || "";
+  const sizeBytes = Number(params.get("size")) || 0;
+
+  const file: PlatformFilePreview = useMemo(() => ({
+    name,
+    mimeType,
+    sizeBytes,
+    url,
+  }), [name, mimeType, sizeBytes, url]);
+
+  const category = useMemo(() => getFileCategory(name, mimeType), [name, mimeType]);
+
+  const badgeLabel = {
+    docx: "Word Document",
+    spreadsheet: "Spreadsheet",
+    presentation: "Presentation",
+    pdf: "PDF Document",
+    image: "Image",
+    video: "Video",
+    audio: "Audio",
+    text: "Code / Text",
+    zip: "ZIP Archive",
+    other: "File",
+  }[category];
+
+  return (
+    <div className="standalone-viewer-page">
+      <header className="standalone-viewer-nav">
+        <div className="platform-viewer-title-area">
+          <div className="platform-viewer-name-row">
+            <strong title={file.name}>{file.name}</strong>
+            <span className={`platform-viewer-badge platform-viewer-badge-${category}`}>{badgeLabel}</span>
+          </div>
+          <small>{formatBytes(file.sizeBytes)}</small>
+        </div>
+        <div className="platform-viewer-header-actions">
+          <button type="button" className="button button-quiet" onClick={() => window.close()} title="Close tab">
+            <X size={15} /> <span>Close</span>
+          </button>
+        </div>
+      </header>
+      <div className="standalone-viewer-content">
+        <FileContentRenderer file={file} />
+      </div>
+    </div>
   );
 }
 
@@ -742,6 +874,9 @@ function CompanySelectionScreen({ user, companies, error, onSelect, onSignOut }:
 }
 
 function App() {
+  if (window.location.pathname === "/view-attachment") {
+    return <StandaloneFileViewerPage />;
+  }
   const [authFlow, setAuthFlow] = useState<AuthFlow>(() => window.location.pathname === "/invite" ? "invite"
     : window.location.pathname === "/client-invite" ? "client-invite"
     : window.location.pathname === "/reset-password" ? "reset" : "portal");
