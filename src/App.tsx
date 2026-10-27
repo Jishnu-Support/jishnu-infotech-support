@@ -5,7 +5,7 @@ import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import {
-  Activity, ArrowDown, ArrowDownUp, ArrowRight, ArrowRightLeft, ArrowUp, BarChart3, Bell, Check,
+  Activity, ArrowDown, ArrowDownUp, ArrowLeft, ArrowRight, ArrowRightLeft, ArrowUp, BarChart3, Bell, Check,
   CheckCheck, CheckCircle2, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2, ClipboardPlus,
   Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen, Megaphone, Pencil, ExternalLink, Youtube,
   FileText, FileSpreadsheet, FileArchive, Copy, ZoomIn, ZoomOut, RotateCcw, File as FileIcon,
@@ -1634,7 +1634,7 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${selectedTicket ? "ticket-detail-open" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
           <CompanyLogo className="company-logo-sidebar" />
@@ -1903,6 +1903,15 @@ function App() {
             {selectedTicket ? (
               <section className="detail-panel">
                 <div className="detail-heading">
+                  <button
+                    type="button"
+                    className="mobile-back-btn"
+                    aria-label="Back to tickets list"
+                    onClick={() => setSelectedId(null)}
+                  >
+                    <ArrowLeft size={16} />
+                    <span>Tickets</span>
+                  </button>
                   <div className="detail-title-wrap"><span className="ticket-number">#{String(selectedTicket.id).padStart(4, "0")}</span><h2>{selectedTicket.subject}</h2></div>
                   <div className="detail-actions"><button className="icon-button" aria-label="Close ticket detail" onClick={() => setSelectedId(null)}><X size={18} /></button></div>
                 </div>
