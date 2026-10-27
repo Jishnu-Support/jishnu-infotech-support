@@ -136,7 +136,20 @@ const historicalWorkbookUpload = multer({
   limits: { files: 1, fields: 1, parts: 2, fileSize: 5 * 1024 * 1024 },
 });
 
-app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    contentSecurityPolicy: {
+      directives: {
+        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+        "img-src": ["'self'", "data:", "blob:"],
+        "media-src": ["'self'", "data:", "blob:"],
+        "frame-src": ["'self'", "data:", "blob:"],
+        "script-src": ["'self'", "'unsafe-inline'"],
+      },
+    },
+  })
+);
 app.use(express.json({ limit: "64kb" }));
 app.use(cookieParser());
 

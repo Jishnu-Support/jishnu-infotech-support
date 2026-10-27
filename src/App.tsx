@@ -231,11 +231,32 @@ function getFileCategory(name: string, mimeType: string): FileCategory {
   return "other";
 }
 
+async function extractDocxMediaImages(arrayBuffer: ArrayBuffer): Promise<string[]> {
+  try {
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    const mediaFiles = Object.keys(zip.files).filter(
+      (path) => path.startsWith("word/media/") && /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(path)
+    );
+    mediaFiles.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const imageUrls: string[] = [];
+    for (const path of mediaFiles) {
+      const ext = (path.split(".").pop() || "png").toLowerCase();
+      const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : ext === "svg" ? "image/svg+xml" : "image/png";
+      const base64 = await zip.files[path].async("base64");
+      imageUrls.push(`data:${mime};base64,${base64}`);
+    }
+    return imageUrls;
+  } catch {
+    return [];
+  }
+}
+
 function DocxViewer({ arrayBuffer, name }: { arrayBuffer: ArrayBuffer; name: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [renderMode, setRenderMode] = useState<"preview" | "html" | "empty" | "error">("preview");
+  const [renderMode, setRenderMode] = useState<"preview" | "html" | "images-only" | "empty" | "error">("preview");
   const [htmlContent, setHtmlContent] = useState<string>("");
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [extractedImages, setExtractedImages] = useState<string[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -245,7 +266,12 @@ function DocxViewer({ arrayBuffer, name }: { arrayBuffer: ArrayBuffer; name: str
     }
 
     async function renderDocx() {
-      // 1. Attempt with docx-preview
+      const docxImages = await extractDocxMediaImages(arrayBuffer);
+      if (active) {
+        setExtractedImages(docxImages);
+      }
+
+      // 1. Attempt with docx-preview using base64 image URLs
       if (containerRef.current) {
         containerRef.current.innerHTML = "";
         try {
@@ -254,10 +280,25 @@ function DocxViewer({ arrayBuffer, name }: { arrayBuffer: ArrayBuffer; name: str
             ignoreWidth: false,
             ignoreHeight: false,
             breakPages: true,
+            useBase64URL: true,
           });
+
+          // Check if any rendered image elements failed to load or have empty src, and repair them
+          const imgElements = Array.from(containerRef.current.querySelectorAll("img"));
+          imgElements.forEach((img, idx) => {
+            if ((!img.src || img.src.startsWith("blob:") || img.naturalWidth === 0) && docxImages[idx]) {
+              img.src = docxImages[idx];
+            }
+            img.onerror = () => {
+              if (docxImages[idx]) {
+                img.src = docxImages[idx];
+              }
+            };
+          });
+
           const text = (containerRef.current.innerText || "").trim();
-          const hasMedia = containerRef.current.querySelector("img, table, svg, canvas") !== null;
-          if (active && (text.length > 0 || hasMedia)) {
+          const hasImages = imgElements.length > 0 || docxImages.length > 0;
+          if (active && (text.length > 0 || hasImages)) {
             setRenderMode("preview");
             return;
           }
@@ -266,9 +307,18 @@ function DocxViewer({ arrayBuffer, name }: { arrayBuffer: ArrayBuffer; name: str
         }
       }
 
-      // 2. Attempt with mammoth
+      // 2. Attempt with mammoth with base64 embedded images
       try {
-        const result = await mammoth.convertToHtml({ arrayBuffer });
+        const result = await mammoth.convertToHtml(
+          { arrayBuffer },
+          {
+            convertImage: mammoth.images.imgElement((element) => {
+              return element.read("base64").then((buf) => ({
+                src: `data:${element.contentType};base64,${buf}`,
+              }));
+            }),
+          }
+        );
         if (active) {
           if (result.value && result.value.trim().length > 0) {
             setHtmlContent(result.value);
@@ -280,7 +330,13 @@ function DocxViewer({ arrayBuffer, name }: { arrayBuffer: ArrayBuffer; name: str
         console.warn("mammoth conversion failed", mammothErr);
       }
 
-      // 3. Attempt with JSZip parsing word/document.xml
+      // 3. If document has extracted images (e.g. pasted screenshot without body text)
+      if (active && docxImages.length > 0) {
+        setRenderMode("images-only");
+        return;
+      }
+
+      // 4. Attempt with JSZip parsing word/document.xml
       if (active) {
         try {
           const zip = await JSZip.loadAsync(arrayBuffer);
@@ -326,6 +382,15 @@ function DocxViewer({ arrayBuffer, name }: { arrayBuffer: ArrayBuffer; name: str
           <FileText size={36} color="#ef4444" />
           <strong>{renderError || "Could not render Word document"}</strong>
           <span>{name}</span>
+        </div>
+      )}
+      {renderMode === "images-only" && (
+        <div className="platform-docx-paper">
+          <div className="platform-docx-images-list">
+            {extractedImages.map((src, i) => (
+              <img key={i} src={src} alt={`Document image ${i + 1}`} className="platform-docx-embedded-img" />
+            ))}
+          </div>
         </div>
       )}
       {renderMode === "html" && (
