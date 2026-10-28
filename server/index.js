@@ -15,7 +15,7 @@ import { simpleParser } from "mailparser";
 import { parseHistoricalTicketWorkbook } from "./historical-ticket-import.js";
 import { db, initializeDatabase } from "./db.js";
 import { applicationUrl, emailIsConfigured, sendEmail } from "./email.js";
-import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket, canEditChatMessage } from "./authz.js";
+import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket, canEditChatMessage, canEditConsultantSolution } from "./authz.js";
 import { normalizedTicketMetadata, ticketCategories, isAllowedAttachment, sanitizeAttachmentName } from "./validation.js";
 
 const app = express();
@@ -2942,7 +2942,8 @@ app.get("/api/tickets/:id", requireAuth, async (req, res) => {
   if (!ticket) return res.status(404).json({ error: "Ticket not found." });
   const attachments = await db.prepare(`
     SELECT id, original_name AS name, mime_type AS mimeType, size_bytes AS sizeBytes,
-           created_at AS createdAt, uploaded_by AS uploadedBy, message_id AS messageId
+           created_at AS createdAt, uploaded_by AS uploadedBy, message_id AS messageId,
+           COALESCE(is_solution, 0) AS isSolution
     FROM ticket_attachments WHERE ticket_id = ? ORDER BY id
   `).all(ticketId);
 
@@ -3450,7 +3451,8 @@ app.patch("/api/tickets/:ticketId/messages/:messageId", requireAuth, receiveAtta
 
   const ticketAttachments = await db.prepare(`
     SELECT id, original_name AS name, mime_type AS mimeType, size_bytes AS sizeBytes,
-           created_at AS createdAt, uploaded_by AS uploadedBy, message_id AS messageId
+           created_at AS createdAt, uploaded_by AS uploadedBy, message_id AS messageId,
+           COALESCE(is_solution, 0) AS isSolution
     FROM ticket_attachments WHERE ticket_id = ? ORDER BY id
   `).all(ticketId);
 
@@ -3462,6 +3464,101 @@ app.patch("/api/tickets/:ticketId/messages/:messageId", requireAuth, receiveAtta
       attachments: messageAttachments,
     },
     ticketAttachments,
+  });
+});
+
+app.patch("/api/tickets/:id/solution", requireAuth, receiveAttachments, async (req, res) => {
+  const ticketId = Number(req.params.id);
+  const files = req.files || [];
+  if (!Number.isInteger(ticketId) || ticketId < 1) {
+    discardUploadedFiles(files);
+    return res.status(400).json({ error: "Invalid ticket id." });
+  }
+
+  if (!canEditConsultantSolution(req.user)) {
+    discardUploadedFiles(files);
+    return res.status(403).json({ error: "Only Consultant Super Admins can edit the consultant solution." });
+  }
+
+  const existing = await db.prepare("SELECT * FROM tickets WHERE id = ?").get(ticketId);
+  if (!existing || !await canAccessTicket(req.user, ticketId)) {
+    discardUploadedFiles(files);
+    return res.status(404).json({ error: "Ticket not found." });
+  }
+
+  let verifiedFiles = [];
+  try {
+    verifiedFiles = await verifyTicketFiles(files);
+  } catch (error) {
+    discardUploadedFiles(files);
+    return res.status(400).json({ error: error.message });
+  }
+
+  const solution = typeof req.body.solution === "string" ? req.body.solution.trim() : "";
+  const consultantName = typeof req.body.consultantName === "string" && req.body.consultantName.trim()
+    ? req.body.consultantName.trim()
+    : (existing.historical_consultant_name || req.user.name);
+
+  if (solution.length > 5000) {
+    discardUploadedFiles(files);
+    return res.status(400).json({ error: "Consultant solution must be 5,000 characters or fewer." });
+  }
+
+  let removedIds = [];
+  if (req.body.removedAttachmentIds) {
+    try {
+      const parsed = typeof req.body.removedAttachmentIds === "string" ? JSON.parse(req.body.removedAttachmentIds) : req.body.removedAttachmentIds;
+      if (Array.isArray(parsed)) removedIds = parsed.map(Number).filter((id) => Number.isInteger(id) && id > 0);
+    } catch {}
+  }
+
+  try {
+    await db.transaction(async () => {
+      await db.prepare(`
+        UPDATE tickets
+        SET historical_solution = ?,
+            historical_consultant_name = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(solution || null, solution ? consultantName : null, ticketId);
+
+      if (removedIds.length > 0) {
+        for (const attId of removedIds) {
+          const att = await db.prepare("SELECT storage_name FROM ticket_attachments WHERE id = ? AND ticket_id = ?").get(attId, ticketId);
+          if (att) {
+            await db.prepare("DELETE FROM ticket_attachments WHERE id = ? AND ticket_id = ?").run(attId, ticketId);
+            try { unlinkSync(resolve(attachmentsRoot, att.storage_name)); } catch {}
+          }
+        }
+      }
+
+      if (verifiedFiles.length > 0) {
+        const insertAttachment = db.prepare(`
+          INSERT INTO ticket_attachments (ticket_id, uploaded_by, storage_name, original_name, mime_type, size_bytes, is_solution)
+          VALUES (?, ?, ?, ?, ?, ?, 1)
+        `);
+        for (const file of verifiedFiles) {
+          await insertAttachment.run(ticketId, req.user.id, file.filename, file.originalName, file.mimeType, file.size);
+        }
+      }
+    });
+  } catch (error) {
+    discardUploadedFiles(files);
+    throw error;
+  }
+
+  const updatedTicketRow = await db.prepare(`${ticketSelect} WHERE t.id = ?`).get(ticketId);
+  const attachments = await db.prepare(`
+    SELECT id, original_name AS name, mime_type AS mimeType, size_bytes AS sizeBytes,
+           created_at AS createdAt, uploaded_by AS uploadedBy, message_id AS messageId,
+           COALESCE(is_solution, 0) AS isSolution
+    FROM ticket_attachments WHERE ticket_id = ? ORDER BY id
+  `).all(ticketId);
+
+  res.json({
+    ticket: await ticketSummary(updatedTicketRow),
+    attachments,
+    message: "Consultant solution updated successfully.",
   });
 });
 

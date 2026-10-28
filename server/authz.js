@@ -89,3 +89,8 @@ export function canEditChatMessage(user, message) {
 
   return false;
 }
+
+export function canEditConsultantSolution(user) {
+  if (!user) return false;
+  return user.role === "agent" && Boolean(user.is_admin);
+}

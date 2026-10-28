@@ -171,6 +171,7 @@ const schema = `
     mime_type TEXT NOT NULL,
     size_bytes BIGINT NOT NULL,
     message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL,
+    is_solution INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
   );
 
@@ -487,6 +488,9 @@ const schemaMigrations = [
   `) },
   { version: 23, apply: () => db.exec(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP WITHOUT TIME ZONE;
+  `) },
+  { version: 24, apply: () => db.exec(`
+    ALTER TABLE ticket_attachments ADD COLUMN IF NOT EXISTS is_solution INTEGER NOT NULL DEFAULT 0;
   `) },
 ];
 

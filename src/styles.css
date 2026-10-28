@@ -636,6 +636,30 @@ h1, h2, p { margin-top: 0; }
 .ticket-solution { margin: 12px 0; padding: 12px; border: 1px solid #dce8fb; border-radius: 7px; background: #f5f8ff; color: #435166; }
 .ticket-solution strong { font-size: 10px; }
 .ticket-solution p { margin: 7px 0 0; color: #56657a; font-size: 10px; line-height: 1.6; white-space: pre-wrap; }
+.ticket-solution-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.solution-edit-btn { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: 1px solid #cbd5e1; border-radius: 5px; background: #ffffff; color: #2563eb; font-size: 10px; font-weight: 600; cursor: pointer; transition: all .15s ease; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); }
+.solution-edit-btn:hover { background: #eff6ff; border-color: #3b82f6; color: #1d4ed8; }
+.ticket-solution-editing { background: #ffffff; border-color: #bfdbfe; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08); }
+.solution-cancel-btn { height: 26px; padding: 0 8px; font-size: 10px; }
+.solution-edit-form { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+.solution-form-label { display: flex; flex-direction: column; gap: 4px; font-size: 10px; font-weight: 600; color: #475569; }
+.solution-form-label textarea { width: 100%; min-height: 85px; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; font-size: 11px; line-height: 1.55; color: #1e293b; resize: vertical; outline: none; }
+.solution-form-label textarea:focus, .solution-form-label input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #bfdbfe; }
+.solution-form-label input { height: 32px; padding: 0 10px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; font-size: 11px; color: #1e293b; outline: none; }
+.solution-section-label { font-size: 9px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.3px; display: block; margin-bottom: 4px; }
+.solution-attachment-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.solution-attachment-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 240px; padding: 4px 8px; border: 1px solid #e2e8f0; border-radius: 5px; background: #f8fafc; color: #334155; font-size: 10px; }
+.solution-attachment-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.solution-attachment-chip small { color: #64748b; font-size: 8.5px; }
+.solution-attachment-chip button { display: flex; align-items: center; padding: 0; border: none; background: transparent; color: #94a3b8; cursor: pointer; }
+.solution-attachment-chip button:hover { color: #ef4444; }
+.solution-attachment-new { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
+.solution-edit-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; padding-top: 8px; border-top: 1px solid #f1f5f9; flex-wrap: wrap; }
+.solution-attach-btn { height: 30px; padding: 0 10px; font-size: 10.5px; font-weight: 500; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.solution-actions-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.solution-actions-right .button { height: 30px; padding: 0 12px; font-size: 10.5px; font-weight: 600; }
+.ticket-solution-add-wrap { margin: 10px 0; }
+.add-solution-btn { height: 30px; padding: 0 10px; font-size: 10.5px; gap: 5px; display: inline-flex; align-items: center; }
 .support-contract-form { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; margin-bottom: 15px; padding: 12px; border: 1px solid #e8edf4; border-radius: 6px; background: #fafbfd; }
 .support-contract-form label { min-width: 180px; display: flex; flex-direction: column; gap: 6px; color: #667386; font-size: 9px; font-weight: 600; }
 .support-contract-form input { padding: 8px 9px; border: 1px solid #e3e8ee; border-radius: 5px; color: #425064; background: #fff; font-size: 10px; }

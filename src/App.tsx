@@ -42,7 +42,7 @@ type Ticket = {
   rating: { rating: number; comment: string; createdAt: string; customerId: number } | null;
 };
 type Message = { id: number; body: string; isInternal: boolean; createdAt: string; editedAt?: string | null; authorId: number | null; authorName: string; authorRole: Role; authorIsInternalConsultant?: boolean; attachments?: TicketAttachment[] };
-type TicketAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string; uploadedBy: number; messageId?: number | null };
+type TicketAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string; uploadedBy: number; messageId?: number | null; isSolution?: boolean };
 type TicketDetail = { ticket: Ticket; messages: Message[]; attachments: TicketAttachment[]; assignmentHistory: AssignmentEvent[]; categories: TicketCategory[]; canRate: boolean };
 type Customer = {
   id: number; name: string; username?: string; email: string | null; companyId?: number; companyName?: string;
@@ -993,6 +993,13 @@ function App() {
   const [editingMessageText, setEditingMessageText] = useState("");
   const [editingMessageFiles, setEditingMessageFiles] = useState<File[]>([]);
   const [savingMessageEdit, setSavingMessageEdit] = useState(false);
+  const [editingSolution, setEditingSolution] = useState(false);
+  const [solutionText, setSolutionText] = useState("");
+  const [solutionConsultant, setSolutionConsultant] = useState("");
+  const [solutionFiles, setSolutionFiles] = useState<File[]>([]);
+  const [removedSolutionAttachmentIds, setRemovedSolutionAttachmentIds] = useState<number[]>([]);
+  const [savingSolution, setSavingSolution] = useState(false);
+  const solutionFileInputRef = useRef<HTMLInputElement>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
   const replyFileInputRef = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -1050,6 +1057,11 @@ function App() {
     setEditingMessageId(null);
     setEditingMessageText("");
     setEditingMessageFiles([]);
+    setEditingSolution(false);
+    setSolutionText("");
+    setSolutionConsultant("");
+    setSolutionFiles([]);
+    setRemovedSolutionAttachmentIds([]);
   }, [selectedId]);
 
   useEffect(() => {
@@ -1514,6 +1526,48 @@ function App() {
       setActionError(error instanceof Error ? error.message : "Could not update message.");
     } finally {
       setSavingMessageEdit(false);
+    }
+  }
+
+  async function saveSolution(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedTicket || savingSolution) return;
+    setSavingSolution(true);
+    setActionError("");
+    try {
+      const formData = new FormData();
+      formData.append("solution", solutionText.trim());
+      formData.append("consultantName", solutionConsultant.trim());
+      if (removedSolutionAttachmentIds.length > 0) {
+        formData.append("removedAttachmentIds", JSON.stringify(removedSolutionAttachmentIds));
+      }
+      for (const file of solutionFiles) {
+        formData.append("attachments", file);
+      }
+
+      const res = await api<{ ticket: Ticket; attachments: TicketAttachment[]; message?: string }>(
+        `/tickets/${selectedTicket.id}/solution`,
+        {
+          method: "PATCH",
+          body: formData,
+        }
+      );
+
+      setDetail((prev) => prev ? {
+        ...prev,
+        ticket: res.ticket,
+        attachments: res.attachments,
+      } : null);
+
+      setTickets((prev) => prev.map((t) => t.id === res.ticket.id ? res.ticket : t));
+      setEditingSolution(false);
+      setSolutionFiles([]);
+      setRemovedSolutionAttachmentIds([]);
+      setActionMessage("Consultant solution updated successfully.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not save consultant solution.");
+    } finally {
+      setSavingSolution(false);
     }
   }
 
@@ -2025,7 +2079,174 @@ function App() {
                   <Clock3 size={14} /><span>First response by {new Date(selectedTicket.firstResponseDueAt).toLocaleString()}</span><span>Resolve by {new Date(selectedTicket.resolutionDueAt).toLocaleString()}</span>
                 </div>}
                 {detail?.assignmentHistory.length ? <AssignmentHistorySection key={selectedTicket.id} entries={detail.assignmentHistory} /> : null}
-                {selectedTicket.solution && <section className="ticket-solution"><strong>Consultant solution{selectedTicket.solutionConsultantName ? ` · ${selectedTicket.solutionConsultantName}` : ""}</strong><p>{selectedTicket.solution}</p></section>}
+                {editingSolution && isSuperAdmin ? (
+                  <section className="ticket-solution ticket-solution-editing">
+                    <div className="ticket-solution-header">
+                      <strong>{selectedTicket.solution ? "Edit consultant solution" : "Add consultant solution"}</strong>
+                      <button
+                        type="button"
+                        className="button button-quiet solution-cancel-btn"
+                        onClick={() => {
+                          setEditingSolution(false);
+                          setSolutionFiles([]);
+                          setRemovedSolutionAttachmentIds([]);
+                        }}
+                        disabled={savingSolution}
+                      >
+                        <X size={13} /> Cancel
+                      </button>
+                    </div>
+                    <form className="solution-edit-form" onSubmit={saveSolution}>
+                      <label className="solution-form-label">
+                        <span>Solution description</span>
+                        <textarea
+                          value={solutionText}
+                          onChange={(e) => setSolutionText(e.target.value)}
+                          placeholder="Describe the solution provided to the client..."
+                          rows={4}
+                          required
+                          disabled={savingSolution}
+                        />
+                      </label>
+                      <label className="solution-form-label">
+                        <span>Consultant attribution</span>
+                        <input
+                          type="text"
+                          value={solutionConsultant}
+                          onChange={(e) => setSolutionConsultant(e.target.value)}
+                          placeholder="Consultant name (e.g. Jishnu Infotech Super Admin)"
+                          disabled={savingSolution}
+                        />
+                      </label>
+
+                      {detail?.attachments && detail.attachments.filter((att) => !removedSolutionAttachmentIds.includes(att.id)).length > 0 && (
+                        <div className="solution-existing-files">
+                          <span className="solution-section-label">Current attachments</span>
+                          <div className="solution-attachment-chips">
+                            {detail.attachments
+                              .filter((att) => !removedSolutionAttachmentIds.includes(att.id))
+                              .map((att) => (
+                                <span key={att.id} className="solution-attachment-chip">
+                                  <Paperclip size={12} />
+                                  <span title={att.name}>{att.name}</span>
+                                  <small>({formatBytes(att.sizeBytes)})</small>
+                                  <button
+                                    type="button"
+                                    title="Remove this attachment"
+                                    onClick={() => setRemovedSolutionAttachmentIds((prev) => [...prev, att.id])}
+                                    disabled={savingSolution}
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </span>
+                              ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {solutionFiles.length > 0 && (
+                        <div className="solution-new-files">
+                          <span className="solution-section-label">New attachments to add</span>
+                          <div className="solution-attachment-chips">
+                            {solutionFiles.map((file, idx) => (
+                              <span key={`${file.name}-${idx}`} className="solution-attachment-chip solution-attachment-new">
+                                <Paperclip size={12} />
+                                <span title={file.name}>{file.name}</span>
+                                <small>({formatBytes(file.size)})</small>
+                                <button
+                                  type="button"
+                                  title="Remove"
+                                  onClick={() => setSolutionFiles((prev) => prev.filter((_, i) => i !== idx))}
+                                  disabled={savingSolution}
+                                >
+                                  <X size={12} />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="solution-edit-footer">
+                        <label className="button button-quiet solution-attach-btn" title="Add attachments (all formats supported)">
+                          <Paperclip size={13} />
+                          <span>Attach files</span>
+                          <input
+                            ref={solutionFileInputRef}
+                            type="file"
+                            multiple
+                            style={{ display: "none" }}
+                            onChange={(e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (!files.length) return;
+                              setSolutionFiles((prev) => [...prev, ...files].slice(0, 10));
+                              e.target.value = "";
+                            }}
+                            disabled={savingSolution}
+                          />
+                        </label>
+                        <div className="solution-actions-right">
+                          <button
+                            type="button"
+                            className="button button-quiet"
+                            onClick={() => {
+                              setEditingSolution(false);
+                              setSolutionFiles([]);
+                              setRemovedSolutionAttachmentIds([]);
+                            }}
+                            disabled={savingSolution}
+                          >
+                            Cancel
+                          </button>
+                          <button type="submit" className="button button-primary" disabled={savingSolution || !solutionText.trim()}>
+                            {savingSolution ? "Saving…" : "Save solution"}
+                          </button>
+                        </div>
+                      </div>
+                    </form>
+                  </section>
+                ) : selectedTicket.solution ? (
+                  <section className="ticket-solution">
+                    <div className="ticket-solution-header">
+                      <strong>Consultant solution{selectedTicket.solutionConsultantName ? ` · ${selectedTicket.solutionConsultantName}` : ""}</strong>
+                      {isSuperAdmin && (
+                        <button
+                          type="button"
+                          className="solution-edit-btn"
+                          title="Edit consultant solution and attachments"
+                          onClick={() => {
+                            setEditingSolution(true);
+                            setSolutionText(selectedTicket.solution || "");
+                            setSolutionConsultant(selectedTicket.solutionConsultantName || user.name);
+                            setSolutionFiles([]);
+                            setRemovedSolutionAttachmentIds([]);
+                          }}
+                        >
+                          <Pencil size={11} />
+                          <span>Edit</span>
+                        </button>
+                      )}
+                    </div>
+                    <p>{selectedTicket.solution}</p>
+                  </section>
+                ) : isSuperAdmin ? (
+                  <div className="ticket-solution-add-wrap">
+                    <button
+                      type="button"
+                      className="button button-quiet add-solution-btn"
+                      onClick={() => {
+                        setEditingSolution(true);
+                        setSolutionText("");
+                        setSolutionConsultant(user.name);
+                        setSolutionFiles([]);
+                        setRemovedSolutionAttachmentIds([]);
+                      }}
+                    >
+                      <Plus size={13} />
+                      <span>Add consultant solution</span>
+                    </button>
+                  </div>
+                ) : null}
                 {detail?.attachments.length ? <div className="attachment-list" aria-label="Ticket attachments">
                   <strong className="attachment-heading">Attachments</strong>
                   {detail.attachments.map((attachment) => <button key={attachment.id} type="button" className="ticket-attachment" onClick={() => setFilePreview({ name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, url: `/api/tickets/${selectedTicket.id}/attachments/${attachment.id}` })}>

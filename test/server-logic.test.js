@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket, canEditChatMessage } from "../server/authz.js";
+import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket, canEditChatMessage, canEditConsultantSolution } from "../server/authz.js";
 import { normalizedTicketMetadata, isAllowedAttachment, sanitizeAttachmentName } from "../server/validation.js";
 import {
   priorityLabel,
@@ -303,4 +303,12 @@ test("canEditChatMessage allows only consultants to edit messages", () => {
   // Edge cases
   assert.equal(canEditChatMessage(null, ownMessage), false);
   assert.equal(canEditChatMessage(agentUser, null), false);
+});
+
+test("canEditConsultantSolution allows only Consultant Super Admins", () => {
+  assert.equal(canEditConsultantSolution({ role: "agent", is_admin: 1 }), true);
+  assert.equal(canEditConsultantSolution({ role: "agent", is_admin: 0 }), false);
+  assert.equal(canEditConsultantSolution({ role: "customer", is_admin: 1 }), false);
+  assert.equal(canEditConsultantSolution({ role: "customer", is_company_admin: 1 }), false);
+  assert.equal(canEditConsultantSolution(null), false);
 });
