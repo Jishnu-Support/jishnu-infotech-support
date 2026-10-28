@@ -492,6 +492,20 @@ const schemaMigrations = [
   { version: 24, apply: () => db.exec(`
     ALTER TABLE ticket_attachments ADD COLUMN IF NOT EXISTS is_solution INTEGER NOT NULL DEFAULT 0;
   `) },
+  { version: 25, apply: () => db.exec(`
+    ALTER TABLE tickets ADD COLUMN IF NOT EXISTS company_ticket_seq INTEGER;
+    CREATE INDEX IF NOT EXISTS tickets_company_seq_idx ON tickets (company_id, company_ticket_seq);
+    WITH numbered AS (
+      SELECT id,
+             ROW_NUMBER() OVER (PARTITION BY company_id ORDER BY created_at ASC, id ASC) AS seq
+      FROM tickets
+      WHERE company_id IS NOT NULL
+    )
+    UPDATE tickets t
+    SET company_ticket_seq = n.seq
+    FROM numbered n
+    WHERE t.id = n.id AND t.company_ticket_seq IS NULL;
+  `) },
 ];
 
 async function seedDatabase() {

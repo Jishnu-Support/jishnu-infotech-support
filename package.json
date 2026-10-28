@@ -29,6 +29,8 @@
     "helmet": "^8.1.0",
     "imapflow": "^2.2.10",
     "jsonwebtoken": "^9.0.2",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.9",
     "jszip": "^3.10.2",
     "lucide-react": "^0.468.0",
     "mailparser": "^3.9.36",

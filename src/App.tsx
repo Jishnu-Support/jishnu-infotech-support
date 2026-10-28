@@ -4,11 +4,13 @@ import { renderAsync } from "docx-preview";
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 import {
   Activity, ArrowDown, ArrowDownUp, ArrowLeft, ArrowRight, ArrowRightLeft, ArrowUp, BarChart3, Bell, Check,
   CheckCheck, CheckCircle2, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2, ClipboardPlus,
   Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen, Megaphone, Pencil, ExternalLink, Youtube,
-  FileText, FileSpreadsheet, FileArchive, Copy, ZoomIn, ZoomOut, RotateCcw, File as FileIcon,
+  FileText, FileSpreadsheet, FileArchive, Copy, ZoomIn, ZoomOut, RotateCcw, File as FileIcon, FileDown, Calendar,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 
@@ -27,7 +29,7 @@ type Company = {
   internalConsultantId?: number | null; internalConsultantName?: string | null; internalConsultantRole?: string | null;
 };
 type Ticket = {
-  id: number; subject: string; description: string; status: Status; priority: Priority;
+  id: number; ticketNumber?: string; companyTicketSeq?: number | null; subject: string; description: string; status: Status; priority: Priority;
   category: TicketCategory; tags: string[]; customFields: Record<string, string>;
   source: "portal" | "email"; isHistoricalImport?: boolean; isManualEntry?: boolean;
   solution?: string | null; solutionConsultantName?: string | null; createdAt: string; updatedAt: string;
@@ -53,7 +55,7 @@ type AssignmentEvent = {
   agentName: string; assignedByName: string | null;
 };
 type Notification = {
-  id: number; ticketId: number; kind: string; message: string; readAt: string | null; createdAt: string;
+  id: number; ticketId: number; ticketNumber?: string | null; kind: string; message: string; readAt: string | null; createdAt: string;
   subject?: string | null; description?: string | null; category?: string | null; priority?: Priority | null; customerName?: string | null;
 };
 type AnalyticsReport = {
@@ -75,7 +77,40 @@ type AnalyticsReport = {
   customerActivity: Array<{ id: number; name: string; username?: string; email: string | null; companyName: string | null; raisedInPeriod: number; active: number; inProgress: number; resolvedInPeriod: number }>;
   scopeCompany: { id: number; name: string } | null;
 };
-type ReportTicket = { id: number; subject: string; status: Status; priority: Priority; updatedAt: string; companyId: number | null; customerId: number | null; consultantId: number | null; companyName: string | null; customerName: string; consultantName: string | null };
+type ReportTicket = { id: number; ticketNumber?: string; subject: string; status: Status; priority: Priority; updatedAt: string; companyId: number | null; customerId: number | null; consultantId: number | null; companyName: string | null; customerName: string; consultantName: string | null };
+type DownloadReportSummary = {
+  raised: number;
+  solved: number;
+  active: number;
+  waiting: number;
+  inProgress: number;
+};
+type DownloadReportClientItem = {
+  clientName: string;
+  raised: number;
+  resolved: number;
+  active: number;
+  waiting: number;
+  inProgress: number;
+};
+type DownloadReportTicketRecord = {
+  sNo: number;
+  id: number;
+  ticketNo: string;
+  ticketDescription: string;
+  clientRaisedBy: string;
+  status: string;
+  createdAt: string;
+};
+type DownloadReportData = {
+  company: { id: number; name: string };
+  period: "weekly" | "monthly" | "yearly" | "custom";
+  startDate: string;
+  endDate: string;
+  summary: DownloadReportSummary;
+  clientSummary: DownloadReportClientItem[];
+  ticketRecords: DownloadReportTicketRecord[];
+};
 type ReportTicketDirectory = { companies: Array<{ id: number; name: string }>; customers: Array<{ id: number; name: string; email: string | null; companyName: string | null }>; consultants: Array<{ id: number; name: string }> };
 type KnowledgeBaseTicket = { id: number; issue: string; description: string; reportedAt: string; solution: string; closedAt: string; solutionType: string; clientName: string; consultantName: string };
 type InformationAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string };
@@ -899,7 +934,7 @@ function NewTicketPopup({ ticket, onDismiss, onOpen }: { ticket: Ticket; onDismi
   return <div className="modal-scrim feedback-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onDismiss(); }}>
     <section className="create-modal feedback-modal new-ticket-modal" role="dialog" aria-modal="true" aria-labelledby="new-ticket-title">
       <div className="modal-heading">
-        <div><div className="eyebrow">NEW TICKET · #{String(ticket.id).padStart(4, "0")}</div><h2 id="new-ticket-title">A ticket has been created for you</h2></div>
+        <div><div className="eyebrow">NEW TICKET · {ticket.ticketNumber || `#${String(ticket.id).padStart(4, "0")}`}</div><h2 id="new-ticket-title">A ticket has been created for you</h2></div>
         <button type="button" className="icon-button" onClick={onDismiss} aria-label="Close ticket notice"><X size={18} /></button>
       </div>
       <div className="new-ticket-summary">
@@ -1231,10 +1266,13 @@ function App() {
     const matchCompany = !consultantInbox || companyFilter === "all" || ticket.company?.id === Number(companyFilter);
     const query = search.trim().toLowerCase();
     const cleanId = query.replace(/^#/, "");
+    const cleanTicketNumber = ticket.ticketNumber ? ticket.ticketNumber.toLowerCase().replace(/^#/, "") : "";
     const matchSearch = !query ||
       (cleanId && String(ticket.id) === cleanId) ||
       (cleanId && String(ticket.id).padStart(4, "0") === cleanId) ||
       (cleanId && String(ticket.id).includes(cleanId)) ||
+      (cleanTicketNumber && cleanTicketNumber.includes(cleanId)) ||
+      (ticket.ticketNumber && ticket.ticketNumber.toLowerCase().includes(query)) ||
       `${ticket.subject} ${ticket.customer.name} ${ticket.lastMessage}`.toLowerCase().includes(query);
     const matchView = activeView === "assigned"
       ? ticket.assignee?.id === user?.id
@@ -1719,6 +1757,9 @@ function App() {
           <button aria-label="User Manual" title="User Manual" className={`nav-item ${activeView === "user-manual" ? "active" : ""}`} onClick={() => setActiveView("user-manual")}>
             <BookOpen size={17} /><span>User Manual</span>
           </button>
+          <button aria-label="Download Reports" title="Download Reports" className={`nav-item ${activeView === "download-reports" ? "active" : ""}`} onClick={() => setActiveView("download-reports")}>
+            <FileDown size={17} /><span>Download Reports</span>
+          </button>
           </>}
           {!isAgent && <button aria-label="My tickets" title="My tickets" className={`nav-item ${activeView === "my-tickets" ? "active" : ""}`} onClick={() => { setActiveView("my-tickets"); setFilter("all"); }}>
             <UserRound size={17} /><span>My tickets</span><span className="nav-count">{myTicketCount}</span>
@@ -1755,7 +1796,7 @@ function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "information" ? "Information Center" : activeView === "user-manual" ? "User Manual" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
+          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "information" ? "Information Center" : activeView === "user-manual" ? "User Manual" : activeView === "download-reports" ? "Download Reports" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
           {user.role === "customer" && user.companyName && <div className="topbar-company-name" title={user.companyName}>{user.companyName}</div>}
           <div className="topbar-actions">
             {user.role === "customer" && availableCompanies.length > 1 && <button type="button" className="company-switcher" onClick={() => setShowCompanySelection(true)}><Building2 size={14} /><span>{user.companyName || "Select a company"}</span><ArrowDown size={13} /></button>}
@@ -1918,7 +1959,7 @@ function App() {
                 ) : filteredTickets.map((ticket) => (
                   <button key={ticket.id} className={`ticket-row ${selectedId === ticket.id ? "selected" : ""}`} onClick={() => setSelectedId(ticket.id)}>
                     <div className="ticket-row-top">
-                      <span className="ticket-number">#{String(ticket.id).padStart(4, "0")}</span>
+                      <span className="ticket-number">{ticket.ticketNumber || `#${String(ticket.id).padStart(4, "0")}`}</span>
                       <span className="ticket-time">{ticketUpdatedLabel(ticket.updatedAt)}</span>
                     </div>
                     <div className="ticket-subject">{ticket.subject}</div>
@@ -1966,7 +2007,7 @@ function App() {
                     <ArrowLeft size={16} />
                     <span>Tickets</span>
                   </button>
-                  <div className="detail-title-wrap"><span className="ticket-number">#{String(selectedTicket.id).padStart(4, "0")}</span><h2>{selectedTicket.subject}</h2></div>
+                  <div className="detail-title-wrap"><span className="ticket-number">{selectedTicket.ticketNumber || `#${String(selectedTicket.id).padStart(4, "0")}`}</span><h2>{selectedTicket.subject}</h2></div>
                   <div className="detail-actions"><button className="icon-button" aria-label="Close ticket detail" onClick={() => setSelectedId(null)}><X size={18} /></button></div>
                 </div>
                 <div className="detail-scroll-area">
@@ -2502,6 +2543,8 @@ function App() {
                   setActiveView("inbox");
                 }}
               />
+              : activeView === "download-reports" && isAgent
+                ? <DownloadReportsView />
               : activeView === "reports" && (isSuperAdmin || isCompanyAdmin)
                 ? <AnalyticsDashboard workspaceWide={isSuperAdmin} />
               : activeView === "manual-ticket" && isSuperAdmin
@@ -2747,7 +2790,7 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
       ...report.customerActivity.map((entry) => [entry.companyName || "", entry.name, entry.email, entry.raisedInPeriod, entry.active, entry.inProgress, entry.resolvedInPeriod]),
       [],
       ["Ticket", "Subject", "Company", "Client", "Status", "Priority", "Consultant", "Last updated"],
-      ...ticketRows.map((ticket) => [ticket.id, ticket.subject, ticket.companyName || "", ticket.customerName, ticket.status, ticket.priority, ticket.consultantName || "Unassigned", ticket.updatedAt]),
+      ...ticketRows.map((ticket) => [ticket.ticketNumber || `#${String(ticket.id).padStart(4, "0")}`, ticket.subject, ticket.companyName || "", ticket.customerName, ticket.status, ticket.priority, ticket.consultantName || "Unassigned", ticket.updatedAt]),
       ...(workspaceWide && !report.scopeCompany ? [[], ["Company", "Tickets created in period"], ...report.companyVolume.map((entry) => [entry.name, entry.count])] : []),
     ];
     const csv = rows.map((row) => row.map((value) => {
@@ -2916,7 +2959,7 @@ function AnalyticsDashboard({ workspaceWide }: { workspaceWide: boolean }) {
           {ticketError && <div className="inline-error" role="alert">{ticketError}</div>}
           {loadingTickets ? <p className="report-empty" role="status">Loading matching tickets…</p> : ticketRows.length ? <>
             <div className="report-table-wrap"><table className="report-data-table"><thead><tr><th>Ticket</th><th>Company</th><th>Client</th><th>Status</th><th>Priority</th><th>Consultant</th><th>Updated</th></tr></thead><tbody>
-              {ticketRows.map((ticket) => <tr key={ticket.id}><td><strong>#{ticket.id}</strong><br />{ticket.subject}</td><td>{ticket.companyName || "—"}</td><td>{ticket.customerName}</td><td>{ticket.status === "in_progress" ? "In progress" : ticket.status === "resolved" ? "Closed" : ticket.status[0].toUpperCase() + ticket.status.slice(1)}</td><td>{ticket.priority[0].toUpperCase() + ticket.priority.slice(1)}</td><td>{ticket.consultantName || "Unassigned"}</td><td>{new Date(ticket.updatedAt).toLocaleString()}</td></tr>)}
+              {ticketRows.map((ticket) => <tr key={ticket.id}><td><strong>{ticket.ticketNumber || `#${ticket.id}`}</strong><br />{ticket.subject}</td><td>{ticket.companyName || "—"}</td><td>{ticket.customerName}</td><td>{ticket.status === "in_progress" ? "In progress" : ticket.status === "resolved" ? "Closed" : ticket.status[0].toUpperCase() + ticket.status.slice(1)}</td><td>{ticket.priority[0].toUpperCase() + ticket.priority.slice(1)}</td><td>{ticket.consultantName || "Unassigned"}</td><td>{new Date(ticket.updatedAt).toLocaleString()}</td></tr>)}
             </tbody></table></div>
             <div className="report-ticket-pagination"><span>Page {ticketPage} of {Math.max(1, Math.ceil(ticketTotal / 50))}</span><div><button className="button button-quiet" type="button" disabled={ticketPage <= 1 || loadingTickets} onClick={() => setTicketPage((page) => page - 1)}>Previous</button><button className="button button-quiet" type="button" disabled={ticketPage >= Math.ceil(ticketTotal / 50) || loadingTickets} onClick={() => setTicketPage((page) => page + 1)}>Next</button></div></div>
           </> : <p className="report-empty">No tickets match the selected filters.</p>}
@@ -2956,6 +2999,562 @@ function ReportBreakdown({ title, subtitle, rows }: {
   </section>;
 }
 
+function generateCompanyPdfReport(report: DownloadReportData) {
+  const doc = new jsPDF({
+    orientation: "portrait",
+    unit: "mm",
+    format: "a4",
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 14;
+
+  // Header background banner
+  doc.setFillColor(15, 23, 42); // slate-900
+  doc.rect(0, 0, pageWidth, 28, "F");
+
+  // Branded title
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(15);
+  doc.text("JISHNU INFOTECH SUPPORT SYSTEM", margin, 12);
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8.5);
+  doc.setTextColor(148, 163, 184); // slate-400
+  const periodLabel = report.period === "weekly" ? "Weekly Report"
+    : report.period === "monthly" ? "Monthly Report"
+    : report.period === "yearly" ? "Yearly Report"
+    : "Custom Period Report";
+  const genDate = new Date().toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  doc.text(`Generated: ${genDate}`, pageWidth - margin, 12, { align: "right" });
+  doc.text("Company Ticket Monitoring & Performance Report", margin, 20);
+
+  // Company Name Header Title
+  let currentY = 38;
+  doc.setTextColor(15, 23, 42);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text(report.company.name.toUpperCase(), margin, currentY);
+
+  currentY += 6;
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(71, 85, 105);
+  doc.text(`${periodLabel}  |  Date Range: ${report.startDate} to ${report.endDate}`, margin, currentY);
+
+  currentY += 8;
+
+  // Draw 5 Metric Title Cards
+  const metricCards = [
+    { label: "TICKETS RAISED", count: report.summary.raised, bg: [239, 246, 255], border: [191, 219, 254], text: [29, 78, 216] },
+    { label: "TICKETS SOLVED", count: report.summary.solved, bg: [240, 253, 244], border: [187, 247, 208], text: [21, 128, 61] },
+    { label: "TICKETS ACTIVE", count: report.summary.active, bg: [254, 252, 232], border: [254, 240, 138], text: [161, 98, 7] },
+    { label: "TICKETS WAITING", count: report.summary.waiting, bg: [254, 242, 242], border: [254, 202, 202], text: [185, 28, 28] },
+    { label: "IN PROGRESS", count: report.summary.inProgress, bg: [245, 243, 255], border: [221, 214, 254], text: [109, 40, 217] },
+  ];
+
+  const cardGap = 3;
+  const usableWidth = pageWidth - 2 * margin;
+  const cardWidth = (usableWidth - (metricCards.length - 1) * cardGap) / metricCards.length;
+  const cardHeight = 18;
+
+  metricCards.forEach((card, i) => {
+    const x = margin + i * (cardWidth + cardGap);
+    doc.setFillColor(card.bg[0], card.bg[1], card.bg[2]);
+    doc.setDrawColor(card.border[0], card.border[1], card.border[2]);
+    doc.setLineWidth(0.3);
+    doc.roundedRect(x, currentY, cardWidth, cardHeight, 1.5, 1.5, "FD");
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(6.5);
+    doc.setTextColor(card.text[0], card.text[1], card.text[2]);
+    doc.text(card.label, x + cardWidth / 2, currentY + 6, { align: "center" });
+
+    doc.setFontSize(13);
+    doc.text(String(card.count), x + cardWidth / 2, currentY + 14, { align: "center" });
+  });
+
+  currentY += cardHeight + 10;
+
+  // Section 1: Client's Tickets Details Table
+  doc.setTextColor(15, 23, 42);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.text("CLIENT'S TICKETS DETAILS", margin, currentY);
+  currentY += 4;
+
+  const clientTableHead = [["S.No", "Client Name", "Tickets Raised", "Ticket Resolved", "Active", "Waiting", "In Progress"]];
+  const clientTableBody = report.clientSummary.map((c, i) => [
+    i + 1,
+    c.clientName,
+    c.raised,
+    c.resolved,
+    c.active,
+    c.waiting,
+    c.inProgress,
+  ]);
+
+  if (clientTableBody.length === 0) {
+    clientTableBody.push(["—", "No tickets raised by clients in this period", "0", "0", "0", "0", "0"]);
+  }
+
+  autoTable(doc, {
+    startY: currentY,
+    head: clientTableHead,
+    body: clientTableBody,
+    margin: { left: margin, right: margin },
+    theme: "striped",
+    styles: {
+      fontSize: 8.5,
+      cellPadding: 2.5,
+      overflow: "linebreak",
+    },
+    headStyles: {
+      fillColor: [30, 41, 59],
+      textColor: [255, 255, 255],
+      fontStyle: "bold",
+      halign: "center",
+    },
+    columnStyles: {
+      0: { halign: "center", cellWidth: 14 },
+      1: { halign: "left" },
+      2: { halign: "center", cellWidth: 26 },
+      3: { halign: "center", cellWidth: 26 },
+      4: { halign: "center", cellWidth: 20 },
+      5: { halign: "center", cellWidth: 20 },
+      6: { halign: "center", cellWidth: 24 },
+    },
+  });
+
+  currentY = (doc as any).lastAutoTable.finalY + 10;
+
+  // Section 2: Ticket Details Table
+  if (currentY > pageHeight - 45) {
+    doc.addPage();
+    currentY = 20;
+  }
+
+  doc.setTextColor(15, 23, 42);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.text("TICKET DETAILS", margin, currentY);
+  currentY += 4;
+
+  const ticketTableHead = [["S.No", "Ticket No", "Ticket Description", "Client Raised By", "Status"]];
+  const ticketTableBody = report.ticketRecords.map((t) => [
+    t.sNo,
+    t.ticketNo,
+    t.ticketDescription,
+    t.clientRaisedBy,
+    t.status,
+  ]);
+
+  if (ticketTableBody.length === 0) {
+    ticketTableBody.push(["—", "—", "No tickets recorded for this company in the selected date range.", "—", "—"]);
+  }
+
+  autoTable(doc, {
+    startY: currentY,
+    head: ticketTableHead,
+    body: ticketTableBody,
+    margin: { left: margin, right: margin },
+    theme: "striped",
+    styles: {
+      fontSize: 8.5,
+      cellPadding: 2.5,
+      overflow: "linebreak",
+    },
+    headStyles: {
+      fillColor: [30, 41, 59],
+      textColor: [255, 255, 255],
+      fontStyle: "bold",
+      halign: "center",
+    },
+    columnStyles: {
+      0: { halign: "center", cellWidth: 14 },
+      1: { halign: "center", cellWidth: 24, fontStyle: "bold" },
+      2: { halign: "left" },
+      3: { halign: "left", cellWidth: 38 },
+      4: { halign: "center", cellWidth: 26, fontStyle: "bold" },
+    },
+    didParseCell: (data) => {
+      if (data.section === "body" && data.column.index === 4) {
+        const val = String(data.cell.raw);
+        if (val === "Solved") {
+          data.cell.styles.textColor = [21, 128, 61];
+        } else if (val === "In Progress") {
+          data.cell.styles.textColor = [109, 40, 217];
+        } else if (val === "Waiting") {
+          data.cell.styles.textColor = [185, 28, 28];
+        } else if (val === "Active") {
+          data.cell.styles.textColor = [161, 98, 7];
+        }
+      }
+    },
+  });
+
+  const totalPages = doc.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(148, 163, 184);
+    doc.text("Jishnu Infotech Support · Company Tickets Report · Confidential", margin, pageHeight - 8);
+    doc.text(`Page ${i} of ${totalPages}`, pageWidth - margin, pageHeight - 8, { align: "right" });
+  }
+
+  const safeFileName = `${report.company.name.replace(/[^a-zA-Z0-9_-]/g, "_")}_Ticket_Report_${report.period}_${report.startDate}_to_${report.endDate}.pdf`;
+  doc.save(safeFileName);
+}
+
+function DownloadReportsView() {
+  const [companies, setCompanies] = useState<Array<{ id: number; name: string }>>([]);
+  const [selectedCompanyId, setSelectedCompanyId] = useState<number | "">("");
+  const [period, setPeriod] = useState<"weekly" | "monthly" | "yearly" | "custom">("weekly");
+
+  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const defaultWeeklyFrom = useMemo(() => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - 6);
+    return d.toISOString().slice(0, 10);
+  }, []);
+
+  const [dateFrom, setDateFrom] = useState(defaultWeeklyFrom);
+  const [dateTo, setDateTo] = useState(todayStr);
+
+  const [loading, setLoading] = useState(false);
+  const [generatingPdf, setGeneratingPdf] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [report, setReport] = useState<DownloadReportData | null>(null);
+
+  const handlePeriodChange = (newPeriod: "weekly" | "monthly" | "yearly" | "custom") => {
+    setPeriod(newPeriod);
+    const today = new Date();
+    const end = today.toISOString().slice(0, 10);
+    setDateTo(end);
+
+    if (newPeriod === "weekly") {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() - 6);
+      setDateFrom(d.toISOString().slice(0, 10));
+    } else if (newPeriod === "monthly") {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() - 29);
+      setDateFrom(d.toISOString().slice(0, 10));
+    } else if (newPeriod === "yearly") {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() - 364);
+      setDateFrom(d.toISOString().slice(0, 10));
+    }
+  };
+
+  const fetchReport = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams();
+      if (selectedCompanyId) params.set("companyId", String(selectedCompanyId));
+      params.set("period", period);
+      if (dateFrom) params.set("dateFrom", dateFrom);
+      if (dateTo) params.set("dateTo", dateTo);
+
+      const res = await api<{ companies: Array<{ id: number; name: string }>; report: DownloadReportData | null }>(
+        `/reports/company-pdf-data?${params.toString()}`
+      );
+      setCompanies(res.companies || []);
+      if (!selectedCompanyId && res.companies && res.companies.length > 0) {
+        setSelectedCompanyId(res.companies[0].id);
+      }
+      setReport(res.report || null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load report data.");
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedCompanyId, period, dateFrom, dateTo]);
+
+  useEffect(() => {
+    fetchReport();
+  }, [fetchReport]);
+
+  const handleDownloadPdf = () => {
+    if (!report) return;
+    setGeneratingPdf(true);
+    try {
+      generateCompanyPdfReport(report);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to generate PDF.");
+    } finally {
+      setGeneratingPdf(false);
+    }
+  };
+
+  return (
+    <section className="feature-page download-reports-page">
+      <div className="page-heading">
+        <div>
+          <div className="eyebrow"><span className="eyebrow-live" />CONSULTANT PORTAL</div>
+          <h1>Download Reports</h1>
+          <p>Generate and download company-specific weekly, monthly, yearly, or custom date range PDF reports.</p>
+        </div>
+      </div>
+
+      <div className="download-reports-toolbar">
+        <label className="download-reports-field">
+          <span>Company</span>
+          <select
+            value={selectedCompanyId}
+            onChange={(e) => setSelectedCompanyId(Number(e.target.value))}
+            aria-label="Select company for report"
+          >
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </label>
+
+        <div className="download-reports-field">
+          <span>Report Period</span>
+          <div className="download-reports-pills" role="radiogroup" aria-label="Select report period">
+            <button
+              type="button"
+              className={`download-reports-pill ${period === "weekly" ? "active" : ""}`}
+              onClick={() => handlePeriodChange("weekly")}
+            >
+              Weekly
+            </button>
+            <button
+              type="button"
+              className={`download-reports-pill ${period === "monthly" ? "active" : ""}`}
+              onClick={() => handlePeriodChange("monthly")}
+            >
+              Monthly
+            </button>
+            <button
+              type="button"
+              className={`download-reports-pill ${period === "yearly" ? "active" : ""}`}
+              onClick={() => handlePeriodChange("yearly")}
+            >
+              Yearly
+            </button>
+            <button
+              type="button"
+              className={`download-reports-pill ${period === "custom" ? "active" : ""}`}
+              onClick={() => handlePeriodChange("custom")}
+            >
+              Custom Date
+            </button>
+          </div>
+        </div>
+
+        <label className="download-reports-field">
+          <span>From Date</span>
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => {
+              setDateFrom(e.target.value);
+              setPeriod("custom");
+            }}
+            aria-label="From date"
+          />
+        </label>
+
+        <label className="download-reports-field">
+          <span>To Date</span>
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => {
+              setDateTo(e.target.value);
+              setPeriod("custom");
+            }}
+            aria-label="To date"
+          />
+        </label>
+
+        <div className="download-reports-actions">
+          <button
+            type="button"
+            className="button button-quiet"
+            onClick={() => fetchReport()}
+            disabled={loading}
+          >
+            <RefreshCw size={14} className={loading ? "refresh-spinning" : ""} />
+            <span>Refresh</span>
+          </button>
+          <button
+            type="button"
+            className="button button-primary download-pdf-btn"
+            onClick={handleDownloadPdf}
+            disabled={!report || loading || generatingPdf}
+          >
+            <FileDown size={15} />
+            <span>{generatingPdf ? "Generating PDF…" : "Download PDF"}</span>
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="inline-error" role="alert">{error}</div>}
+
+      {loading && !report ? (
+        <div className="report-empty" role="status">Loading company report…</div>
+      ) : report ? (
+        <div className="download-reports-content">
+          <header className="download-reports-header">
+            <div>
+              <span className="download-reports-company-tag">{report.company.name}</span>
+              <h2>{report.company.name} — Ticket Report</h2>
+              <p className="download-reports-period-label">
+                <Calendar size={13} />
+                <span>
+                  {period === "weekly" ? "Weekly" : period === "monthly" ? "Monthly" : period === "yearly" ? "Yearly" : "Custom"} Report: {report.startDate} to {report.endDate}
+                </span>
+                <span className="download-reports-note">
+                  (Includes only tickets raised within this period and their current status)
+                </span>
+              </p>
+            </div>
+            <button
+              type="button"
+              className="button button-primary download-pdf-top-btn"
+              onClick={handleDownloadPdf}
+              disabled={generatingPdf}
+            >
+              <FileDown size={15} />
+              <span>{generatingPdf ? "Generating PDF…" : "Download PDF"}</span>
+            </button>
+          </header>
+
+          <div className="download-reports-metrics">
+            <div className="download-metric-card tone-blue">
+              <span className="metric-title">TICKETS RAISED</span>
+              <strong className="metric-value">{report.summary.raised}</strong>
+              <small className="metric-caption">Tickets created in period</small>
+            </div>
+            <div className="download-metric-card tone-green">
+              <span className="metric-title">TICKETS SOLVED</span>
+              <strong className="metric-value">{report.summary.solved}</strong>
+              <small className="metric-caption">Resolved tickets</small>
+            </div>
+            <div className="download-metric-card tone-yellow">
+              <span className="metric-title">TICKETS IN ACTIVE</span>
+              <strong className="metric-value">{report.summary.active}</strong>
+              <small className="metric-caption">Open / Active tickets</small>
+            </div>
+            <div className="download-metric-card tone-red">
+              <span className="metric-title">TICKETS IN WAITING</span>
+              <strong className="metric-value">{report.summary.waiting}</strong>
+              <small className="metric-caption">Waiting on response</small>
+            </div>
+            <div className="download-metric-card tone-purple">
+              <span className="metric-title">IN PROGRESS</span>
+              <strong className="metric-value">{report.summary.inProgress}</strong>
+              <small className="metric-caption">Under investigation</small>
+            </div>
+          </div>
+
+          <section className="download-reports-section">
+            <div className="section-header">
+              <h3>Client's Tickets Details</h3>
+              <span className="section-count">{report.clientSummary.length} {report.clientSummary.length === 1 ? "client" : "clients"}</span>
+            </div>
+            <div className="report-table-wrap">
+              <table className="report-data-table download-reports-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 60, textAlign: "center" }}>S.No</th>
+                    <th>Client Name</th>
+                    <th style={{ textAlign: "center" }}>Tickets Raised</th>
+                    <th style={{ textAlign: "center" }}>Ticket Resolved</th>
+                    <th style={{ textAlign: "center" }}>Active</th>
+                    <th style={{ textAlign: "center" }}>Waiting</th>
+                    <th style={{ textAlign: "center" }}>In Progress</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.clientSummary.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} style={{ textAlign: "center", color: "var(--muted, #64748b)", padding: "20px" }}>
+                        No clients raised tickets during this period.
+                      </td>
+                    </tr>
+                  ) : (
+                    report.clientSummary.map((client, idx) => (
+                      <tr key={client.clientName}>
+                        <td style={{ textAlign: "center", fontWeight: 600 }}>{idx + 1}</td>
+                        <td style={{ fontWeight: 600 }}>{client.clientName}</td>
+                        <td style={{ textAlign: "center", fontWeight: 700 }}>{client.raised}</td>
+                        <td style={{ textAlign: "center", color: "#166534", fontWeight: 600 }}>{client.resolved}</td>
+                        <td style={{ textAlign: "center", color: "#854d0e", fontWeight: 600 }}>{client.active}</td>
+                        <td style={{ textAlign: "center", color: "#991b1b", fontWeight: 600 }}>{client.waiting}</td>
+                        <td style={{ textAlign: "center", color: "#6b21a8", fontWeight: 600 }}>{client.inProgress}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="download-reports-section">
+            <div className="section-header">
+              <h3>Ticket Details</h3>
+              <span className="section-count">{report.ticketRecords.length} {report.ticketRecords.length === 1 ? "ticket" : "tickets"}</span>
+            </div>
+            <div className="report-table-wrap">
+              <table className="report-data-table download-reports-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 60, textAlign: "center" }}>S.No</th>
+                    <th style={{ width: 110, textAlign: "center" }}>Ticket No</th>
+                    <th>Ticket Description</th>
+                    <th style={{ width: 180 }}>Client Raised By</th>
+                    <th style={{ width: 120, textAlign: "center" }}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.ticketRecords.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} style={{ textAlign: "center", color: "var(--muted, #64748b)", padding: "24px" }}>
+                        No tickets were raised by this company during the selected date range.
+                      </td>
+                    </tr>
+                  ) : (
+                    report.ticketRecords.map((t) => (
+                      <tr key={t.id}>
+                        <td style={{ textAlign: "center", fontWeight: 600 }}>{t.sNo}</td>
+                        <td style={{ textAlign: "center" }}>
+                          <span className="download-ticket-number-badge">{t.ticketNo}</span>
+                        </td>
+                        <td>
+                          <div className="download-ticket-desc" title={t.ticketDescription}>
+                            {t.ticketDescription}
+                          </div>
+                        </td>
+                        <td style={{ fontWeight: 500 }}>{t.clientRaisedBy}</td>
+                        <td style={{ textAlign: "center" }}>
+                          <span className={`download-status-badge status-${t.status.toLowerCase().replace(/\s+/g, "-")}`}>
+                            {t.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      ) : (
+        <div className="report-empty">Choose a company to generate its tickets report.</div>
+      )}
+    </section>
+  );
+}
+
 function CustomerRatingForm({ ticket, submitted, onClose, onSubmit }: {
   ticket: Ticket;
   submitted: boolean;
@@ -2982,7 +3581,7 @@ function CustomerRatingForm({ ticket, submitted, onClose, onSubmit }: {
   return <div className="modal-scrim feedback-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
     <section className="create-modal feedback-modal" role="dialog" aria-modal="true" aria-labelledby="feedback-title">
       <div className="modal-heading">
-        <div><div className="eyebrow">TICKET #{String(ticket.id).padStart(4, "0")}</div><h2 id="feedback-title">How was your support experience?</h2></div>
+        <div><div className="eyebrow">TICKET {ticket.ticketNumber || `#${String(ticket.id).padStart(4, "0")}`}</div><h2 id="feedback-title">How was your support experience?</h2></div>
         <button type="button" className="icon-button" onClick={onClose} aria-label="Close feedback" disabled={saving}><X size={18} /></button>
       </div>
       <p className="feedback-ticket-subject">Your ticket “{ticket.subject}” has been closed. Your feedback helps us improve.</p>
@@ -3603,7 +4202,7 @@ function NotificationCenter({ notifications, onOpen }: {
       {notifications.length === 0
         ? <div className="empty-list"><Bell size={27} /><strong>You're all caught up</strong><span>New ticket alerts will show here.</span></div>
         : notifications.map((notification) => <button type="button" className={`notification-row ${notification.readAt ? "" : "notification-unread"}`} key={notification.id} onClick={() => onOpen(notification)}>
-          <span className="notification-indicator" /><span className="notification-copy"><strong>{notification.message}</strong><small>Ticket #{notification.ticketId} · {timeAgo(notification.createdAt)}</small></span><ArrowRight size={16} />
+          <span className="notification-indicator" /><span className="notification-copy"><strong>{notification.message}</strong><small>Ticket {notification.ticketNumber || `#${notification.ticketId}`} · {timeAgo(notification.createdAt)}</small></span><ArrowRight size={16} />
         </button>)}
     </div>
   </section>;
@@ -3615,7 +4214,7 @@ function ConsultantNewTicketPopup({ notification, onDismiss, onOpen }: {
   return <div className="modal-scrim feedback-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onDismiss(); }}>
     <section className="create-modal feedback-modal new-ticket-modal" role="dialog" aria-modal="true" aria-labelledby="consultant-new-ticket-title">
       <div className="modal-heading">
-        <div><div className="eyebrow">NEW TICKET · #{String(notification.ticketId).padStart(4, "0")}</div><h2 id="consultant-new-ticket-title">A ticket has been assigned to you</h2></div>
+        <div><div className="eyebrow">NEW TICKET · {notification.ticketNumber || `#${String(notification.ticketId).padStart(4, "0")}`}</div><h2 id="consultant-new-ticket-title">A ticket has been assigned to you</h2></div>
         <button type="button" className="icon-button" onClick={onDismiss} aria-label="Close ticket notice"><X size={18} /></button>
       </div>
       <div className="new-ticket-summary">
@@ -4325,7 +4924,7 @@ function KnowledgeBase({ companies }: { companies: Array<{ id: number; name: str
     </div>}
     {openTicket && <div className="modal-scrim knowledge-modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpenTicket(null); }}>
       <section className="knowledge-conversation-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-conversation-title">
-        <header className="knowledge-conversation-header"><div><div className="eyebrow">TICKET #{String(openTicket.ticket.id).padStart(4, "0")} · FULL HISTORY</div><h2 id="knowledge-conversation-title">{openTicket.ticket.subject}</h2></div><button type="button" className="icon-button" aria-label="Close conversation" onClick={() => setOpenTicket(null)}><X size={18} /></button></header>
+        <header className="knowledge-conversation-header"><div><div className="eyebrow">TICKET {openTicket.ticket.ticketNumber || `#${String(openTicket.ticket.id).padStart(4, "0")}`} · FULL HISTORY</div><h2 id="knowledge-conversation-title">{openTicket.ticket.subject}</h2></div><button type="button" className="icon-button" aria-label="Close conversation" onClick={() => setOpenTicket(null)}><X size={18} /></button></header>
         <div className="knowledge-conversation-scroll">
           <div className="knowledge-conversation-summary"><StatusPill status={openTicket.ticket.status} /><span>Reported {formatDate(openTicket.ticket.createdAt)}</span><span>Client: {displayClientName(openTicket.ticket.customer.name)}</span><span>Handled by: {openTicket.ticket.assignee?.name || "Unassigned"}</span></div>
           <article className="knowledge-original-request"><strong>Original ticket description</strong><p>{openTicket.ticket.description}</p></article>

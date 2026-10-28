@@ -9,6 +9,8 @@ import {
   determineTicketRouting,
   isTicketSolvedByInternal,
 } from "../server/internal-routing.js";
+import { deriveCompanyPrefix, formatCompanyTicketNumber } from "../server/ticket-numbering.js";
+import { calculateReportDateRange, aggregateCompanyReport, formatTicketStatusDisplay } from "../server/company-reports.js";
 
 test("agents can inspect a ticket by its id", () => {
   assert.deepEqual(ticketAccessFilter({ role: "agent", id: 7 }, 42), {
@@ -311,4 +313,148 @@ test("canEditConsultantSolution allows only Consultant Super Admins", () => {
   assert.equal(canEditConsultantSolution({ role: "customer", is_admin: 1 }), false);
   assert.equal(canEditConsultantSolution({ role: "customer", is_company_admin: 1 }), false);
   assert.equal(canEditConsultantSolution(null), false);
+});
+
+test("deriveCompanyPrefix extracts first two alphabetic characters from admin username or company name", () => {
+  // Balar Marketing with admin username ba_admin -> BA
+  assert.equal(deriveCompanyPrefix("ba_admin", "Balar Marketing"), "BA");
+  // Metcraft with admin username me_admin -> ME
+  assert.equal(deriveCompanyPrefix("me_admin", "Metcraft"), "ME");
+  // Metcraft with admin username metcraft -> ME
+  assert.equal(deriveCompanyPrefix("metcraft", "Metcraft"), "ME");
+  // Company admin with symbols or uppercase: Ba-Admin -> BA
+  assert.equal(deriveCompanyPrefix("Ba-Admin", "Balar"), "BA");
+  // Fallback to company name if admin username has no letters
+  assert.equal(deriveCompanyPrefix("123", "Metcraft"), "ME");
+  assert.equal(deriveCompanyPrefix(null, "Metcraft"), "ME");
+  assert.equal(deriveCompanyPrefix(null, "Balar Marketing"), "BA");
+  // Single letter fallback
+  assert.equal(deriveCompanyPrefix(null, "A"), "AX");
+  // Empty fallback
+  assert.equal(deriveCompanyPrefix(null, null), "TK");
+});
+
+test("formatCompanyTicketNumber generates company-prefixed sequential ticket numbers", () => {
+  // Balar Marketing ticket 1 -> #BA001
+  assert.equal(
+    formatCompanyTicketNumber({
+      companyId: 1,
+      companyName: "Balar Marketing",
+      adminUsername: "ba_admin",
+      companyTicketSeq: 1,
+      ticketId: 72,
+    }),
+    "#BA001"
+  );
+
+  // Metcraft ticket 1 -> #ME001
+  assert.equal(
+    formatCompanyTicketNumber({
+      companyId: 2,
+      companyName: "Metcraft",
+      adminUsername: "me_admin",
+      companyTicketSeq: 1,
+      ticketId: 85,
+    }),
+    "#ME001"
+  );
+
+  // Metcraft ticket 42 -> #ME042
+  assert.equal(
+    formatCompanyTicketNumber({
+      companyId: 2,
+      companyName: "Metcraft",
+      adminUsername: "me_admin",
+      companyTicketSeq: 42,
+      ticketId: 105,
+    }),
+    "#ME042"
+  );
+
+  // Global / unassigned ticket without company_id falls back to #0072
+  assert.equal(
+    formatCompanyTicketNumber({
+      companyId: null,
+      companyName: null,
+      ticketId: 72,
+    }),
+    "#0072"
+  );
+});
+
+test("calculateReportDateRange generates accurate ISO dates for periods", () => {
+  const refDate = new Date("2026-10-28T12:00:00Z");
+
+  const weekly = calculateReportDateRange("weekly", null, null, refDate);
+  assert.equal(weekly.period, "weekly");
+  assert.equal(weekly.startDate, "2026-10-22");
+  assert.equal(weekly.endDate, "2026-10-28");
+  assert.equal(weekly.startAt, "2026-10-22 00:00:00");
+  assert.equal(weekly.endAt, "2026-10-28 23:59:59");
+
+  const monthly = calculateReportDateRange("monthly", null, null, refDate);
+  assert.equal(monthly.period, "monthly");
+  assert.equal(monthly.startDate, "2026-09-29");
+  assert.equal(monthly.endDate, "2026-10-28");
+
+  const custom = calculateReportDateRange("custom", "2026-10-01", "2026-10-15", refDate);
+  assert.equal(custom.period, "custom");
+  assert.equal(custom.startDate, "2026-10-01");
+  assert.equal(custom.endDate, "2026-10-15");
+});
+
+test("aggregateCompanyReport summarizes counts and client breakdown strictly for tickets in period", () => {
+  const company = { id: 1, name: "Balar Marketing" };
+  const adminUsername = "ba_admin";
+
+  const tickets = [
+    { id: 10, subject: "Login Issue", description: "Cannot login", status: "resolved", client_name: "Alice", company_ticket_seq: 1 },
+    { id: 11, subject: "Invoice Query", description: "Need GST invoice", status: "in_progress", client_name: "Alice", company_ticket_seq: 2 },
+    { id: 12, subject: "Printer Support", description: "Offline", status: "open", client_name: "Bob", company_ticket_seq: 3 },
+    { id: 13, subject: "VPN Connectivity", description: "Timeout", status: "waiting", client_name: "Charlie", company_ticket_seq: 4 },
+  ];
+
+  const report = aggregateCompanyReport({
+    company,
+    adminUsername,
+    tickets,
+    period: "weekly",
+    startDate: "2026-10-22",
+    endDate: "2026-10-28",
+  });
+
+  assert.equal(report.company.name, "Balar Marketing");
+  assert.equal(report.summary.raised, 4);
+  assert.equal(report.summary.solved, 1);
+  assert.equal(report.summary.inProgress, 1);
+  assert.equal(report.summary.active, 1);
+  assert.equal(report.summary.waiting, 1);
+
+  // Verify client summary table
+  assert.equal(report.clientSummary.length, 3);
+  const alice = report.clientSummary.find((c) => c.clientName === "Alice");
+  assert.deepEqual(alice, {
+    clientName: "Alice",
+    raised: 2,
+    resolved: 1,
+    active: 0,
+    waiting: 0,
+    inProgress: 1,
+  });
+
+  // Verify ticket details table format
+  assert.equal(report.ticketRecords.length, 4);
+  assert.equal(report.ticketRecords[0].sNo, 1);
+  assert.equal(report.ticketRecords[0].ticketNo, "#BA001");
+  assert.equal(report.ticketRecords[0].clientRaisedBy, "Alice");
+  assert.equal(report.ticketRecords[0].status, "Solved");
+
+  assert.equal(report.ticketRecords[1].ticketNo, "#BA002");
+  assert.equal(report.ticketRecords[1].status, "In Progress");
+
+  assert.equal(report.ticketRecords[2].ticketNo, "#BA003");
+  assert.equal(report.ticketRecords[2].status, "Active");
+
+  assert.equal(report.ticketRecords[3].ticketNo, "#BA004");
+  assert.equal(report.ticketRecords[3].status, "Waiting");
 });

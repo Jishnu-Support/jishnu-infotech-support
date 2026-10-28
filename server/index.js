@@ -17,6 +17,8 @@ import { db, initializeDatabase } from "./db.js";
 import { applicationUrl, emailIsConfigured, sendEmail } from "./email.js";
 import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket, canEditChatMessage, canEditConsultantSolution } from "./authz.js";
 import { normalizedTicketMetadata, ticketCategories, isAllowedAttachment, sanitizeAttachmentName } from "./validation.js";
+import { deriveCompanyPrefix, formatCompanyTicketNumber } from "./ticket-numbering.js";
+import { calculateReportDateRange, aggregateCompanyReport, formatTicketStatusDisplay } from "./company-reports.js";
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -469,8 +471,17 @@ async function ticketSummary(row) {
       row.resolved_by_role === "customer"
     )
   );
+  const ticketNumber = formatCompanyTicketNumber({
+    companyId: row.company_id,
+    companyName: row.company_name,
+    adminUsername: row.company_admin_username,
+    companyTicketSeq: row.company_ticket_seq,
+    ticketId: row.id,
+  });
   return {
     id: row.id,
+    ticketNumber,
+    companyTicketSeq: row.company_ticket_seq || null,
     subject: row.subject,
     description: row.description,
     status: row.status,
@@ -524,6 +535,12 @@ const ticketSelect = `
          a.role AS assignee_role,
          res.id AS resolved_by_id, res.name AS resolved_by_name, res.role AS resolved_by_role,
          res_cm.is_internal_consultant AS resolved_by_is_internal_consultant,
+         (
+           SELECT u.username FROM users u
+           JOIN company_memberships cm ON cm.user_id = u.id
+           WHERE cm.company_id = t.company_id AND cm.is_company_admin = 1
+           ORDER BY u.id ASC LIMIT 1
+         ) AS company_admin_username,
          (SELECT COUNT(*) FROM messages m WHERE m.ticket_id = t.id AND m.is_internal = 0) AS message_count,
          (SELECT COUNT(*) FROM ticket_attachments x WHERE x.ticket_id = t.id) AS attachment_count,
          (SELECT body FROM messages m WHERE m.ticket_id = t.id AND m.is_internal = 0 ORDER BY m.id DESC LIMIT 1) AS last_message,
@@ -1287,7 +1304,14 @@ app.get("/api/report-tickets", requireAuth, async (req, res) => {
     SELECT t.id, t.subject, t.status, t.priority, t.updated_at AS updatedAt,
            t.company_id AS companyId, t.customer_id AS customerId, t.assignee_id AS consultantId,
            co.name AS companyName, COALESCE(NULLIF(t.reported_client_name, ''), customer.name, '') AS customerName,
-           consultant.name AS consultantName
+           consultant.name AS consultantName,
+           t.company_ticket_seq AS companyTicketSeq,
+           (
+             SELECT u.username FROM users u
+             JOIN company_memberships cm ON cm.user_id = u.id
+             WHERE cm.company_id = t.company_id AND cm.is_company_admin = 1
+             ORDER BY u.id ASC LIMIT 1
+           ) AS companyAdminUsername
     FROM tickets t
     LEFT JOIN users customer ON customer.id = t.customer_id
     LEFT JOIN companies co ON co.id = t.company_id
@@ -1296,6 +1320,16 @@ app.get("/api/report-tickets", requireAuth, async (req, res) => {
     ORDER BY t.updated_at DESC, t.id DESC
     LIMIT ? OFFSET ?
   `).all(...params, pageSize, (page - 1) * pageSize);
+  const formattedTickets = tickets.map((t) => ({
+    ...t,
+    ticketNumber: formatCompanyTicketNumber({
+      companyId: t.companyId,
+      companyName: t.companyName,
+      adminUsername: t.companyAdminUsername,
+      companyTicketSeq: t.companyTicketSeq,
+      ticketId: t.id,
+    }),
+  }));
   const [companies, customers, consultants] = await Promise.all([
     access.workspaceWide
       ? db.prepare("SELECT id, name FROM companies ORDER BY name").all()
@@ -1309,7 +1343,60 @@ app.get("/api/report-tickets", requireAuth, async (req, res) => {
     `).all(...(scopeCompanyId === null ? [] : [scopeCompanyId])),
     db.prepare("SELECT id, name FROM users WHERE role = 'agent' ORDER BY name, id").all(),
   ]);
-  res.json({ tickets, total, page, pageSize, companies, customers, consultants });
+  res.json({ tickets: formattedTickets, total, page, pageSize, companies, customers, consultants });
+});
+
+app.get("/api/reports/company-pdf-data", requireAuth, requireAgent, async (req, res) => {
+  const companies = await db.prepare("SELECT id, name FROM companies WHERE is_active = 1 ORDER BY name ASC").all();
+  if (companies.length === 0) {
+    return res.json({ companies: [], report: null });
+  }
+
+  const requestedCompanyId = req.query.companyId ? Number(req.query.companyId) : null;
+  const targetCompanyId = (requestedCompanyId && Number.isInteger(requestedCompanyId))
+    ? requestedCompanyId
+    : Number(companies[0].id);
+
+  const company = await db.prepare("SELECT id, name FROM companies WHERE id = ?").get(targetCompanyId);
+  if (!company) {
+    return res.status(404).json({ error: "Company not found." });
+  }
+
+  const adminUser = await db.prepare(`
+    SELECT u.username FROM users u
+    JOIN company_memberships cm ON cm.user_id = u.id
+    WHERE cm.company_id = ? AND cm.is_company_admin = 1
+    ORDER BY u.id ASC LIMIT 1
+  `).get(company.id);
+
+  const period = typeof req.query.period === "string" ? req.query.period : "weekly";
+  const dateFrom = typeof req.query.dateFrom === "string" ? req.query.dateFrom : null;
+  const dateTo = typeof req.query.dateTo === "string" ? req.query.dateTo : null;
+
+  const range = calculateReportDateRange(period, dateFrom, dateTo);
+
+  // Note: Only tickets raised within this period itself (created_at >= startAt AND created_at <= endAt)
+  // are included with their status (solved or not).
+  const ticketRows = await db.prepare(`
+    SELECT t.id, t.subject, t.description, t.status, t.priority, t.created_at, t.company_ticket_seq,
+           COALESCE(NULLIF(t.reported_client_name, ''), customer.name, 'Unknown Client') AS client_name,
+           customer.id AS client_id
+    FROM tickets t
+    LEFT JOIN users customer ON customer.id = t.customer_id
+    WHERE t.company_id = ? AND t.created_at >= ? AND t.created_at <= ?
+    ORDER BY t.created_at ASC, t.id ASC
+  `).all(company.id, range.startAt, range.endAt);
+
+  const report = aggregateCompanyReport({
+    company,
+    adminUsername: adminUser?.username || null,
+    tickets: ticketRows,
+    period: range.period,
+    startDate: range.startDate,
+    endDate: range.endDate,
+  });
+
+  res.json({ companies, report });
 });
 
 app.get("/api/customers", requireAuth, requireAgent, async (_req, res) => {
@@ -2367,18 +2454,22 @@ app.post("/api/admin/manual-tickets", requireAuth, requireAdmin, receiveAttachme
   let ticketId;
   try {
     ticketId = await db.transaction(async () => {
+      const seqRow = await db.prepare("SELECT COALESCE(MAX(company_ticket_seq), 0) AS max_seq FROM tickets WHERE company_id = ?").get(company.id);
+      const companyTicketSeq = Number(seqRow?.max_seq || 0) + 1;
       const created = await db.prepare(`
         INSERT INTO tickets (
           subject, description, status, priority, customer_id, company_id, assignee_id, source,
           category, tags_json, custom_fields_json, created_at, updated_at, resolved_at, resolved_by,
-          reported_client_name, reported_client_contact, historical_solution, historical_consultant_name
-        ) VALUES (?, ?, ?, 'normal', ?, ?, ?, 'portal', 'Other', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          reported_client_name, reported_client_contact, historical_solution, historical_consultant_name,
+          company_ticket_seq
+        ) VALUES (?, ?, ?, 'normal', ?, ?, ?, 'portal', 'Other', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING id
       `).run(
         subject, description, status, client.id, company.id, consultant.id,
         JSON.stringify({ manualEntry: true, enteredBy: req.user.name }),
         raisedAt, updatedAt, resolvedAt, status === "resolved" ? consultant.id : null,
         client.name, client.contactNumber, solution || null, consultant.name,
+        companyTicketSeq,
       );
       const id = Number(created.lastInsertRowid);
       const msgResult = await db.prepare("INSERT INTO messages (ticket_id, author_id, body, created_at) VALUES (?, ?, ?, ?) RETURNING id")
@@ -2917,13 +3008,31 @@ app.patch("/api/company/users/:id", requireAuth, requireCompanyAdmin, async (req
 app.get("/api/notifications", requireAuth, async (req, res) => {
   const notifications = await db.prepare(`
     SELECT n.id, n.ticket_id AS ticketId, n.kind, n.message, n.read_at AS readAt, n.created_at AS createdAt,
-           t.subject, t.description, t.category, t.priority, customer.name AS customerName
+           t.subject, t.description, t.category, t.priority, customer.name AS customerName,
+           t.company_id AS companyId, co.name AS companyName, t.company_ticket_seq AS companyTicketSeq,
+           (
+             SELECT u.username FROM users u
+             JOIN company_memberships cm ON cm.user_id = u.id
+             WHERE cm.company_id = t.company_id AND cm.is_company_admin = 1
+             ORDER BY u.id ASC LIMIT 1
+           ) AS companyAdminUsername
     FROM notifications n
     LEFT JOIN tickets t ON t.id = n.ticket_id
+    LEFT JOIN companies co ON co.id = t.company_id
     LEFT JOIN users customer ON customer.id = t.customer_id
     WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 50
   `).all(req.user.id);
-  res.json({ notifications, unreadCount: notifications.filter((notification) => !notification.readAt).length });
+  const formattedNotifications = notifications.map((n) => ({
+    ...n,
+    ticketNumber: formatCompanyTicketNumber({
+      companyId: n.companyId,
+      companyName: n.companyName,
+      adminUsername: n.companyAdminUsername,
+      companyTicketSeq: n.companyTicketSeq,
+      ticketId: n.ticketId,
+    }),
+  }));
+  res.json({ notifications: formattedNotifications, unreadCount: notifications.filter((notification) => !notification.readAt).length });
 });
 
 app.post("/api/notifications/read", requireAuth, async (req, res) => {
@@ -3212,12 +3321,17 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
   let id;
   try {
     const createTicket = db.transaction(async () => {
+      let companyTicketSeq = null;
+      if (companyId) {
+        const seqRow = await db.prepare("SELECT COALESCE(MAX(company_ticket_seq), 0) AS max_seq FROM tickets WHERE company_id = ?").get(companyId);
+        companyTicketSeq = Number(seqRow?.max_seq || 0) + 1;
+      }
       const result = await db.prepare(`
-        INSERT INTO tickets (subject, description, priority, category, tags_json, custom_fields_json, customer_id, company_id, assignee_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO tickets (subject, description, priority, category, tags_json, custom_fields_json, customer_id, company_id, assignee_id, company_ticket_seq)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         subject, description, priority, metadata.category, JSON.stringify(metadata.tags),
-        JSON.stringify(metadata.customFields), customerId, companyId || null, agent?.id || null,
+        JSON.stringify(metadata.customFields), customerId, companyId || null, agent?.id || null, companyTicketSeq,
       );
       const ticketId = Number(result.lastInsertRowid);
       const initialMsg = await db.prepare("INSERT INTO messages (ticket_id, author_id, body) VALUES (?, ?, ?)")
@@ -3802,10 +3916,15 @@ async function pollSupportMailbox() {
                     assignedAgent = await selectRoutingAgent();
                     assignmentSource = isSenderInternal ? "external_consultant_email" : "email_automatic";
                   }
+                  let emailCompanySeq = null;
+                  if (senderCompany?.id) {
+                    const seqRow = await db.prepare("SELECT COALESCE(MAX(company_ticket_seq), 0) AS max_seq FROM tickets WHERE company_id = ?").get(senderCompany.id);
+                    emailCompanySeq = Number(seqRow?.max_seq || 0) + 1;
+                  }
                   ticketId = Number((await db.prepare(`
-                    INSERT INTO tickets (subject, description, status, priority, customer_id, company_id, assignee_id, source, email_thread_id)
-                    VALUES (?, ?, 'open', 'normal', ?, ?, ?, 'email', ?)
-                  `).run(subject, body, inboundId, senderCompany.id, assignedAgent?.id || null, messageId)).lastInsertRowid);
+                    INSERT INTO tickets (subject, description, status, priority, customer_id, company_id, assignee_id, source, email_thread_id, company_ticket_seq)
+                    VALUES (?, ?, 'open', 'normal', ?, ?, ?, 'email', ?, ?)
+                  `).run(subject, body, inboundId, senderCompany.id, assignedAgent?.id || null, messageId, emailCompanySeq)).lastInsertRowid);
                   await recordTicketAssignment(ticketId, assignedAgent?.id || null, null, assignmentSource);
                 }
                 await db.prepare("INSERT OR IGNORE INTO messages (ticket_id, author_id, body, email_message_id) VALUES (?, ?, ?, ?)")
