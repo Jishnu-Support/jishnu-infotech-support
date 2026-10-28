@@ -1358,3 +1358,39 @@ h1, h2, p { margin-top: 0; }
   .company-switcher span { max-width: 90px; font-size: 10px; }
   .link-client-form { align-items: stretch; flex-direction: column; }
 }
+
+/* Manual Ticket File Attachment */
+.manual-ticket-file-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 4px 0 2px;
+}
+.manual-ticket-attach-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  font-size: 9.5px;
+  font-weight: 600;
+  border: 1px solid #d0d7de;
+  border-radius: 5px;
+  background: #f6f8fa;
+  color: #24292f;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.manual-ticket-attach-btn:hover {
+  background: #eef2f6;
+  border-color: #bbc4ce;
+}
+.manual-ticket-file-hint {
+  font-size: 8.5px;
+  color: #8c97a5;
+  font-weight: 400;
+}
+.manual-attachment-chips {
+  margin-top: 6px;
+  padding: 0;
+}

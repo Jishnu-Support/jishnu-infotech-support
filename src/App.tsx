@@ -2827,7 +2827,30 @@ function ManualTicketEntry({ onCreated }: { onCreated: (ticketId: number) => Pro
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const selectedClient = clients.find((client) => String(client.id) === clientId);
+
+  function handleFileSelection(event: React.ChangeEvent<HTMLInputElement>) {
+    const incoming = Array.from(event.target.files || []);
+    if (!incoming.length) return;
+    if (attachments.length + incoming.length > 10) {
+      setError("You can attach up to 10 files in total.");
+      return;
+    }
+    const oversized = incoming.find((file) => file.size > 25 * 1024 * 1024);
+    if (oversized) {
+      setError(`"${oversized.name}" exceeds the 25 MB limit.`);
+      return;
+    }
+    setError("");
+    setAttachments((prev) => [...prev, ...incoming]);
+    if (event.target) event.target.value = "";
+  }
+
+  function removeAttachment(indexToRemove: number) {
+    setAttachments((prev) => prev.filter((_, idx) => idx !== indexToRemove));
+  }
 
   useEffect(() => {
     let active = true;
@@ -2858,15 +2881,26 @@ function ManualTicketEntry({ onCreated }: { onCreated: (ticketId: number) => Pro
   async function submitManualTicket(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(""); setMessage(""); setSaving(true);
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    form.set("companyId", companyId);
+    form.set("clientId", clientId);
+    form.set("consultantId", consultantId);
+    form.set("raisedDate", raisedDate);
+    form.set("status", status);
+    if (status === "resolved") {
+      form.set("closedDate", closedDate);
+    } else {
+      form.delete("closedDate");
+    }
+    form.delete("attachments");
+    for (const file of attachments) {
+      form.append("attachments", file);
+    }
     try {
       const result = await api<{ ticket: { id: number } }>("/admin/manual-tickets", {
         method: "POST",
-        body: JSON.stringify({
-          companyId: Number(companyId), clientId: Number(clientId), consultantId: Number(consultantId),
-          subject: form.get("subject"), description: form.get("description"), raisedDate,
-          solution: form.get("solution"), status, closedDate: status === "resolved" ? closedDate : "",
-        }),
+        body: form,
       });
       setMessage("Ticket saved. Opening it in the inbox…");
       await onCreated(result.ticket.id);
@@ -2892,6 +2926,47 @@ function ManualTicketEntry({ onCreated }: { onCreated: (ticketId: number) => Pro
         <label className="manual-ticket-wide">Consultant solution <span className="manual-ticket-optional">(optional while unresolved)</span><textarea name="solution" maxLength={5000} rows={4} /></label>
         <label>Status<select value={status} onChange={(event) => { const value = event.target.value as Status; setStatus(value); if (value !== "resolved") setClosedDate(""); }} required><option value="open">Open</option><option value="in_progress">In progress</option><option value="waiting">Waiting</option><option value="resolved">Closed</option></select></label>
         <label>Closed date{status !== "resolved" && <span className="manual-ticket-optional">(required when status is Closed)</span>}<input type="date" value={closedDate} onChange={(event) => setClosedDate(event.target.value)} required={status === "resolved"} disabled={status !== "resolved"} /></label>
+        <label className="manual-ticket-wide">
+          Attach files <span className="manual-ticket-optional">(optional · all file formats supported: images, documents, PDFs, spreadsheets, archives, logs, etc.)</span>
+          <div className="manual-ticket-file-picker">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              onChange={handleFileSelection}
+              style={{ display: "none" }}
+              id="manual-ticket-attachments"
+            />
+            <button
+              type="button"
+              className="button button-quiet manual-ticket-attach-btn"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Paperclip size={14} /> Choose files to attach
+            </button>
+            <span className="manual-ticket-file-hint">Up to 10 files (all files supported), 25 MB each.</span>
+          </div>
+
+          {attachments.length > 0 && (
+            <div className="reply-attachment-chips manual-attachment-chips" aria-label="Attached files">
+              {attachments.map((file, index) => (
+                <div key={`${file.name}-${index}`} className="reply-attachment-chip">
+                  <Paperclip size={12} />
+                  <span title={file.name}>{file.name}</span>
+                  <small>({formatBytes(file.size)})</small>
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(index)}
+                    aria-label={`Remove ${file.name}`}
+                    title="Remove file"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </label>
         <div className="manual-ticket-actions"><button className="button button-primary" type="submit" disabled={saving || loading || !companies.length || !clients.length || !consultants.length}><ClipboardPlus size={15} />{saving ? "Saving ticket…" : "Save ticket"}</button></div>
       </form>}
       {!loading && companies.length === 0 && <p className="settings-hint">No active companies are available.</p>}

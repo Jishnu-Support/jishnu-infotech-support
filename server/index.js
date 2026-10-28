@@ -54,7 +54,7 @@ const attachmentUpload = multer({
     destination: attachmentsRoot,
     filename: (_req, _file, callback) => callback(null, randomUUID()),
   }),
-  limits: { files: 5, fields: 12, parts: 20, fileSize: 25 * 1024 * 1024 },
+  limits: { files: 10, fields: 20, parts: 30, fileSize: 25 * 1024 * 1024 },
   fileFilter: (_req, file, callback) => {
     if (!isAllowedAttachment(file.originalname)) {
       return callback(new Error(`The file "${file.originalname}" is an executable format and cannot be attached.`), false);
@@ -2311,7 +2311,21 @@ app.get("/api/admin/companies/:id/ticket-clients", requireAuth, requireAdmin, as
   res.json({ clients });
 });
 
-app.post("/api/admin/manual-tickets", requireAuth, requireAdmin, async (req, res) => {
+app.post("/api/admin/manual-tickets", requireAuth, requireAdmin, receiveAttachments, async (req, res) => {
+  const files = req.files || [];
+  const reject = (status, error) => {
+    discardUploadedFiles(files);
+    return res.status(status).json({ error });
+  };
+
+  let verifiedFiles = [];
+  try {
+    verifiedFiles = await verifyTicketFiles(files);
+  } catch (error) {
+    discardUploadedFiles(files);
+    return res.status(400).json({ error: error.message });
+  }
+
   const companyId = Number(req.body.companyId);
   const clientId = Number(req.body.clientId);
   const consultantId = Number(req.body.consultantId);
@@ -2323,62 +2337,82 @@ app.post("/api/admin/manual-tickets", requireAuth, requireAdmin, async (req, res
   const status = requestedStatus === "closed" ? "resolved" : requestedStatus;
   const closedDate = req.body.closedDate;
 
-  if (!Number.isInteger(companyId) || companyId < 1) return res.status(400).json({ error: "Choose a valid company." });
-  if (!Number.isInteger(clientId) || clientId < 1) return res.status(400).json({ error: "Choose a client." });
-  if (!Number.isInteger(consultantId) || consultantId < 1) return res.status(400).json({ error: "Choose a Consultant." });
-  if (subject.length < 4 || subject.length > 160) return res.status(400).json({ error: "Ticket subject must be between 4 and 160 characters." });
-  if (description.length < 10 || description.length > 5000) return res.status(400).json({ error: "Ticket description must be between 10 and 5,000 characters." });
-  if (solution.length > 5000) return res.status(400).json({ error: "Consultant solution must be 5,000 characters or fewer." });
-  if (!validDateOnly(raisedDate)) return res.status(400).json({ error: "Choose a valid ticket raised date." });
-  if (!["open", "in_progress", "waiting", "resolved"].includes(status)) return res.status(400).json({ error: "Choose Open, In progress, Waiting, or Closed as the ticket status." });
-  if (status === "resolved" && !validDateOnly(closedDate)) return res.status(400).json({ error: "Choose a valid closed date for a Closed ticket." });
-  if (status === "resolved" && closedDate < raisedDate) return res.status(400).json({ error: "Closed date cannot be before the ticket raised date." });
+  if (!Number.isInteger(companyId) || companyId < 1) return reject(400, "Choose a valid company.");
+  if (!Number.isInteger(clientId) || clientId < 1) return reject(400, "Choose a client.");
+  if (!Number.isInteger(consultantId) || consultantId < 1) return reject(400, "Choose a Consultant.");
+  if (subject.length < 4 || subject.length > 160) return reject(400, "Ticket subject must be between 4 and 160 characters.");
+  if (description.length < 10 || description.length > 5000) return reject(400, "Ticket description must be between 10 and 5,000 characters.");
+  if (solution.length > 5000) return reject(400, "Consultant solution must be 5,000 characters or fewer.");
+  if (!validDateOnly(raisedDate)) return reject(400, "Choose a valid ticket raised date.");
+  if (!["open", "in_progress", "waiting", "resolved"].includes(status)) return reject(400, "Choose Open, In progress, Waiting, or Closed as the ticket status.");
+  if (status === "resolved" && !validDateOnly(closedDate)) return reject(400, "Choose a valid closed date for a Closed ticket.");
+  if (status === "resolved" && closedDate < raisedDate) return reject(400, "Closed date cannot be before the ticket raised date.");
 
   const company = await db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").get(companyId);
-  if (!company) return res.status(404).json({ error: "Active company not found." });
+  if (!company) return reject(404, "Active company not found.");
   const client = await db.prepare(`
     SELECT u.id, u.name, u.contact_number AS contactNumber
     FROM users u JOIN company_memberships m ON m.user_id = u.id
     WHERE u.id = ? AND m.company_id = ? AND u.role = 'customer' AND u.approval_status = 'approved'
       AND u.disabled_at IS NULL
   `).get(clientId, companyId);
-  if (!client) return res.status(400).json({ error: "Choose an active client in the selected company." });
+  if (!client) return reject(400, "Choose an active client in the selected company.");
   const consultant = await db.prepare("SELECT id, name FROM users WHERE id = ? AND role = 'agent' AND disabled_at IS NULL").get(consultantId);
-  if (!consultant) return res.status(400).json({ error: "Choose an active Consultant." });
+  if (!consultant) return reject(400, "Choose an active Consultant.");
 
   const raisedAt = `${raisedDate} 00:00:00`;
   const resolvedAt = status === "resolved" ? `${closedDate} 00:00:00` : null;
   const updatedAt = resolvedAt || raisedAt;
-  const ticketId = await db.transaction(async () => {
-    const created = await db.prepare(`
-      INSERT INTO tickets (
-        subject, description, status, priority, customer_id, company_id, assignee_id, source,
-        category, tags_json, custom_fields_json, created_at, updated_at, resolved_at, resolved_by,
-        reported_client_name, reported_client_contact, historical_solution, historical_consultant_name
-      ) VALUES (?, ?, ?, 'normal', ?, ?, ?, 'portal', 'Other', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      RETURNING id
-    `).run(
-      subject, description, status, client.id, company.id, consultant.id,
-      JSON.stringify({ manualEntry: true, enteredBy: req.user.name }),
-      raisedAt, updatedAt, resolvedAt, status === "resolved" ? consultant.id : null,
-      client.name, client.contactNumber, solution || null, consultant.name,
-    );
-    const id = Number(created.lastInsertRowid);
-    await db.prepare("INSERT INTO messages (ticket_id, author_id, body, created_at) VALUES (?, ?, ?, ?)")
-      .run(id, client.id, description, raisedAt);
-    await db.prepare(`
-      INSERT INTO ticket_assignment_history (ticket_id, agent_id, assigned_by, source, created_at)
-      VALUES (?, ?, ?, 'manual_entry', ?)
-    `).run(id, consultant.id, req.user.id, raisedAt);
-    if (status !== "resolved") {
+
+  let ticketId;
+  try {
+    ticketId = await db.transaction(async () => {
+      const created = await db.prepare(`
+        INSERT INTO tickets (
+          subject, description, status, priority, customer_id, company_id, assignee_id, source,
+          category, tags_json, custom_fields_json, created_at, updated_at, resolved_at, resolved_by,
+          reported_client_name, reported_client_contact, historical_solution, historical_consultant_name
+        ) VALUES (?, ?, ?, 'normal', ?, ?, ?, 'portal', 'Other', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING id
+      `).run(
+        subject, description, status, client.id, company.id, consultant.id,
+        JSON.stringify({ manualEntry: true, enteredBy: req.user.name }),
+        raisedAt, updatedAt, resolvedAt, status === "resolved" ? consultant.id : null,
+        client.name, client.contactNumber, solution || null, consultant.name,
+      );
+      const id = Number(created.lastInsertRowid);
+      const msgResult = await db.prepare("INSERT INTO messages (ticket_id, author_id, body, created_at) VALUES (?, ?, ?, ?) RETURNING id")
+        .run(id, client.id, description, raisedAt);
+      const initialMessageId = Number(msgResult.lastInsertRowid);
       await db.prepare(`
-        INSERT INTO notifications (user_id, ticket_id, kind, message)
-        VALUES (?, ?, 'ticket_created', ?)
-        ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
-      `).run(consultant.id, id, `Manually entered ticket from ${client.name}: ${subject}`);
-    }
-    return id;
-  })();
+        INSERT INTO ticket_assignment_history (ticket_id, agent_id, assigned_by, source, created_at)
+        VALUES (?, ?, ?, 'manual_entry', ?)
+      `).run(id, consultant.id, req.user.id, raisedAt);
+
+      if (verifiedFiles.length > 0) {
+        const insertAttachment = db.prepare(`
+          INSERT INTO ticket_attachments (ticket_id, uploaded_by, storage_name, original_name, mime_type, size_bytes, message_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const file of verifiedFiles) {
+          await insertAttachment.run(id, req.user.id, file.filename, file.originalName, file.mimeType, file.size, initialMessageId);
+        }
+      }
+
+      if (status !== "resolved") {
+        await db.prepare(`
+          INSERT INTO notifications (user_id, ticket_id, kind, message)
+          VALUES (?, ?, 'ticket_created', ?)
+          ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
+        `).run(consultant.id, id, `Manually entered ticket from ${client.name}: ${subject}`);
+      }
+      return id;
+    })();
+  } catch (error) {
+    discardUploadedFiles(files);
+    throw error;
+  }
+
   const ticket = await db.prepare(`${ticketSelect} WHERE t.id = ?`).get(ticketId);
   res.status(201).json({ ticket: await ticketSummary(ticket) });
 });
@@ -2978,13 +3012,13 @@ app.get("/api/tickets/:id", requireAuth, async (req, res) => {
 });
 
 function receiveAttachments(req, res, next) {
-  attachmentUpload.array("attachments", 5)(req, res, (error) => {
+  attachmentUpload.array("attachments", 10)(req, res, (error) => {
     if (!error) return next();
     const message = error instanceof multer.MulterError
       ? error.code === "LIMIT_FILE_SIZE"
         ? "Each attachment must be 25 MB or smaller."
         : error.code === "LIMIT_FILE_COUNT"
-          ? "Attach up to 5 files."
+          ? "Attach up to 10 files."
           : error.message
       : error.message;
     res.status(400).json({ error: message });
