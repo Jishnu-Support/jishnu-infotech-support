@@ -2999,7 +2999,32 @@ function ReportBreakdown({ title, subtitle, rows }: {
   </section>;
 }
 
-function generateCompanyPdfReport(report: DownloadReportData) {
+function loadLogoDataUrl(): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth || 1024;
+        canvas.height = img.naturalHeight || 364;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(img, 0, 0);
+          resolve(canvas.toDataURL("image/png"));
+          return;
+        }
+      } catch {
+        // fallback
+      }
+      resolve("/jishnu-infotech-logo.png");
+    };
+    img.onerror = () => resolve("/jishnu-infotech-logo.png");
+    img.src = "/jishnu-infotech-logo.png";
+  });
+}
+
+async function generateCompanyPdfReport(report: DownloadReportData) {
   const doc = new jsPDF({
     orientation: "portrait",
     unit: "mm",
@@ -3010,41 +3035,77 @@ function generateCompanyPdfReport(report: DownloadReportData) {
   const pageHeight = doc.internal.pageSize.getHeight();
   const margin = 14;
 
-  // Header background banner
-  doc.setFillColor(15, 23, 42); // slate-900
-  doc.rect(0, 0, pageWidth, 28, "F");
+  let logoDataUrl: string | null = null;
+  try {
+    logoDataUrl = await loadLogoDataUrl();
+  } catch {
+    logoDataUrl = null;
+  }
 
-  // Branded title
-  doc.setTextColor(255, 255, 255);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(15);
-  doc.text("JISHNU INFOTECH SUPPORT SYSTEM", margin, 12);
+  // Draw Official Jishnu Infotech Logo on top-left
+  const logoWidth = 52;
+  const logoHeight = 18.5;
+  if (logoDataUrl) {
+    try {
+      doc.addImage(logoDataUrl, "PNG", margin, 10, logoWidth, logoHeight);
+    } catch {
+      doc.setTextColor(15, 23, 42);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(16);
+      doc.text("JISHNU INFOTECH", margin, 18);
+    }
+  } else {
+    doc.setTextColor(15, 23, 42);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.text("JISHNU INFOTECH", margin, 18);
+  }
 
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8.5);
-  doc.setTextColor(148, 163, 184); // slate-400
+  // Right side of header
   const periodLabel = report.period === "weekly" ? "Weekly Report"
     : report.period === "monthly" ? "Monthly Report"
     : report.period === "yearly" ? "Yearly Report"
     : "Custom Period Report";
   const genDate = new Date().toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  doc.text(`Generated: ${genDate}`, pageWidth - margin, 12, { align: "right" });
-  doc.text("Company Ticket Monitoring & Performance Report", margin, 20);
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.setTextColor(15, 23, 42);
+  doc.text("SUPPORT SYSTEM · TICKET REPORT", pageWidth - margin, 14, { align: "right" });
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
+  doc.text("Company Ticket Monitoring & Performance Report", pageWidth - margin, 19, { align: "right" });
+
+  doc.setFontSize(7.5);
+  doc.setTextColor(148, 163, 184);
+  doc.text(`Generated: ${genDate}`, pageWidth - margin, 24, { align: "right" });
+
+  // Elegant divider line
+  doc.setDrawColor(226, 232, 240); // slate-200
+  doc.setLineWidth(0.6);
+  doc.line(margin, 31, pageWidth - margin, 31);
+
+  // Red accent line on divider matching brand
+  doc.setDrawColor(220, 38, 38); // red-600
+  doc.setLineWidth(1.2);
+  doc.line(margin, 31, margin + 45, 31);
 
   // Company Name Header Title
-  let currentY = 38;
+  let currentY = 39;
   doc.setTextColor(15, 23, 42);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(18);
+  doc.setFontSize(17);
   doc.text(report.company.name.toUpperCase(), margin, currentY);
 
-  currentY += 6;
-  doc.setFontSize(10);
+  currentY += 5.5;
+  doc.setFontSize(9.5);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(71, 85, 105);
   doc.text(`${periodLabel}  |  Date Range: ${report.startDate} to ${report.endDate}`, margin, currentY);
 
-  currentY += 8;
+  currentY += 7.5;
 
   // Draw 5 Metric Title Cards
   const metricCards = [
@@ -3279,11 +3340,11 @@ function DownloadReportsView() {
     fetchReport();
   }, [fetchReport]);
 
-  const handleDownloadPdf = () => {
+  const handleDownloadPdf = async () => {
     if (!report) return;
     setGeneratingPdf(true);
     try {
-      generateCompanyPdfReport(report);
+      await generateCompanyPdfReport(report);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to generate PDF.");
     } finally {
@@ -3404,18 +3465,21 @@ function DownloadReportsView() {
       ) : report ? (
         <div className="download-reports-content">
           <header className="download-reports-header">
-            <div>
-              <span className="download-reports-company-tag">{report.company.name}</span>
-              <h2>{report.company.name} — Ticket Report</h2>
-              <p className="download-reports-period-label">
-                <Calendar size={13} />
-                <span>
-                  {period === "weekly" ? "Weekly" : period === "monthly" ? "Monthly" : period === "yearly" ? "Yearly" : "Custom"} Report: {report.startDate} to {report.endDate}
-                </span>
-                <span className="download-reports-note">
-                  (Includes only tickets raised within this period and their current status)
-                </span>
-              </p>
+            <div className="download-reports-header-brand">
+              <img src="/jishnu-infotech-logo.png" alt="Jishnu Infotech" className="download-reports-brand-logo" />
+              <div>
+                <span className="download-reports-company-tag">{report.company.name}</span>
+                <h2>{report.company.name} — Ticket Report</h2>
+                <p className="download-reports-period-label">
+                  <Calendar size={13} />
+                  <span>
+                    {period === "weekly" ? "Weekly" : period === "monthly" ? "Monthly" : period === "yearly" ? "Yearly" : "Custom"} Report: {report.startDate} to {report.endDate}
+                  </span>
+                  <span className="download-reports-note">
+                    (Includes only tickets raised within this period and their current status)
+                  </span>
+                </p>
+              </div>
             </div>
             <button
               type="button"

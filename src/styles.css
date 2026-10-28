@@ -1538,6 +1538,29 @@ h1, h2, p { margin-top: 0; }
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
+.download-reports-header-brand {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.download-reports-brand-logo {
+  height: 48px;
+  max-width: 170px;
+  object-fit: contain;
+}
+
+@media (max-width: 600px) {
+  .download-reports-header-brand {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .download-reports-brand-logo {
+    height: 38px;
+  }
+}
+
 .download-reports-company-tag {
   display: inline-block;
   padding: 3px 8px;
