@@ -16,10 +16,30 @@ export const DEFAULT_PRIORITY_TAT_HOURS = {
 };
 
 /**
+ * Safely parses Date or ISO/Postgres string as UTC Date
+ */
+export function parseDateSafe(dateOrIso) {
+  if (!dateOrIso) return null;
+  if (dateOrIso instanceof Date) return dateOrIso;
+  if (typeof dateOrIso === "number") return new Date(dateOrIso);
+  if (typeof dateOrIso === "string") {
+    const s = dateOrIso.trim();
+    if (!s) return null;
+    if (!s.endsWith("Z") && !s.includes("+") && !/T.*[+-]\d\d:?\d\d/.test(s)) {
+      const parsed = new Date(`${s.replace(" ", "T")}Z`);
+      if (!Number.isNaN(parsed.getTime())) return parsed;
+    }
+    const fallback = new Date(s);
+    return Number.isNaN(fallback.getTime()) ? null : fallback;
+  }
+  return null;
+}
+
+/**
  * Converts a UTC Date or timestamp to IST Date components
  */
 export function toISTDate(dateOrIso) {
-  const date = typeof dateOrIso === "string" || typeof dateOrIso === "number" ? new Date(dateOrIso) : dateOrIso;
+  const date = parseDateSafe(dateOrIso);
   if (!date || Number.isNaN(date.getTime())) return null;
   return new Date(date.getTime() + IST_OFFSET_MINUTES * 60 * 1000);
 }
@@ -154,8 +174,8 @@ export function calculateElapsedWorkingMinutes(
   endHour = DEFAULT_WORKING_END_HOUR,
   totalPausedMinutes = 0
 ) {
-  const startDate = typeof startUtc === "string" ? new Date(startUtc) : startUtc;
-  const endDate = typeof endUtc === "string" ? new Date(endUtc) : endUtc;
+  const startDate = parseDateSafe(startUtc);
+  const endDate = parseDateSafe(endUtc) || new Date();
   if (!startDate || !endDate || Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return 0;
   if (endDate.getTime() <= startDate.getTime()) return 0;
 

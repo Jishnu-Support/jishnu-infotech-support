@@ -4037,7 +4037,7 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
       const elapsedWorking = calculateElapsedWorkingMinutes(startAt, effectiveResolvedAt, holidays, tatCfg.startHour, tatCfg.endHour, totalPaused);
       const dueTime = existing.tat_due_at ? new Date(existing.tat_due_at).getTime() : 0;
       const resolvedTime = new Date(effectiveResolvedAt).getTime();
-      const tatStatus = (dueTime > 0 && resolvedTime <= dueTime) ? "resolved_within_tat" : "resolved_after_tat";
+      const tatStatus = (!dueTime || resolvedTime <= dueTime) ? "resolved_within_tat" : "resolved_after_tat";
       fields.push("tat_elapsed_minutes = ?", "tat_status = ?");
       values.push(elapsedWorking, tatStatus);
       tatEventToLog = { eventType: "resolved", notes: `Ticket resolved (${tatStatus})` };
@@ -4053,20 +4053,6 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
   values.push(ticketId);
   await db.transaction(async () => {
     await db.prepare(`UPDATE tickets SET ${fields.join(", ")} WHERE id = ?`).run(...values);
-    if (tatEventToLog) {
-      await db.prepare(`
-        INSERT INTO ticket_tat_events (ticket_id, event_type, old_status, new_status, duration_minutes, performed_by, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        ticketId,
-        tatEventToLog.eventType,
-        existing.status,
-        status || existing.status,
-        tatEventToLog.durationMinutes || null,
-        req.user.id,
-        tatEventToLog.notes || null,
-      );
-    }
     if (assigneeId !== undefined && assigneeId !== existing.assignee_id) {
       const source = transferToExternal
         ? "transferred_to_external"
@@ -4086,6 +4072,29 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
       }
     }
   })();
+
+  if (tatEventToLog) {
+    try {
+      await db.prepare(`
+        INSERT INTO ticket_tat_events (
+          ticket_id, event_type, status, old_status, new_status, duration_minutes, paused_minutes, performed_by, notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        ticketId,
+        tatEventToLog.eventType,
+        status || existing.status,
+        existing.status,
+        status || existing.status,
+        tatEventToLog.durationMinutes || 0,
+        tatEventToLog.durationMinutes || 0,
+        req.user.id,
+        tatEventToLog.notes || null,
+      );
+    } catch (tatErr) {
+      console.error("Failed to log TAT event:", tatErr.message);
+    }
+  }
   res.json({ ticket: await ticketSummary(await db.prepare(`${ticketSelect} WHERE t.id = ?`).get(ticketId)) });
 });
 
