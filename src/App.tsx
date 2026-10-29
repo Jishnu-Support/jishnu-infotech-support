@@ -3140,12 +3140,12 @@ async function generateCompanyPdfReport(report: DownloadReportData) {
   doc.setFont("helvetica", "bold");
   doc.setFontSize(10);
   doc.setTextColor(15, 23, 42);
-  doc.text("SUPPORT SYSTEM · TICKET REPORT", pageWidth - margin, 14, { align: "right" });
+  doc.text("Support System Report", pageWidth - margin, 14, { align: "right" });
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   doc.setTextColor(100, 116, 139);
-  doc.text("Company Ticket Monitoring & Performance Report", pageWidth - margin, 19, { align: "right" });
+  doc.text("Company Support Report Monitoring & Performance Report", pageWidth - margin, 19, { align: "right" });
 
   doc.setFontSize(7.5);
   doc.setTextColor(148, 163, 184);
