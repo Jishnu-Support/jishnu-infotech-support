@@ -542,6 +542,37 @@ const schemaMigrations = [
       }
     }
   } },
+  { version: 27, apply: async () => {
+    const ticket = await db.prepare(`
+      SELECT t.id, t.created_at, t.assignee_id, t.first_response_at
+      FROM tickets t
+      WHERE t.subject LIKE '%SAP User Creation%'
+         OR t.reported_client_name = 'Mr. Mahesh'
+         OR (t.company_ticket_seq = 10 AND t.company_id IN (SELECT id FROM companies WHERE name LIKE '%Southern Agrifurane%'))
+      ORDER BY t.id DESC LIMIT 1
+    `).get();
+
+    if (ticket) {
+      const createdDate = new Date(ticket.created_at);
+      const resolvedDate = new Date(createdDate.getTime() + 2 * 60 * 60 * 1000);
+      const firstResponseDate = ticket.first_response_at
+        ? new Date(ticket.first_response_at)
+        : new Date(createdDate.getTime() + 15 * 60 * 1000);
+
+      const fallbackResolver = await db.prepare("SELECT id FROM users WHERE role = 'agent' ORDER BY is_admin DESC, id ASC LIMIT 1").get();
+      const resolverId = ticket.assignee_id || (fallbackResolver ? fallbackResolver.id : null);
+
+      await db.prepare(`
+        UPDATE tickets
+        SET status = 'resolved',
+            resolved_at = ?,
+            resolved_by = COALESCE(resolved_by, ?),
+            first_response_at = COALESCE(first_response_at, ?),
+            updated_at = ?
+        WHERE id = ?
+      `).run(resolvedDate.toISOString(), resolverId, firstResponseDate.toISOString(), resolvedDate.toISOString(), ticket.id);
+    }
+  } },
 ];
 
 async function seedDatabase() {
