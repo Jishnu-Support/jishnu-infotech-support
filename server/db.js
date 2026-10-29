@@ -181,6 +181,7 @@ const schema = `
     author_id BIGINT NOT NULL REFERENCES users(id),
     body TEXT NOT NULL,
     is_internal INTEGER NOT NULL DEFAULT 0,
+    is_solution INTEGER NOT NULL DEFAULT 0,
     email_message_id TEXT UNIQUE,
     edited_at TIMESTAMP WITHOUT TIME ZONE,
     created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
@@ -506,6 +507,41 @@ const schemaMigrations = [
     FROM numbered n
     WHERE t.id = n.id AND t.company_ticket_seq IS NULL;
   `) },
+  { version: 26, apply: async () => {
+    await db.exec(`
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_solution INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX IF NOT EXISTS messages_solution_idx ON messages (ticket_id, is_solution);
+    `);
+    const ticketsWithSolution = await db.prepare(`
+      SELECT t.id, t.historical_solution, t.historical_consultant_name, t.resolved_by, t.assignee_id,
+             t.resolved_at, t.updated_at, t.created_at
+      FROM tickets t
+      WHERE t.historical_solution IS NOT NULL AND LENGTH(TRIM(t.historical_solution)) > 0
+        AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.ticket_id = t.id AND m.is_solution = 1)
+    `).all();
+
+    const fallbackAuthor = await db.prepare("SELECT id FROM users WHERE role = 'agent' ORDER BY is_admin DESC, id ASC LIMIT 1").get();
+    const fallbackAuthorId = fallbackAuthor ? fallbackAuthor.id : null;
+
+    if (fallbackAuthorId && ticketsWithSolution.length > 0) {
+      for (const t of ticketsWithSolution) {
+        const authorId = t.resolved_by || t.assignee_id || fallbackAuthorId;
+        const msg = await db.prepare(`
+          INSERT INTO messages (ticket_id, author_id, body, is_internal, is_solution, created_at)
+          VALUES (?, ?, ?, 0, 1, COALESCE(?, ?, CURRENT_TIMESTAMP))
+          RETURNING id
+        `).get(t.id, authorId, t.historical_solution.trim(), t.resolved_at, t.updated_at);
+
+        if (msg) {
+          await db.prepare(`
+            UPDATE ticket_attachments
+            SET message_id = ?
+            WHERE ticket_id = ? AND is_solution = 1 AND message_id IS NULL
+          `).run(msg.id, t.id);
+        }
+      }
+    }
+  } },
 ];
 
 async function seedDatabase() {

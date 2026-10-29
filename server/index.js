@@ -3042,6 +3042,75 @@ app.post("/api/notifications/read", requireAuth, async (req, res) => {
   res.status(204).end();
 });
 
+async function getTicketMessages(ticketId, userRole, ticket, attachments) {
+  const attachmentsByMessage = new Map();
+  for (const att of attachments) {
+    if (att.messageId) {
+      const list = attachmentsByMessage.get(att.messageId) || [];
+      list.push(att);
+      attachmentsByMessage.set(att.messageId, list);
+    }
+  }
+
+  const rawMessages = (await db.prepare(`
+    SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, m.edited_at AS editedAt,
+           COALESCE(m.is_solution, 0) AS isSolution,
+           u.id AS authorId, u.name AS authorName, u.role AS authorRole,
+           COALESCE(u.is_internal_consultant, 0) AS authorIsInternalConsultant
+    FROM messages m JOIN users u ON u.id = m.author_id
+    WHERE m.ticket_id = ? AND (? = 1 OR m.is_internal = 0) ORDER BY m.id
+  `).all(ticketId, userRole === "agent" ? 1 : 0)
+  ).map((message) => ({
+    ...message,
+    isInternal: Boolean(message.isInternal),
+    isSolution: Boolean(message.isSolution),
+    authorIsInternalConsultant: Boolean(message.authorIsInternalConsultant),
+    attachments: attachmentsByMessage.get(message.id) || [],
+  }));
+
+  const messages = [...rawMessages];
+  if (ticket.import_key) {
+    const consultantRaised = Boolean(ticket.historical_consultant_name);
+    messages.unshift({
+      id: 0,
+      body: ticket.description,
+      isInternal: false,
+      isSolution: false,
+      createdAt: ticket.created_at,
+      authorId: consultantRaised ? ticket.assignee_id || null : null,
+      authorName: consultantRaised
+        ? ticket.assignee_name || ticket.historical_consultant_name
+        : ticket.reported_client_name || "Client",
+      authorRole: consultantRaised ? "agent" : "customer",
+      attachments: attachments.filter((att) => !att.messageId && !att.isSolution),
+    });
+  } else if (messages.length > 0) {
+    const unlinkedAttachments = attachments.filter((att) => !att.messageId && !att.isSolution);
+    if (unlinkedAttachments.length > 0 && (!messages[0].attachments || messages[0].attachments.length === 0)) {
+      messages[0].attachments = unlinkedAttachments;
+    }
+  }
+
+  if (ticket.historical_solution && !messages.some((m) => m.isSolution)) {
+    const solutionAttachments = attachments.filter((att) => Boolean(att.isSolution) && !att.messageId);
+    messages.push({
+      id: -1,
+      body: ticket.historical_solution,
+      isInternal: false,
+      isSolution: true,
+      createdAt: ticket.resolved_at || ticket.updated_at || ticket.created_at,
+      editedAt: null,
+      authorId: ticket.resolved_by || ticket.assignee_id || null,
+      authorName: ticket.historical_consultant_name || ticket.assignee_name || "Consultant",
+      authorRole: "agent",
+      authorIsInternalConsultant: false,
+      attachments: solutionAttachments,
+    });
+  }
+
+  return messages;
+}
+
 app.get("/api/tickets/:id", requireAuth, async (req, res) => {
   const ticketId = Number(req.params.id);
   if (!Number.isInteger(ticketId) || ticketId < 1) return res.status(400).json({ error: "Invalid ticket id." });
@@ -3056,50 +3125,7 @@ app.get("/api/tickets/:id", requireAuth, async (req, res) => {
     FROM ticket_attachments WHERE ticket_id = ? ORDER BY id
   `).all(ticketId);
 
-  const attachmentsByMessage = new Map();
-  for (const att of attachments) {
-    if (att.messageId) {
-      const list = attachmentsByMessage.get(att.messageId) || [];
-      list.push(att);
-      attachmentsByMessage.set(att.messageId, list);
-    }
-  }
-
-  const rawMessages = (await db.prepare(`
-    SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, m.edited_at AS editedAt,
-           u.id AS authorId, u.name AS authorName, u.role AS authorRole,
-           COALESCE(u.is_internal_consultant, 0) AS authorIsInternalConsultant
-    FROM messages m JOIN users u ON u.id = m.author_id
-    WHERE m.ticket_id = ? AND (? = 1 OR m.is_internal = 0) ORDER BY m.id
-  `).all(ticketId, req.user.role === "agent" ? 1 : 0)
-  ).map((message) => ({
-    ...message,
-    isInternal: Boolean(message.isInternal),
-    authorIsInternalConsultant: Boolean(message.authorIsInternalConsultant),
-    attachments: attachmentsByMessage.get(message.id) || [],
-  }));
-
-  const messages = [...rawMessages];
-  if (ticket.import_key) {
-    const consultantRaised = Boolean(ticket.historical_consultant_name);
-    messages.unshift({
-      id: 0,
-      body: ticket.description,
-      isInternal: false,
-      createdAt: ticket.created_at,
-      authorId: consultantRaised ? ticket.assignee_id || null : null,
-      authorName: consultantRaised
-        ? ticket.assignee_name || ticket.historical_consultant_name
-        : ticket.reported_client_name || "Client",
-      authorRole: consultantRaised ? "agent" : "customer",
-      attachments: attachments.filter((att) => !att.messageId),
-    });
-  } else if (messages.length > 0) {
-    const unlinkedAttachments = attachments.filter((att) => !att.messageId);
-    if (unlinkedAttachments.length > 0 && (!messages[0].attachments || messages[0].attachments.length === 0)) {
-      messages[0].attachments = unlinkedAttachments;
-    }
-  }
+  const messages = await getTicketMessages(ticketId, req.user.role, ticket, attachments);
   const assignmentHistory = req.user.role === "agent" || req.user.is_company_admin || req.user.is_internal_consultant || ticket.assignee_id === req.user.id
     ? await db.prepare(`
         SELECT h.id, h.source, h.created_at AS createdAt,
@@ -3539,6 +3565,10 @@ app.patch("/api/tickets/:ticketId/messages/:messageId", requireAuth, receiveAtta
   const newBody = body.length > 0 ? body : existing.body;
   await db.prepare("UPDATE messages SET body = ?, edited_at = CURRENT_TIMESTAMP WHERE id = ?").run(newBody, messageId);
 
+  if (existing.is_solution) {
+    await db.prepare("UPDATE tickets SET historical_solution = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newBody, ticketId);
+  }
+
   if (verifiedFiles.length > 0) {
     const insertAttachment = db.prepare(`
       INSERT INTO ticket_attachments (ticket_id, uploaded_by, storage_name, original_name, mime_type, size_bytes, message_id)
@@ -3552,6 +3582,7 @@ app.patch("/api/tickets/:ticketId/messages/:messageId", requireAuth, receiveAtta
 
   const updatedRow = await db.prepare(`
     SELECT m.id, m.body, m.is_internal AS isInternal, m.created_at AS createdAt, m.edited_at AS editedAt,
+           COALESCE(m.is_solution, 0) AS isSolution,
            u.id AS authorId, u.name AS authorName, u.role AS authorRole,
            COALESCE(u.is_internal_consultant, 0) AS authorIsInternalConsultant
     FROM messages m JOIN users u ON u.id = m.author_id WHERE m.id = ?
@@ -3574,6 +3605,7 @@ app.patch("/api/tickets/:ticketId/messages/:messageId", requireAuth, receiveAtta
     message: {
       ...updatedRow,
       isInternal: Boolean(updatedRow.isInternal),
+      isSolution: Boolean(updatedRow.isSolution),
       authorIsInternalConsultant: Boolean(updatedRow.authorIsInternalConsultant),
       attachments: messageAttachments,
     },
@@ -3646,16 +3678,54 @@ app.patch("/api/tickets/:id/solution", requireAuth, receiveAttachments, async (r
         }
       }
 
-      if (verifiedFiles.length > 0) {
-        const insertAttachment = db.prepare(`
-          INSERT INTO ticket_attachments (ticket_id, uploaded_by, storage_name, original_name, mime_type, size_bytes, is_solution)
-          VALUES (?, ?, ?, ?, ?, ?, 1)
-        `);
-        for (const file of verifiedFiles) {
-          await insertAttachment.run(ticketId, req.user.id, file.filename, file.originalName, file.mimeType, file.size);
+      let solutionMessageId = null;
+      if (solution) {
+        const existingSolutionMsg = await db.prepare(`
+          SELECT id FROM messages WHERE ticket_id = ? AND is_solution = 1 ORDER BY id ASC LIMIT 1
+        `).get(ticketId);
+
+        if (existingSolutionMsg) {
+          solutionMessageId = existingSolutionMsg.id;
+          await db.prepare(`
+            UPDATE messages
+            SET body = ?, edited_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(solution, solutionMessageId);
+        } else {
+          const inserted = await db.prepare(`
+            INSERT INTO messages (ticket_id, author_id, body, is_internal, is_solution, created_at)
+            VALUES (?, ?, ?, 0, 1, CURRENT_TIMESTAMP)
+            RETURNING id
+          `).get(ticketId, req.user.id, solution);
+          solutionMessageId = inserted ? inserted.id : null;
+        }
+      } else {
+        const existingSolutionMsg = await db.prepare(`
+          SELECT id FROM messages WHERE ticket_id = ? AND is_solution = 1 ORDER BY id ASC LIMIT 1
+        `).get(ticketId);
+        if (existingSolutionMsg) {
+          await db.prepare("DELETE FROM messages WHERE id = ?").run(existingSolutionMsg.id);
         }
       }
-    });
+
+      if (verifiedFiles.length > 0) {
+        const insertAttachment = db.prepare(`
+          INSERT INTO ticket_attachments (ticket_id, uploaded_by, storage_name, original_name, mime_type, size_bytes, is_solution, message_id)
+          VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+        `);
+        for (const file of verifiedFiles) {
+          await insertAttachment.run(ticketId, req.user.id, file.filename, file.originalName, file.mimeType, file.size, solutionMessageId);
+        }
+      }
+
+      if (solutionMessageId) {
+        await db.prepare(`
+          UPDATE ticket_attachments
+          SET message_id = ?
+          WHERE ticket_id = ? AND is_solution = 1 AND message_id IS NULL
+        `).run(solutionMessageId, ticketId);
+      }
+    })();
   } catch (error) {
     discardUploadedFiles(files);
     throw error;
@@ -3669,8 +3739,11 @@ app.patch("/api/tickets/:id/solution", requireAuth, receiveAttachments, async (r
     FROM ticket_attachments WHERE ticket_id = ? ORDER BY id
   `).all(ticketId);
 
+  const messages = await getTicketMessages(ticketId, req.user.role, updatedTicketRow, attachments);
+
   res.json({
     ticket: await ticketSummary(updatedTicketRow),
+    messages,
     attachments,
     message: "Consultant solution updated successfully.",
   });
