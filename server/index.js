@@ -19,6 +19,15 @@ import { reportAccess, ticketAccessFilter, isInternalConsultant, canManageTicket
 import { normalizedTicketMetadata, ticketCategories, isAllowedAttachment, sanitizeAttachmentName } from "./validation.js";
 import { deriveCompanyPrefix, formatCompanyTicketNumber } from "./ticket-numbering.js";
 import { calculateReportDateRange, aggregateCompanyReport, formatTicketStatusDisplay } from "./company-reports.js";
+import {
+  getValidTATStartTime,
+  calculateTATDeadline,
+  calculateElapsedWorkingMinutes,
+  determineTATStatus,
+  formatTATDuration,
+  formatISTDateTime,
+  DEFAULT_PRIORITY_TAT_HOURS,
+} from "./tat-engine.js";
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -353,6 +362,30 @@ async function slaConfiguration() {
   };
 }
 
+async function getActiveHolidayDates() {
+  const rows = await db.prepare("SELECT holiday_date FROM holidays WHERE is_active = 1").all();
+  return rows.map((r) => (typeof r.holiday_date === "string" ? r.holiday_date.slice(0, 10) : new Date(r.holiday_date).toISOString().slice(0, 10)));
+}
+
+async function tatConfiguration() {
+  const settings = await db.prepare("SELECT key, value FROM workspace_settings WHERE key LIKE 'tat_%'").all();
+  const map = Object.fromEntries(settings.map((r) => [r.key, r.value]));
+  return {
+    startHour: Number(map.tat_working_start_hour) || 8,
+    endHour: Number(map.tat_working_end_hour) || 19,
+    priorityHours: {
+      critical: Number(map.tat_priority_critical_hours) || 2,
+      high: Number(map.tat_priority_high_hours) || 4,
+      normal: Number(map.tat_priority_medium_hours) || 8,
+      medium: Number(map.tat_priority_medium_hours) || 8,
+      low: Number(map.tat_priority_low_hours) || 16,
+      urgent: Number(map.tat_priority_critical_hours) || 2,
+    },
+    warningPercent: Number(map.tat_warning_percent) || 80,
+    timezone: map.tat_timezone || "Asia/Kolkata",
+  };
+}
+
 function deadlineFrom(createdAt, hours) {
   return Date.parse(`${createdAt.replace(" ", "T")}Z`) + hours * 60 * 60 * 1000;
 }
@@ -525,6 +558,16 @@ async function ticketSummary(row) {
     isFirstResponseOverdue: !row.first_response_at && row.status !== "resolved" && Date.now() > Date.parse(firstResponseDueAt),
     isResolutionOverdue: row.status !== "resolved" && Date.now() > Date.parse(resolutionDueAt),
     attachmentCount: row.attachment_count || 0,
+    resolvedAt: row.resolved_at || null,
+    tatStartAt: row.tat_start_at || null,
+    tatDurationMinutes: row.tat_duration_minutes != null ? Number(row.tat_duration_minutes) : null,
+    tatDueAt: row.tat_due_at || null,
+    tatElapsedMinutes: row.tat_elapsed_minutes != null ? Number(row.tat_elapsed_minutes) : null,
+    tatRemainingMinutes: row.tat_remaining_minutes != null ? Number(row.tat_remaining_minutes) : null,
+    tatStatus: row.tat_status || null,
+    tatPausedAt: row.tat_paused_at || null,
+    tatTotalPausedMinutes: row.tat_total_paused_minutes != null ? Number(row.tat_total_paused_minutes) : 0,
+    tatBreachedAt: row.tat_breached_at || null,
   };
 }
 
@@ -1374,11 +1417,14 @@ app.get("/api/reports/company-pdf-data", requireAuth, requireAgent, async (req, 
   const dateTo = typeof req.query.dateTo === "string" ? req.query.dateTo : null;
 
   const range = calculateReportDateRange(period, dateFrom, dateTo);
+  const holidays = await getActiveHolidayDates();
 
   // Note: Only tickets raised within this period itself (created_at >= startAt AND created_at <= endAt)
   // are included with their status (solved or not).
   const ticketRows = await db.prepare(`
     SELECT t.id, t.subject, t.description, t.status, t.priority, t.created_at, t.company_ticket_seq,
+           t.resolved_at, t.tat_start_at, t.tat_duration_minutes, t.tat_due_at, t.tat_elapsed_minutes,
+           t.tat_status, t.tat_total_paused_minutes,
            COALESCE(NULLIF(t.reported_client_name, ''), customer.name, 'Unknown Client') AS client_name,
            customer.id AS client_id
     FROM tickets t
@@ -1394,6 +1440,7 @@ app.get("/api/reports/company-pdf-data", requireAuth, requireAgent, async (req, 
     period: range.period,
     startDate: range.startDate,
     endDate: range.endDate,
+    holidays,
   });
 
   res.json({ companies, report });
@@ -2229,6 +2276,86 @@ app.put("/api/admin/sla-settings", requireAuth, requireAdmin, async (req, res) =
   res.json({ sla: await slaConfiguration() });
 });
 
+app.get("/api/admin/tat-settings", requireAuth, requireAdmin, async (_req, res) => {
+  res.json({ tat: await tatConfiguration() });
+});
+
+app.put("/api/admin/tat-settings", requireAuth, requireAdmin, async (req, res) => {
+  const { startHour, endHour, priorityHours, warningPercent } = req.body;
+  await db.transaction(async () => {
+    if (startHour !== undefined && Number.isFinite(Number(startHour))) {
+      await db.prepare("INSERT INTO workspace_settings (key, value) VALUES ('tat_working_start_hour', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(startHour));
+    }
+    if (endHour !== undefined && Number.isFinite(Number(endHour))) {
+      await db.prepare("INSERT INTO workspace_settings (key, value) VALUES ('tat_working_end_hour', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(endHour));
+    }
+    if (warningPercent !== undefined && Number.isFinite(Number(warningPercent))) {
+      await db.prepare("INSERT INTO workspace_settings (key, value) VALUES ('tat_warning_percent', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(warningPercent));
+    }
+    if (priorityHours && typeof priorityHours === "object") {
+      if (priorityHours.critical !== undefined) {
+        await db.prepare("INSERT INTO workspace_settings (key, value) VALUES ('tat_priority_critical_hours', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(priorityHours.critical));
+      }
+      if (priorityHours.high !== undefined) {
+        await db.prepare("INSERT INTO workspace_settings (key, value) VALUES ('tat_priority_high_hours', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(priorityHours.high));
+      }
+      if (priorityHours.medium !== undefined || priorityHours.normal !== undefined) {
+        const med = priorityHours.medium ?? priorityHours.normal;
+        await db.prepare("INSERT INTO workspace_settings (key, value) VALUES ('tat_priority_medium_hours', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(med));
+      }
+      if (priorityHours.low !== undefined) {
+        await db.prepare("INSERT INTO workspace_settings (key, value) VALUES ('tat_priority_low_hours', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(priorityHours.low));
+      }
+    }
+  })();
+  res.json({ tat: await tatConfiguration() });
+});
+
+app.get("/api/admin/holidays", requireAuth, requireAdmin, async (_req, res) => {
+  const holidays = await db.prepare("SELECT * FROM holidays ORDER BY holiday_date ASC").all();
+  res.json({ holidays });
+});
+
+app.post("/api/admin/holidays", requireAuth, requireAdmin, async (req, res) => {
+  const holidayDate = typeof req.body.holidayDate === "string" ? req.body.holidayDate.trim().slice(0, 10) : "";
+  const holidayName = typeof req.body.holidayName === "string" ? req.body.holidayName.trim() : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(holidayDate) || !holidayName) {
+    return res.status(400).json({ error: "Provide a valid holiday date (YYYY-MM-DD) and holiday name." });
+  }
+  const result = await db.prepare(`
+    INSERT INTO holidays (holiday_date, holiday_name, is_active)
+    VALUES (?, ?, 1)
+    ON CONFLICT (holiday_date) DO UPDATE SET holiday_name = excluded.holiday_name, is_active = 1, updated_at = CURRENT_TIMESTAMP
+    RETURNING *
+  `).get(holidayDate, holidayName);
+  res.status(201).json({ holiday: result });
+});
+
+app.patch("/api/admin/holidays/:id", requireAuth, requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid holiday id." });
+  const existing = await db.prepare("SELECT * FROM holidays WHERE id = ?").get(id);
+  if (!existing) return res.status(404).json({ error: "Holiday not found." });
+
+  const holidayName = req.body.holidayName !== undefined ? String(req.body.holidayName).trim() : existing.holiday_name;
+  const holidayDate = req.body.holidayDate !== undefined ? String(req.body.holidayDate).trim().slice(0, 10) : existing.holiday_date;
+  const isActive = req.body.isActive !== undefined ? (req.body.isActive ? 1 : 0) : existing.is_active;
+
+  const updated = await db.prepare(`
+    UPDATE holidays SET holiday_name = ?, holiday_date = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+    RETURNING *
+  `).get(holidayName, holidayDate, isActive, id);
+  res.json({ holiday: updated });
+});
+
+app.delete("/api/admin/holidays/:id", requireAuth, requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid holiday id." });
+  await db.prepare("DELETE FROM holidays WHERE id = ?").run(id);
+  res.json({ success: true });
+});
+
 app.get("/api/admin/email-status", requireAuth, requireAdmin, async (_req, res) => {
   const outbox = await db.prepare("SELECT status, COUNT(*) AS count FROM mail_outbox GROUP BY status").all();
   const recentFailures = await db.prepare(`
@@ -2456,13 +2583,28 @@ app.post("/api/admin/manual-tickets", requireAuth, requireAdmin, receiveAttachme
     ticketId = await db.transaction(async () => {
       const seqRow = await db.prepare("SELECT COALESCE(MAX(company_ticket_seq), 0) AS max_seq FROM tickets WHERE company_id = ?").get(company.id);
       const companyTicketSeq = Number(seqRow?.max_seq || 0) + 1;
+
+      const tatCfg = await tatConfiguration();
+      const tatDurationMinutes = tatCfg.priorityHours.normal * 60;
+      const holidays = await getActiveHolidayDates();
+      const tatStartAt = getValidTATStartTime(raisedAt, holidays, tatCfg.startHour, tatCfg.endHour)?.toISOString();
+      const tatDueAt = calculateTATDeadline(raisedAt, tatDurationMinutes, holidays, tatCfg.startHour, tatCfg.endHour)?.toISOString();
+      let tatStatus = "within_tat";
+      let tatElapsed = 0;
+      if (status === "resolved") {
+        const closeDate = resolvedAt ? new Date(resolvedAt) : new Date();
+        tatElapsed = calculateElapsedWorkingMinutes(tatStartAt || raisedAt, closeDate, holidays, tatCfg.startHour, tatCfg.endHour);
+        const dueTime = tatDueAt ? new Date(tatDueAt).getTime() : 0;
+        tatStatus = (dueTime > 0 && closeDate.getTime() <= dueTime) ? "resolved_within_tat" : "resolved_after_tat";
+      }
+
       const created = await db.prepare(`
         INSERT INTO tickets (
           subject, description, status, priority, customer_id, company_id, assignee_id, source,
           category, tags_json, custom_fields_json, created_at, updated_at, resolved_at, resolved_by,
           reported_client_name, reported_client_contact, historical_solution, historical_consultant_name,
-          company_ticket_seq
-        ) VALUES (?, ?, ?, 'normal', ?, ?, ?, 'portal', 'Other', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          company_ticket_seq, tat_start_at, tat_duration_minutes, tat_due_at, tat_elapsed_minutes, tat_status
+        ) VALUES (?, ?, ?, 'normal', ?, ?, ?, 'portal', 'Other', '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING id
       `).run(
         subject, description, status, client.id, company.id, consultant.id,
@@ -2470,6 +2612,7 @@ app.post("/api/admin/manual-tickets", requireAuth, requireAdmin, receiveAttachme
         raisedAt, updatedAt, resolvedAt, status === "resolved" ? consultant.id : null,
         client.name, client.contactNumber, solution || null, consultant.name,
         companyTicketSeq,
+        tatStartAt, tatDurationMinutes, tatDueAt, tatElapsed, tatStatus,
       );
       const id = Number(created.lastInsertRowid);
       const msgResult = await db.prepare("INSERT INTO messages (ticket_id, author_id, body, created_at) VALUES (?, ?, ?, ?) RETURNING id")
@@ -3352,12 +3495,26 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
         const seqRow = await db.prepare("SELECT COALESCE(MAX(company_ticket_seq), 0) AS max_seq FROM tickets WHERE company_id = ?").get(companyId);
         companyTicketSeq = Number(seqRow?.max_seq || 0) + 1;
       }
+      const tatCfg = await tatConfiguration();
+      const priorityKey = (priority || "normal").toLowerCase();
+      const priorityHours = tatCfg.priorityHours[priorityKey] || 8;
+      const tatDurationMinutes = priorityHours * 60;
+      const holidays = await getActiveHolidayDates();
+      const now = new Date();
+      const tatStartAt = getValidTATStartTime(now, holidays, tatCfg.startHour, tatCfg.endHour)?.toISOString();
+      const tatDueAt = calculateTATDeadline(now, tatDurationMinutes, holidays, tatCfg.startHour, tatCfg.endHour)?.toISOString();
+
       const result = await db.prepare(`
-        INSERT INTO tickets (subject, description, priority, category, tags_json, custom_fields_json, customer_id, company_id, assignee_id, company_ticket_seq)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO tickets (
+          subject, description, priority, category, tags_json, custom_fields_json,
+          customer_id, company_id, assignee_id, company_ticket_seq,
+          tat_start_at, tat_duration_minutes, tat_due_at, tat_status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'within_tat')
       `).run(
         subject, description, priority, metadata.category, JSON.stringify(metadata.tags),
         JSON.stringify(metadata.customFields), customerId, companyId || null, agent?.id || null, companyTicketSeq,
+        tatStartAt, tatDurationMinutes, tatDueAt,
       );
       const ticketId = Number(result.lastInsertRowid);
       const initialMsg = await db.prepare("INSERT INTO messages (ticket_id, author_id, body) VALUES (?, ?, ?)")
@@ -3828,25 +3985,88 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
     values.push(metadata.category, JSON.stringify(metadata.tags), JSON.stringify(metadata.customFields));
   }
   fields.push("updated_at = CURRENT_TIMESTAMP");
-  if (status === "resolved") {
-    const isSa010 = existing.subject?.includes("SAP User Creation") ||
-      (existing.company_ticket_seq === 10 && existing.company_id === 4) ||
-      existing.reported_client_name === "Mr. Mahesh";
-    if (isSa010) {
-      const createdDate = new Date(existing.created_at);
-      const resolvedDate = new Date(createdDate.getTime() + 2 * 60 * 60 * 1000).toISOString();
-      fields.push("resolved_at = ?", "resolved_by = COALESCE(resolved_by, ?)");
-      values.push(resolvedDate, req.user.id);
-    } else {
-      fields.push("resolved_at = COALESCE(resolved_at, CURRENT_TIMESTAMP)", "resolved_by = COALESCE(resolved_by, ?)");
-      values.push(req.user.id);
-    }
-  } else if (status !== undefined) {
-    fields.push("resolved_at = NULL", "resolved_by = NULL");
+  let tatEventToLog = null;
+  const holidays = await getActiveHolidayDates();
+  const tatCfg = await tatConfiguration();
+
+  if (priority !== undefined && priority !== existing.priority) {
+    const priorityKey = priority.toLowerCase();
+    const priorityHours = tatCfg.priorityHours[priorityKey] || 8;
+    const tatDurationMinutes = priorityHours * 60;
+    const totalPaused = Number(existing.tat_total_paused_minutes) || 0;
+    const tatStartAt = existing.tat_start_at || getValidTATStartTime(existing.created_at, holidays, tatCfg.startHour, tatCfg.endHour)?.toISOString();
+    const tatDueAt = calculateTATDeadline(tatStartAt, tatDurationMinutes + totalPaused, holidays, tatCfg.startHour, tatCfg.endHour)?.toISOString();
+    fields.push("tat_duration_minutes = ?", "tat_due_at = ?");
+    values.push(tatDurationMinutes, tatDueAt);
   }
+
+  if (status !== undefined) {
+    if (status === "waiting" && existing.status !== "waiting") {
+      fields.push("tat_paused_at = CURRENT_TIMESTAMP", "tat_status = 'tat_paused'");
+      tatEventToLog = { eventType: "pause", notes: "TAT timer paused" };
+    } else if (existing.status === "waiting" && (status === "open" || status === "in_progress")) {
+      let pauseDelta = 0;
+      if (existing.tat_paused_at) {
+        pauseDelta = calculateElapsedWorkingMinutes(existing.tat_paused_at, new Date(), holidays, tatCfg.startHour, tatCfg.endHour);
+      }
+      const newTotalPaused = (Number(existing.tat_total_paused_minutes) || 0) + pauseDelta;
+      const duration = Number(existing.tat_duration_minutes) || (tatCfg.priorityHours[(existing.priority || "normal").toLowerCase()] || 8) * 60;
+      const newDue = calculateTATDeadline(existing.tat_start_at || existing.created_at, duration + newTotalPaused, holidays, tatCfg.startHour, tatCfg.endHour)?.toISOString();
+      fields.push("tat_paused_at = NULL", "tat_total_paused_minutes = ?", "tat_due_at = COALESCE(?, tat_due_at)", "tat_status = 'within_tat'");
+      values.push(newTotalPaused, newDue);
+      tatEventToLog = { eventType: "resume", durationMinutes: pauseDelta, notes: "TAT timer resumed" };
+    }
+
+    if (status === "resolved") {
+      const isSa010 = existing.subject?.includes("SAP User Creation") ||
+        (existing.company_ticket_seq === 10 && existing.company_id === 4) ||
+        existing.reported_client_name === "Mr. Mahesh";
+      let effectiveResolvedAt;
+      if (isSa010) {
+        const createdDate = new Date(existing.created_at);
+        effectiveResolvedAt = new Date(createdDate.getTime() + 2 * 60 * 60 * 1000).toISOString();
+        fields.push("resolved_at = ?", "resolved_by = COALESCE(resolved_by, ?)");
+        values.push(effectiveResolvedAt, req.user.id);
+      } else {
+        effectiveResolvedAt = new Date().toISOString();
+        fields.push("resolved_at = COALESCE(resolved_at, CURRENT_TIMESTAMP)", "resolved_by = COALESCE(resolved_by, ?)");
+        values.push(req.user.id);
+      }
+      const startAt = existing.tat_start_at || existing.created_at;
+      const totalPaused = Number(existing.tat_total_paused_minutes) || 0;
+      const elapsedWorking = calculateElapsedWorkingMinutes(startAt, effectiveResolvedAt, holidays, tatCfg.startHour, tatCfg.endHour, totalPaused);
+      const dueTime = existing.tat_due_at ? new Date(existing.tat_due_at).getTime() : 0;
+      const resolvedTime = new Date(effectiveResolvedAt).getTime();
+      const tatStatus = (dueTime > 0 && resolvedTime <= dueTime) ? "resolved_within_tat" : "resolved_after_tat";
+      fields.push("tat_elapsed_minutes = ?", "tat_status = ?");
+      values.push(elapsedWorking, tatStatus);
+      tatEventToLog = { eventType: "resolved", notes: `Ticket resolved (${tatStatus})` };
+    } else {
+      fields.push("resolved_at = NULL", "resolved_by = NULL");
+      if (existing.status === "resolved" && status !== "waiting") {
+        fields.push("tat_status = 'within_tat'");
+        tatEventToLog = { eventType: "reopened", notes: "Ticket reopened" };
+      }
+    }
+  }
+
   values.push(ticketId);
   await db.transaction(async () => {
     await db.prepare(`UPDATE tickets SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+    if (tatEventToLog) {
+      await db.prepare(`
+        INSERT INTO ticket_tat_events (ticket_id, event_type, old_status, new_status, duration_minutes, performed_by, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        ticketId,
+        tatEventToLog.eventType,
+        existing.status,
+        status || existing.status,
+        tatEventToLog.durationMinutes || null,
+        req.user.id,
+        tatEventToLog.notes || null,
+      );
+    }
     if (assigneeId !== undefined && assigneeId !== existing.assignee_id) {
       const source = transferToExternal
         ? "transferred_to_external"
@@ -4004,10 +4224,21 @@ async function pollSupportMailbox() {
                     const seqRow = await db.prepare("SELECT COALESCE(MAX(company_ticket_seq), 0) AS max_seq FROM tickets WHERE company_id = ?").get(senderCompany.id);
                     emailCompanySeq = Number(seqRow?.max_seq || 0) + 1;
                   }
+                  const tatCfg = await tatConfiguration();
+                  const priorityHours = tatCfg.priorityHours.normal || 8;
+                  const tatDurationMinutes = priorityHours * 60;
+                  const holidays = await getActiveHolidayDates();
+                  const now = new Date();
+                  const tatStartAt = getValidTATStartTime(now, holidays, tatCfg.startHour, tatCfg.endHour)?.toISOString();
+                  const tatDueAt = calculateTATDeadline(now, tatDurationMinutes, holidays, tatCfg.startHour, tatCfg.endHour)?.toISOString();
+
                   ticketId = Number((await db.prepare(`
-                    INSERT INTO tickets (subject, description, status, priority, customer_id, company_id, assignee_id, source, email_thread_id, company_ticket_seq)
-                    VALUES (?, ?, 'open', 'normal', ?, ?, ?, 'email', ?, ?)
-                  `).run(subject, body, inboundId, senderCompany.id, assignedAgent?.id || null, messageId, emailCompanySeq)).lastInsertRowid);
+                    INSERT INTO tickets (
+                      subject, description, status, priority, customer_id, company_id, assignee_id,
+                      source, email_thread_id, company_ticket_seq, tat_start_at, tat_duration_minutes, tat_due_at, tat_status
+                    )
+                    VALUES (?, ?, 'open', 'normal', ?, ?, ?, 'email', ?, ?, ?, ?, ?, 'within_tat')
+                  `).run(subject, body, inboundId, senderCompany.id, assignedAgent?.id || null, messageId, emailCompanySeq, tatStartAt, tatDurationMinutes, tatDueAt)).lastInsertRowid);
                   await recordTicketAssignment(ticketId, assignedAgent?.id || null, null, assignmentSource);
                 }
                 await db.prepare("INSERT OR IGNORE INTO messages (ticket_id, author_id, body, email_message_id) VALUES (?, ?, ?, ?)")

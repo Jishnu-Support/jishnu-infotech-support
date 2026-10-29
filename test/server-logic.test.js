@@ -11,6 +11,14 @@ import {
 } from "../server/internal-routing.js";
 import { deriveCompanyPrefix, formatCompanyTicketNumber } from "../server/ticket-numbering.js";
 import { calculateReportDateRange, aggregateCompanyReport, formatTicketStatusDisplay } from "../server/company-reports.js";
+import {
+  calculateTATDeadline,
+  calculateElapsedWorkingMinutes,
+  determineTATStatus,
+  formatTATDuration,
+  formatISTDateTime,
+  fromISTDate,
+} from "../server/tat-engine.js";
 
 test("agents can inspect a ticket by its id", () => {
   assert.deepEqual(ticketAccessFilter({ role: "agent", id: 7 }, 42), {
@@ -448,6 +456,9 @@ test("aggregateCompanyReport summarizes counts and client breakdown strictly for
   assert.equal(report.ticketRecords[0].ticketNo, "#BA001");
   assert.equal(report.ticketRecords[0].clientRaisedBy, "Alice");
   assert.equal(report.ticketRecords[0].status, "Solved");
+  assert.ok(report.ticketRecords[0].ticketRaisedDate);
+  assert.ok(report.ticketRecords[0].ticketClosedDate !== undefined);
+  assert.ok(report.ticketRecords[0].tat);
 
   assert.equal(report.ticketRecords[1].ticketNo, "#BA002");
   assert.equal(report.ticketRecords[1].status, "In Progress");
@@ -465,4 +476,75 @@ test("canEditConsultantSolution restricts solution creation and editing strictly
   assert.equal(canEditConsultantSolution({ role: "customer", is_admin: 1 }), false);
   assert.equal(canEditConsultantSolution({ role: "customer", is_company_admin: 1 }), false);
   assert.equal(canEditConsultantSolution(null), false);
+});
+
+test("TAT Engine correctly pauses overnight (Thursday 6 PM + 4h -> Friday 11 AM)", () => {
+  // Thursday 2026-10-22 18:00 IST
+  const thursday6pmUtc = fromISTDate(new Date(Date.UTC(2026, 9, 22, 18, 0, 0)));
+  const deadlineUtc = calculateTATDeadline(thursday6pmUtc, 4 * 60);
+  assert.equal(formatISTDateTime(deadlineUtc), "23/10/2026, 11:00 AM");
+});
+
+test("TAT Engine skips Sundays (Saturday 6 PM + 4h -> Monday 11 AM)", () => {
+  // Saturday 2026-10-24 18:00 IST
+  const saturday6pmUtc = fromISTDate(new Date(Date.UTC(2026, 9, 24, 18, 0, 0)));
+  const deadlineUtc = calculateTATDeadline(saturday6pmUtc, 4 * 60);
+  assert.equal(formatISTDateTime(deadlineUtc), "26/10/2026, 11:00 AM");
+});
+
+test("TAT Engine handles tickets created after 7 PM (Monday 9 PM + 8h -> Tuesday 4 PM)", () => {
+  // Monday 2026-10-26 21:00 IST
+  const monday9pmUtc = fromISTDate(new Date(Date.UTC(2026, 9, 26, 21, 0, 0)));
+  const deadlineUtc = calculateTATDeadline(monday9pmUtc, 8 * 60);
+  assert.equal(formatISTDateTime(deadlineUtc), "27/10/2026, 04:00 PM");
+});
+
+test("TAT Engine excludes configured public holidays", () => {
+  // Saturday 2026-10-24 18:00 IST, with Monday 2026-10-26 as a public holiday
+  const saturday6pmUtc = fromISTDate(new Date(Date.UTC(2026, 9, 24, 18, 0, 0)));
+  const holidays = ["2026-10-26"]; // Monday holiday
+  const deadlineUtc = calculateTATDeadline(saturday6pmUtc, 4 * 60, holidays);
+  // Sunday skipped, Monday holiday skipped -> Tuesday 11:00 AM
+  assert.equal(formatISTDateTime(deadlineUtc), "27/10/2026, 11:00 AM");
+});
+
+test("calculateElapsedWorkingMinutes computes exact working time between dates", () => {
+  // Thursday 17:00 IST to Friday 14:00 IST = 2h Thursday + 6h Friday = 8h (480 min)
+  const thursday5pmUtc = fromISTDate(new Date(Date.UTC(2026, 9, 22, 17, 0, 0)));
+  const friday2pmUtc = fromISTDate(new Date(Date.UTC(2026, 9, 23, 14, 0, 0)));
+  const elapsed = calculateElapsedWorkingMinutes(thursday5pmUtc, friday2pmUtc);
+  assert.equal(elapsed, 480);
+  assert.equal(formatTATDuration(elapsed), "8h");
+});
+
+test("determineTATStatus assigns correct resolution and active statuses", () => {
+  assert.equal(determineTATStatus({
+    status: "resolved",
+    createdAt: "2026-10-23T10:00:00Z",
+    resolvedAt: "2026-10-23T12:00:00Z",
+    tatDueAt: "2026-10-23T18:00:00Z",
+    tatDurationMinutes: 480,
+    elapsedWorkingMinutes: 120,
+  }), "Resolved Within TAT");
+
+  assert.equal(determineTATStatus({
+    status: "resolved",
+    createdAt: "2026-10-23T10:00:00Z",
+    resolvedAt: "2026-10-24T18:00:00Z",
+    tatDueAt: "2026-10-23T18:00:00Z",
+    tatDurationMinutes: 480,
+    elapsedWorkingMinutes: 600,
+  }), "Resolved After TAT");
+
+  assert.equal(determineTATStatus({
+    status: "in_progress",
+    tatDurationMinutes: 480,
+    elapsedWorkingMinutes: 400, // 83% > 80%
+  }), "TAT Warning");
+
+  assert.equal(determineTATStatus({
+    status: "in_progress",
+    tatDurationMinutes: 480,
+    elapsedWorkingMinutes: 500, // > 100%
+  }), "TAT Breached");
 });

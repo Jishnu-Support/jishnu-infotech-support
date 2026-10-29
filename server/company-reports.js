@@ -1,4 +1,12 @@
 import { formatCompanyTicketNumber } from "./ticket-numbering.js";
+import {
+  calculateElapsedWorkingMinutes,
+  calculateTATDeadline,
+  determineTATStatus,
+  formatTATDuration,
+  formatISTDateTime,
+  DEFAULT_PRIORITY_TAT_HOURS,
+} from "./tat-engine.js";
 
 export function calculateReportDateRange(period = "weekly", dateFrom = null, dateTo = null, referenceDate = new Date()) {
   const ref = new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), referenceDate.getUTCDate()));
@@ -46,7 +54,7 @@ export function formatTicketStatusDisplay(status) {
   return "Active";
 }
 
-export function aggregateCompanyReport({ company, adminUsername = null, tickets = [], period = "weekly", startDate, endDate }) {
+export function aggregateCompanyReport({ company, adminUsername = null, tickets = [], period = "weekly", startDate, endDate, holidays = [] }) {
   const companyId = company?.id ? Number(company.id) : null;
   const companyName = company?.name || "Company";
 
@@ -111,14 +119,58 @@ export function aggregateCompanyReport({ company, adminUsername = null, tickets 
       ? (t.subject + (t.description ? ` - ${t.description.replace(/\r?\n+/g, " ").trim()}` : ""))
       : (t.description || "No description");
 
+    const createdAt = t.created_at || t.createdAt;
+    const resolvedAt = status === "resolved" ? (t.resolved_at || t.resolvedAt || null) : null;
+    const priority = (t.priority || "medium").toLowerCase();
+    const tatDurationMinutes = t.tat_duration_minutes || (DEFAULT_PRIORITY_TAT_HOURS[priority] || 8) * 60;
+    const holidaysList = holidays || [];
+    const tatDueAt = t.tat_due_at || calculateTATDeadline(createdAt, tatDurationMinutes, holidaysList);
+    const elapsedMinutes = t.tat_elapsed_minutes !== null && t.tat_elapsed_minutes !== undefined
+      ? t.tat_elapsed_minutes
+      : calculateElapsedWorkingMinutes(createdAt, resolvedAt || new Date(), holidaysList, 8, 19, t.tat_total_paused_minutes || 0);
+
+    const tatStatus = t.tat_status || determineTATStatus({
+      status,
+      createdAt,
+      resolvedAt,
+      tatDueAt,
+      tatDurationMinutes,
+      elapsedWorkingMinutes: elapsedMinutes,
+    });
+
+    const formattedTatDuration = formatTATDuration(elapsedMinutes);
+    const formattedRaisedDate = formatISTDateTime(createdAt);
+    const formattedClosedDate = resolvedAt ? formatISTDateTime(resolvedAt) : "—";
+
+    let tatDisplay = formattedTatDuration;
+    if (tatStatus === "Resolved Within TAT") {
+      tatDisplay = `${formattedTatDuration} (Within TAT)`;
+    } else if (tatStatus === "Resolved After TAT") {
+      tatDisplay = `${formattedTatDuration} (Breached)`;
+    } else if (tatStatus === "TAT Breached") {
+      tatDisplay = `${formattedTatDuration} (Breached)`;
+    } else if (tatStatus === "TAT Warning") {
+      tatDisplay = `${formattedTatDuration} (Warning)`;
+    } else if (tatStatus === "Within TAT (Paused)") {
+      tatDisplay = `${formattedTatDuration} (Paused)`;
+    } else if (tatStatus === "Within TAT") {
+      tatDisplay = `${formattedTatDuration} (Within TAT)`;
+    }
+
     ticketRecords.push({
       sNo: index + 1,
       id: t.id,
       ticketNo,
       ticketDescription: description,
       clientRaisedBy: clientName,
+      ticketRaisedDate: formattedRaisedDate,
+      ticketClosedDate: formattedClosedDate,
+      tat: tatDisplay,
+      tatStatus,
+      tatElapsedMinutes: elapsedMinutes,
       status: formatTicketStatusDisplay(status),
-      createdAt: t.created_at || t.createdAt,
+      createdAt,
+      resolvedAt,
     });
   }
 

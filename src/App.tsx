@@ -41,6 +41,16 @@ type Ticket = {
   messageCount: number; lastMessage: string;
   firstResponseDueAt: string; resolutionDueAt: string;
   firstResponseAt: string | null; isFirstResponseOverdue: boolean; isResolutionOverdue: boolean;
+  resolvedAt?: string | null;
+  tatStartAt?: string | null;
+  tatDurationMinutes?: number | null;
+  tatDueAt?: string | null;
+  tatElapsedMinutes?: number | null;
+  tatRemainingMinutes?: number | null;
+  tatStatus?: string | null;
+  tatPausedAt?: string | null;
+  tatTotalPausedMinutes?: number;
+  tatBreachedAt?: string | null;
   rating: { rating: number; comment: string; createdAt: string; customerId: number } | null;
 };
 type Message = { id: number; body: string; isInternal: boolean; isSolution?: boolean; createdAt: string; editedAt?: string | null; authorId: number | null; authorName: string; authorRole: Role; authorIsInternalConsultant?: boolean; attachments?: TicketAttachment[] };
@@ -101,6 +111,10 @@ type DownloadReportTicketRecord = {
   clientRaisedBy: string;
   status: string;
   createdAt: string;
+  ticketRaisedDate?: string;
+  ticketClosedDate?: string;
+  tat?: string;
+  tatStatus?: string;
 };
 type DownloadReportData = {
   company: { id: number; name: string };
@@ -2165,6 +2179,24 @@ function App() {
                 {!selectedTicket.isFirstResponseOverdue && !selectedTicket.isResolutionOverdue && selectedTicket.status !== "resolved" && <div className="detail-sla">
                   <Clock3 size={14} /><span>First response by {new Date(selectedTicket.firstResponseDueAt).toLocaleString()}</span><span>Resolve by {new Date(selectedTicket.resolutionDueAt).toLocaleString()}</span>
                 </div>}
+                {selectedTicket.tatDueAt && (
+                  <div className={`detail-sla ${selectedTicket.tatStatus === 'tat_breached' || selectedTicket.tatStatus === 'resolved_after_tat' ? 'detail-sla-overdue' : ''}`}>
+                    <Clock3 size={14} />
+                    <strong>Working TAT:</strong>
+                    <span>
+                      {selectedTicket.tatStatus === 'tat_paused'
+                        ? 'Paused'
+                        : selectedTicket.tatStatus === 'resolved_within_tat'
+                          ? 'Resolved within TAT'
+                          : selectedTicket.tatStatus === 'resolved_after_tat'
+                            ? 'Resolved after TAT'
+                            : selectedTicket.tatStatus === 'tat_breached'
+                              ? 'Breached'
+                              : 'Within TAT'}
+                    </span>
+                    {selectedTicket.tatDueAt && <span>(Deadline: {new Date(selectedTicket.tatDueAt).toLocaleString()})</span>}
+                  </div>
+                )}
                 {detail?.assignmentHistory.length ? <AssignmentHistorySection key={selectedTicket.id} entries={detail.assignmentHistory} /> : null}
                 {editingSolution && isSuperAdmin ? (
                   <section className="ticket-solution ticket-solution-editing">
@@ -3272,17 +3304,20 @@ async function generateCompanyPdfReport(report: DownloadReportData) {
   doc.text("TICKET DETAILS", margin, currentY);
   currentY += 4;
 
-  const ticketTableHead = [["S.No", "Ticket No", "Ticket Description", "Client Raised By", "Status"]];
+  const ticketTableHead = [["S.No", "Ticket No", "Ticket Description", "Client Raised By", "Ticket Raised Date", "Ticket Closed Date", "TAT", "Status"]];
   const ticketTableBody = report.ticketRecords.map((t) => [
     t.sNo,
     t.ticketNo,
     t.ticketDescription,
     t.clientRaisedBy,
+    t.ticketRaisedDate || "—",
+    t.ticketClosedDate || "—",
+    t.tat || "—",
     t.status,
   ]);
 
   if (ticketTableBody.length === 0) {
-    ticketTableBody.push(["—", "—", "No tickets recorded for this company in the selected date range.", "—", "—"]);
+    ticketTableBody.push(["—", "—", "No tickets recorded for this company in the selected date range.", "—", "—", "—", "—", "—"]);
   }
 
   autoTable(doc, {
@@ -3292,8 +3327,8 @@ async function generateCompanyPdfReport(report: DownloadReportData) {
     margin: { left: margin, right: margin },
     theme: "striped",
     styles: {
-      fontSize: 8.5,
-      cellPadding: 2.5,
+      fontSize: 7,
+      cellPadding: 2,
       overflow: "linebreak",
     },
     headStyles: {
@@ -3303,23 +3338,38 @@ async function generateCompanyPdfReport(report: DownloadReportData) {
       halign: "center",
     },
     columnStyles: {
-      0: { halign: "center", cellWidth: 14 },
-      1: { halign: "center", cellWidth: 24, fontStyle: "bold" },
+      0: { halign: "center", cellWidth: 10 },
+      1: { halign: "center", cellWidth: 20, fontStyle: "bold" },
       2: { halign: "left" },
-      3: { halign: "left", cellWidth: 38 },
-      4: { halign: "center", cellWidth: 26, fontStyle: "bold" },
+      3: { halign: "left", cellWidth: 26 },
+      4: { halign: "center", cellWidth: 26 },
+      5: { halign: "center", cellWidth: 26 },
+      6: { halign: "center", cellWidth: 22 },
+      7: { halign: "center", cellWidth: 18, fontStyle: "bold" },
     },
     didParseCell: (data) => {
-      if (data.section === "body" && data.column.index === 4) {
-        const val = String(data.cell.raw);
-        if (val === "Solved") {
-          data.cell.styles.textColor = [21, 128, 61];
-        } else if (val === "In Progress") {
-          data.cell.styles.textColor = [109, 40, 217];
-        } else if (val === "Waiting") {
-          data.cell.styles.textColor = [185, 28, 28];
-        } else if (val === "Active") {
-          data.cell.styles.textColor = [161, 98, 7];
+      if (data.section === "body") {
+        if (data.column.index === 7) {
+          const val = String(data.cell.raw);
+          if (val === "Solved") {
+            data.cell.styles.textColor = [21, 128, 61];
+          } else if (val === "In Progress") {
+            data.cell.styles.textColor = [109, 40, 217];
+          } else if (val === "Waiting") {
+            data.cell.styles.textColor = [185, 28, 28];
+          } else if (val === "Active") {
+            data.cell.styles.textColor = [161, 98, 7];
+          }
+        }
+        if (data.column.index === 6) {
+          const val = String(data.cell.raw);
+          if (val.includes("Breached") || val.includes("After TAT")) {
+            data.cell.styles.textColor = [185, 28, 28];
+          } else if (val.includes("Warning")) {
+            data.cell.styles.textColor = [194, 65, 12];
+          } else if (val.includes("Within TAT")) {
+            data.cell.styles.textColor = [21, 128, 61];
+          }
         }
       }
     },
@@ -3641,17 +3691,20 @@ function DownloadReportsView() {
               <table className="report-data-table download-reports-table">
                 <thead>
                   <tr>
-                    <th style={{ width: 60, textAlign: "center" }}>S.No</th>
-                    <th style={{ width: 110, textAlign: "center" }}>Ticket No</th>
+                    <th style={{ width: 50, textAlign: "center" }}>S.No</th>
+                    <th style={{ width: 100, textAlign: "center" }}>Ticket No</th>
                     <th>Ticket Description</th>
-                    <th style={{ width: 180 }}>Client Raised By</th>
-                    <th style={{ width: 120, textAlign: "center" }}>Status</th>
+                    <th style={{ width: 140 }}>Client Raised By</th>
+                    <th style={{ width: 140, textAlign: "center" }}>Ticket Raised Date</th>
+                    <th style={{ width: 140, textAlign: "center" }}>Ticket Closed Date</th>
+                    <th style={{ width: 160, textAlign: "center" }}>TAT</th>
+                    <th style={{ width: 110, textAlign: "center" }}>Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {report.ticketRecords.length === 0 ? (
                     <tr>
-                      <td colSpan={5} style={{ textAlign: "center", color: "var(--muted, #64748b)", padding: "24px" }}>
+                      <td colSpan={8} style={{ textAlign: "center", color: "var(--muted, #64748b)", padding: "24px" }}>
                         No tickets were raised by this company during the selected date range.
                       </td>
                     </tr>
@@ -3668,6 +3721,40 @@ function DownloadReportsView() {
                           </div>
                         </td>
                         <td style={{ fontWeight: 500 }}>{t.clientRaisedBy}</td>
+                        <td style={{ textAlign: "center", fontSize: "0.82rem", whiteSpace: "nowrap" }}>
+                          {t.ticketRaisedDate || "—"}
+                        </td>
+                        <td style={{ textAlign: "center", fontSize: "0.82rem", whiteSpace: "nowrap" }}>
+                          {t.ticketClosedDate || "—"}
+                        </td>
+                        <td style={{ textAlign: "center" }}>
+                          <span
+                            className={`tat-badge ${t.tatStatus ? `tat-${t.tatStatus.toLowerCase()}` : ""}`}
+                            style={{
+                              fontSize: "0.78rem",
+                              fontWeight: 600,
+                              padding: "2px 8px",
+                              borderRadius: 4,
+                              display: "inline-block",
+                              background: t.tat?.includes("Breached") || t.tat?.includes("After TAT")
+                                ? "#fee2e2"
+                                : t.tat?.includes("Warning")
+                                  ? "#ffedd5"
+                                  : t.tat?.includes("Within TAT")
+                                    ? "#dcfce7"
+                                    : "#f1f5f9",
+                              color: t.tat?.includes("Breached") || t.tat?.includes("After TAT")
+                                ? "#991b1b"
+                                : t.tat?.includes("Warning")
+                                  ? "#c2410c"
+                                  : t.tat?.includes("Within TAT")
+                                    ? "#166534"
+                                    : "#334155",
+                            }}
+                          >
+                            {t.tat || "—"}
+                          </span>
+                        </td>
                         <td style={{ textAlign: "center" }}>
                           <span className={`download-status-badge status-${t.status.toLowerCase().replace(/\s+/g, "-")}`}>
                             {t.status}
