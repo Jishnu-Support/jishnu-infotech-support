@@ -137,44 +137,73 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers: { ...(isFormData ? {} : { "Content-Type": "application/json" }), ...options.headers },
   };
   const method = (options.method || "GET").toUpperCase();
-  let response: Response;
-  try {
-    response = await fetch(`/api${path}`, requestOptions);
-  } catch {
-    if (method !== "GET" || options.signal?.aborted) {
-      throw new Error("The server could not be reached. Check your connection and try again.");
-    }
-    await new Promise((resolve) => window.setTimeout(resolve, 400));
+
+  async function performFetch(): Promise<Response> {
     try {
-      response = await fetch(`/api${path}`, requestOptions);
+      return await fetch(`/api${path}`, requestOptions);
     } catch {
-      throw new Error("The server is temporarily unreachable. Please check your connection and try again.");
+      if (method !== "GET" || options.signal?.aborted) {
+        throw new Error("The server could not be reached. Check your connection and try again.");
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+      try {
+        return await fetch(`/api${path}`, requestOptions);
+      } catch {
+        throw new Error("The server is temporarily unreachable. Please check your connection and try again.");
+      }
     }
   }
-  if (method === "GET" && [500, 502, 503, 504].includes(response.status)) {
-    await response.body?.cancel();
-    await new Promise((resolve) => window.setTimeout(resolve, 400));
-    try {
-      response = await fetch(`/api${path}`, requestOptions);
-    } catch {
-      throw new Error("The server is temporarily unreachable. Please check your connection and try again.");
+
+  let response = await performFetch();
+
+  if (method === "GET") {
+    const isErrorStatus = [404, 500, 502, 503, 504].includes(response.status);
+    const contentType = response.headers.get("content-type") || "";
+    if (isErrorStatus || contentType.includes("text/html")) {
+      const cloned = response.clone();
+      const previewText = await cloned.text().catch(() => "");
+      if (previewText.trim().startsWith("<") || [500, 502, 503, 504].includes(response.status)) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        try {
+          const retried = await fetch(`/api${path}`, requestOptions);
+          const retriedPreview = await retried.clone().text().catch(() => "");
+          if (retried.ok || !retriedPreview.trim().startsWith("<")) {
+            response = retried;
+          }
+        } catch {
+          // Keep original response
+        }
+      }
     }
   }
+
   if (response.status === 204) return undefined as T;
+
   const body = await response.text();
   if (!body.trim()) {
     throw new Error(response.ok
       ? "The server returned an empty response. Please try again."
       : `The server returned an empty error response (${response.status}). Please try again.`);
   }
+
+  if (body.trim().startsWith("<")) {
+    if (response.status === 404) {
+      throw new Error("The requested resource was not found. Please refresh or try again.");
+    }
+    throw new Error("The server is temporarily unreachable. Please check your connection and try again.");
+  }
+
   let data: T & ApiError;
   try {
     data = JSON.parse(body) as T & ApiError;
   } catch {
     throw new Error(response.ok
       ? "The server returned an invalid response. Please try again."
-      : `The server returned an invalid error response (${response.status}). Please try again.`);
+      : (response.status === 404
+          ? "The requested resource was not found. Please refresh or try again."
+          : `The server returned an error (${response.status}). Please try again.`));
   }
+
   if (!response.ok) throw new Error(data.error || "Something went wrong.");
   return data;
 }
@@ -1073,7 +1102,15 @@ function App() {
     if (!selectedId || !user) { setDetail(null); return; }
     api<TicketDetail>(`/tickets/${selectedId}`)
       .then(setDetail)
-      .catch((error: Error) => setActionError(error.message));
+      .catch((error: Error) => {
+        // If ticket not found or inaccessible, reset detail cleanly
+        if (error.message.includes("404") || error.message.toLowerCase().includes("not found")) {
+          setDetail(null);
+          setSelectedId(null);
+        } else {
+          setActionError(error.message);
+        }
+      });
   }, [selectedId, user, tickets]);
 
   useEffect(() => {
@@ -1081,7 +1118,9 @@ function App() {
     const intervalId = window.setInterval(() => {
       api<TicketDetail>(`/tickets/${selectedId}`)
         .then(setDetail)
-        .catch((error: Error) => setActionError(error.message));
+        .catch(() => {
+          // Background polling should never disrupt the user with actionError
+        });
     }, 10000);
     return () => window.clearInterval(intervalId);
   }, [activeView, selectedId, user]);
@@ -1202,9 +1241,9 @@ function App() {
 
   useEffect(() => {
     if (!user || user.role !== "agent") return;
-    refreshNotifications().catch((error: Error) => setActionError(error.message));
+    refreshNotifications().catch(() => {});
     const intervalId = window.setInterval(() => {
-      refreshNotifications().catch((error: Error) => setActionError(error.message));
+      refreshNotifications().catch(() => {});
     }, 10000);
     return () => window.clearInterval(intervalId);
   }, [refreshNotifications, user]);
@@ -1232,7 +1271,7 @@ function App() {
     if (!user) { setAgents([]); return; }
     api<{ agents: Customer[] }>("/agents")
       .then(({ agents: loaded }) => setAgents(loaded))
-      .catch((error: Error) => setActionError(error.message));
+      .catch(() => {});
   }, [user]);
 
   useEffect(() => {
@@ -1249,7 +1288,7 @@ function App() {
   useEffect(() => {
     if (!user) return;
     const intervalId = window.setInterval(() => {
-      refreshTickets().catch((error: Error) => setActionError(error.message));
+      refreshTickets().catch(() => {});
     }, 30000);
     return () => window.clearInterval(intervalId);
   }, [refreshTickets, user]);
