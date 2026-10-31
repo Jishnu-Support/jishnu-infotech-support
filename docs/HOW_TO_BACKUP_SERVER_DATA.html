@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Server Backup and Restore Guide</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 18mm 18mm 18mm 18mm;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #1e293b;
+      line-height: 1.55;
+      font-size: 13.5px;
+      margin: 0;
+      padding: 0;
+    }
+    .header-box {
+      border-bottom: 2px solid #2563eb;
+      padding-bottom: 12px;
+      margin-bottom: 20px;
+    }
+    h1 {
+      color: #1e3a8a;
+      font-size: 24px;
+      margin: 0 0 6px 0;
+      font-weight: 700;
+    }
+    .meta-sub {
+      color: #64748b;
+      font-size: 12.5px;
+    }
+    .badge {
+      display: inline-block;
+      background: #eff6ff;
+      color: #1d4ed8;
+      border: 1px solid #bfdbfe;
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-right: 6px;
+    }
+    h2 {
+      color: #1e293b;
+      font-size: 16px;
+      margin: 22px 0 10px 0;
+      padding-bottom: 4px;
+      border-bottom: 1px solid #e2e8f0;
+      page-break-after: avoid;
+    }
+    h3 {
+      color: #334155;
+      font-size: 14px;
+      margin: 14px 0 6px 0;
+      page-break-after: avoid;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0 16px 0;
+      font-size: 12.5px;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 7px 10px;
+      text-align: left;
+    }
+    th {
+      background-color: #f1f5f9;
+      color: #0f172a;
+      font-weight: 600;
+    }
+    .step-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-left: 4px solid #2563eb;
+      padding: 10px 14px;
+      margin: 10px 0 14px 0;
+      border-radius: 4px;
+      page-break-inside: avoid;
+    }
+    .step-card.warning {
+      border-left-color: #f59e0b;
+      background: #fffbeb;
+    }
+    .step-card.success {
+      border-left-color: #10b981;
+      background: #f0fdf4;
+    }
+    code, pre {
+      font-family: Consolas, "Courier New", monospace;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 10px 12px;
+      border-radius: 5px;
+      font-size: 12px;
+      overflow-x: auto;
+      margin: 8px 0;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    code {
+      background: #e2e8f0;
+      color: #0f172a;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 12px;
+    }
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+    ol, ul {
+      margin: 6px 0 10px 20px;
+      padding: 0;
+    }
+    li {
+      margin-bottom: 5px;
+    }
+    .footer-note {
+      margin-top: 30px;
+      padding-top: 10px;
+      border-top: 1px solid #e2e8f0;
+      font-size: 11px;
+      color: #94a3b8;
+      text-align: center;
+    }
+    .page-break {
+      page-break-before: always;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header-box">
+    <h1>Production Server Backup & Restore Manual</h1>
+    <div class="meta-sub">
+      <span class="badge">PRODUCTION</span>
+      <strong>Project:</strong> Jishnu Infotech Support (<code>jit_support</code>) &bull;
+      <strong>Server:</strong> Bluehost VPS (<code>129.121.128.205</code>) &bull;
+      <strong>Panel:</strong> Easypanel
+    </div>
+  </div>
+
+  <h2>1. Server & Environment Reference</h2>
+  <table>
+    <tr>
+      <th style="width: 32%;">Item</th>
+      <th>Configuration</th>
+    </tr>
+    <tr>
+      <td><strong>Easypanel Dashboard</strong></td>
+      <td><code>http://129.121.128.205:3000</code></td>
+    </tr>
+    <tr>
+      <td><strong>Project Name</strong></td>
+      <td><code>jit_support</code></td>
+    </tr>
+    <tr>
+      <td><strong>PostgreSQL Database Service</strong></td>
+      <td><code>jit</code> (Database: <code>$POSTGRES_DB</code> / User: <code>$POSTGRES_USER</code>)</td>
+    </tr>
+    <tr>
+      <td><strong>Application Service</strong></td>
+      <td><code>github</code> (Node.js Express / Vite)</td>
+    </tr>
+    <tr>
+      <td><strong>Attachments Directory</strong></td>
+      <td><code>/app/data/attachments</code> (Inside <code>github</code> service container)</td>
+    </tr>
+  </table>
+
+  <h2>2. Step-by-Step: Database Backup (From Server to Local PC)</h2>
+
+  <div class="step-card">
+    <strong>Step 1: Open Database Web Terminal</strong>
+    <ol>
+      <li>Log in to Easypanel at <code>http://129.121.128.205:3000</code></li>
+      <li>Click on project <strong>jit_support</strong> &rarr; click service <strong>jit</strong> (Postgres)</li>
+      <li>Click <strong>Console</strong> (or <strong>Terminal</strong>) in the top tabs &rarr; click <strong>Bash</strong></li>
+      <li>You will see the root prompt: <code>root@...:/#</code></li>
+    </ol>
+  </div>
+
+  <div class="step-card">
+    <strong>Step 2: Generate Compressed PostgreSQL Dump</strong>
+    <p>Run this command inside the terminal prompt:</p>
+    <pre><code>pg_dump -U $POSTGRES_USER $POSTGRES_DB | gzip > /tmp/db_backup.sql.gz && echo "Backup ready!"</code></pre>
+    <p style="font-size: 12px; color: #475569; margin: 4px 0 0 0;">
+      <em>Note: Uses the container's built-in <code>$POSTGRES_USER</code> and <code>$POSTGRES_DB</code> environment variables automatically.</em>
+    </p>
+  </div>
+
+  <div class="step-card">
+    <strong>Step 3: Upload Backup to Secure Transfer Endpoint</strong>
+    <p>Send the backup to the temporary transfer service:</p>
+    <pre><code>curl -F "file=@/tmp/db_backup.sql.gz" https://tmpfiles.org/api/v1/upload</code></pre>
+    <p>The server returns JSON output like:</p>
+    <pre><code>{"status":"success","data":{"url":"https://tmpfiles.org/XXXXXX/db_backup.sql.gz"}}</code></pre>
+  </div>
+
+  <div class="step-card success">
+    <strong>Step 4: Download the File to Your Windows System</strong>
+    <ol>
+      <li>Take the URL returned in Step 3.</li>
+      <li>Insert <code>/dl/</code> immediately after <code>tmpfiles.org</code>:
+        <br>
+        &bull; <strong>Original link:</strong> <code>https://tmpfiles.org/XXXXXX/db_backup.sql.gz</code><br>
+        &bull; <strong>Direct download link:</strong> <code>https://tmpfiles.org/dl/XXXXXX/db_backup.sql.gz</code>
+      </li>
+      <li>Paste the direct download link into Chrome or Edge. The file will save directly to your <strong>Downloads</strong> folder.</li>
+    </ol>
+  </div>
+
+  <div class="step-card warning">
+    <strong>Step 5: Clean Up the Server</strong>
+    <p>In the terminal, remove the temporary backup file:</p>
+    <pre><code>rm /tmp/db_backup.sql.gz</code></pre>
+  </div>
+
+  <div class="page-break"></div>
+
+  <h2>3. Extracting and Verifying the Backup on Windows</h2>
+  <div class="step-card">
+    <p>Your downloaded file is compressed with gzip (<code>db_backup.sql.gz</code>).</p>
+    <h3>Option A: Extract using 7-Zip / WinRAR</h3>
+    <ul>
+      <li>Right-click <code>db_backup.sql.gz</code> &rarr; <strong>7-Zip</strong> &rarr; <strong>Extract Here</strong>.</li>
+      <li>It will produce the raw <code>db_backup.sql</code> file.</li>
+    </ul>
+
+    <h3>Option B: Extract using Windows PowerShell</h3>
+    <pre><code>$in = "$HOME\Downloads\db_backup.sql.gz"
+$out = "$HOME\Downloads\db_backup.sql"
+$src = [System.IO.File]::OpenRead($in)
+$dst = [System.IO.File]::Create($out)
+$gz = New-Object System.IO.Compression.GZipStream($src, [System.IO.Compression.CompressionMode]::Decompress)
+$gz.CopyTo($dst)
+$gz.Dispose(); $dst.Dispose(); $src.Dispose()
+Write-Host "Extracted successfully to $out"</code></pre>
+  </div>
+
+  <h2>4. Step-by-Step: Backing Up File Attachments & Manuals</h2>
+  <div class="step-card">
+    <ol>
+      <li>In Easypanel, open project <strong>jit_support</strong> &rarr; click service <strong>github</strong> (App container).</li>
+      <li>Click <strong>Console</strong> &rarr; <strong>Bash</strong>.</li>
+      <li>Archive all ticket attachments and uploaded manuals:
+        <pre><code>tar -czf /tmp/attachments_backup.tar.gz -C /app/data attachments</code></pre>
+      </li>
+      <li>Upload and download:
+        <pre><code>curl -F "file=@/tmp/attachments_backup.tar.gz" https://tmpfiles.org/api/v1/upload</code></pre>
+      </li>
+      <li>Add <code>/dl/</code> to the download URL and save to your PC.</li>
+      <li>Clean up:
+        <pre><code>rm /tmp/attachments_backup.tar.gz</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <h2>5. Disaster Recovery / Restoring the Database</h2>
+  <div class="step-card">
+    <p>To restore your database dump into PostgreSQL:</p>
+    <ol>
+      <li>In Easypanel &rarr; <strong>jit</strong> service &rarr; <strong>Console</strong> &rarr; <strong>Bash</strong>.</li>
+      <li>If restoring from <code>.sql.gz</code>:
+        <pre><code>gunzip -c /tmp/db_backup.sql.gz | psql -U $POSTGRES_USER -d $POSTGRES_DB</code></pre>
+      </li>
+      <li>If restoring from uncompressed <code>.sql</code>:
+        <pre><code>psql -U $POSTGRES_USER -d $POSTGRES_DB < /tmp/db_backup.sql</code></pre>
+      </li>
+      <li>Verify table count and restoration:
+        <pre><code>psql -U $POSTGRES_USER -d $POSTGRES_DB -c "\dt"</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <h2>6. Quick Troubleshooting</h2>
+  <table>
+    <tr>
+      <th style="width: 32%;">Error / Symptom</th>
+      <th style="width: 30%;">Root Cause</th>
+      <th>Solution</th>
+    </tr>
+    <tr>
+      <td><code>curl: command not found</code></td>
+      <td>Curl is missing from container</td>
+      <td>Run <code>apt-get update && apt-get install -y curl</code> once.</td>
+    </tr>
+    <tr>
+      <td><code>role "postgres" does not exist</code></td>
+      <td>Using hardcoded default user</td>
+      <td>Always use <code>$POSTGRES_USER</code> variable in the command.</td>
+    </tr>
+    <tr>
+      <td><code>pg_dump: command not found</code></td>
+      <td>Terminal opened in app container</td>
+      <td>Switch console to the <strong>jit</strong> (Postgres) service.</td>
+    </tr>
+    <tr>
+      <td>Browser downloads HTML page instead of file</td>
+      <td>Missing direct download prefix</td>
+      <td>Add <code>/dl/</code> after <code>tmpfiles.org</code> in the link.</td>
+    </tr>
+  </table>
+
+  <div class="footer-note">
+    Document generated for Jishnu Infotech Support System &bull; Confidential &bull; Local & Server Disaster Recovery Runbook
+  </div>
+
+</body>
+</html>

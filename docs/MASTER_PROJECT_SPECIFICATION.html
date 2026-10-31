@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Master Project Architecture & Database Specification</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 16mm 16mm 16mm 16mm;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #1e293b;
+      line-height: 1.5;
+      font-size: 13px;
+      margin: 0;
+      padding: 0;
+    }
+    .header-box {
+      border-bottom: 2px solid #2563eb;
+      padding-bottom: 12px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      color: #1e3a8a;
+      font-size: 22px;
+      margin: 0 0 6px 0;
+      font-weight: 700;
+    }
+    .meta-sub {
+      color: #64748b;
+      font-size: 12px;
+    }
+    .badge {
+      display: inline-block;
+      background: #eff6ff;
+      color: #1d4ed8;
+      border: 1px solid #bfdbfe;
+      border-radius: 4px;
+      padding: 2px 7px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-right: 6px;
+    }
+    h2 {
+      color: #0f172a;
+      font-size: 15px;
+      margin: 20px 0 8px 0;
+      padding-bottom: 4px;
+      border-bottom: 1px solid #e2e8f0;
+      page-break-after: avoid;
+    }
+    h3 {
+      color: #334155;
+      font-size: 13.5px;
+      margin: 12px 0 4px 0;
+      page-break-after: avoid;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 8px 0 14px 0;
+      font-size: 12px;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 6px 8px;
+      text-align: left;
+    }
+    th {
+      background-color: #f1f5f9;
+      color: #0f172a;
+      font-weight: 600;
+    }
+    .box {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-left: 4px solid #2563eb;
+      padding: 10px 12px;
+      margin: 10px 0;
+      border-radius: 4px;
+      page-break-inside: avoid;
+    }
+    code, pre {
+      font-family: Consolas, "Courier New", monospace;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 9px 12px;
+      border-radius: 4px;
+      font-size: 11.5px;
+      overflow-x: auto;
+      margin: 6px 0;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    code {
+      background: #e2e8f0;
+      color: #0f172a;
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-size: 11.5px;
+    }
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+    ol, ul {
+      margin: 4px 0 8px 18px;
+      padding: 0;
+    }
+    li {
+      margin-bottom: 4px;
+    }
+    .page-break {
+      page-break-before: always;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header-box">
+    <h1>Jishnu Infotech Support Portal — Master Architecture & Specification</h1>
+    <div class="meta-sub">
+      <span class="badge">SPECIFICATION</span>
+      <span class="badge">POSTGRESQL 18</span>
+      <span class="badge">REACT 19 + NODE 24</span>
+      <strong>Production IP:</strong> 129.121.128.205 &bull; <strong>Service:</strong> jit_support
+    </div>
+  </div>
+
+  <h2>1. System Prompt & Architectural Rules</h2>
+  <div class="box">
+    <p><strong>Primary Directive:</strong> You are the lead system architect and software engineer for the Jishnu Infotech Support System. The platform must adhere strictly to these core tenets:</p>
+    <ul>
+      <li><strong>Multi-Tenant Strict Isolation:</strong> Client accounts belong strictly to their designated enterprise (<code>company_id</code>). All SQL queries must enforce company boundary filters.</li>
+      <li><strong>Dual-Portal Boundary:</strong> Distinct workflows for Client Portal (tickets, manuals, broadcasts) vs. Consultant/Admin Portal (shared queues, reassignment, internal notes, global analytics).</li>
+      <li><strong>Confidentiality Rule:</strong> Internal notes (<code>is_internal = true</code>) and internal assignment tracking must never leak to client payloads.</li>
+      <li><strong>Business-Hours SLA Engine:</strong> TAT deadlines must factor in business schedules (09:30 - 18:30 M-F), pauses during <em>Waiting for Client</em>, weekends, and gazetted public holidays.</li>
+    </ul>
+  </div>
+
+  <h2>2. Roles and Permission Matrix (RBAC)</h2>
+  <table>
+    <tr>
+      <th style="width: 20%;">Role</th>
+      <th style="width: 25%;">Scope</th>
+      <th>Key Privileges</th>
+    </tr>
+    <tr>
+      <td><strong>Client User</strong></td>
+      <td>Own Tickets / Company Inbox</td>
+      <td>Open tickets, reply, view company-scoped manuals and bulletins, rate closed tickets (1–5 stars).</td>
+    </tr>
+    <tr>
+      <td><strong>Company Admin</strong></td>
+      <td>Entire Single Company</td>
+      <td>All Client User privileges + manage company staff, issue invite codes, view company SLA and resolution reports.</td>
+    </tr>
+    <tr>
+      <td><strong>Consultant</strong></td>
+      <td>All Client Workspaces</td>
+      <td>Shared inbox, Assigned to Me, post public replies & private internal notes, reassign tickets, manage customer directory.</td>
+    </tr>
+    <tr>
+      <td><strong>Super Admin</strong></td>
+      <td>Workspace & System Wide</td>
+      <td>All Consultant privileges + manage consultant team, round-robin routing rules, configure SLA tiers, global reports, audit logs.</td>
+    </tr>
+  </table>
+
+  <h2>3. Technology Stack</h2>
+  <table>
+    <tr>
+      <th style="width: 25%;">Layer</th>
+      <th>Technologies</th>
+    </tr>
+    <tr>
+      <td><strong>Frontend Client</strong></td>
+      <td>React 19, TypeScript 5.9, Vite 7, Lucide Icons, jsPDF & AutoTable, Mammoth / Docx Preview, SheetJS (XLSX).</td>
+    </tr>
+    <tr>
+      <td><strong>Backend Engine</strong></td>
+      <td>Node.js 24 / Express.js 5.1, Multer (file handling), JWT + HTTP-only cookies, Bcrypt.js, Helmet, Rate-Limit.</td>
+    </tr>
+    <tr>
+      <td><strong>Database</strong></td>
+      <td>PostgreSQL 18 (Debian), Connection Pooling (<code>pg</code>), transactional schema migrations.</td>
+    </tr>
+    <tr>
+      <td><strong>Email Pipeline</strong></td>
+      <td>Inbound ticket generation via <code>imapflow</code> & <code>mailparser</code>; resilient transactional <code>mail_outbox</code> via <code>nodemailer</code>.</td>
+    </tr>
+  </table>
+
+  <div class="page-break"></div>
+
+  <h2>4. Complete PostgreSQL Database Schema (28 Tables)</h2>
+  <table>
+    <tr>
+      <th style="width: 28%;">Table Name</th>
+      <th style="width: 28%;">Foreign Key Relationships</th>
+      <th>Purpose & Key Columns</th>
+    </tr>
+    <tr>
+      <td><code>companies</code></td>
+      <td>Primary enterprise entity</td>
+      <td><code>id, name, code, sla_plan, is_active, created_at</code></td>
+    </tr>
+    <tr>
+      <td><code>users</code></td>
+      <td><code>company_id &rarr; companies(id)</code></td>
+      <td><code>id, username, email, password_hash, role, full_name, phone, is_active</code></td>
+    </tr>
+    <tr>
+      <td><code>company_memberships</code></td>
+      <td><code>user_id, company_id</code></td>
+      <td>Multi-company client account association and company switching.</td>
+    </tr>
+    <tr>
+      <td><code>tickets</code></td>
+      <td><code>company_id, created_by, assigned_to</code></td>
+      <td><code>ticket_number, title, description, category, priority, status, tat_deadline, timestamps</code></td>
+    </tr>
+    <tr>
+      <td><code>messages</code></td>
+      <td><code>ticket_id, sender_id</code></td>
+      <td>Conversation messages; includes <code>is_internal</code> boolean for staff-only notes.</td>
+    </tr>
+    <tr>
+      <td><code>ticket_attachments</code></td>
+      <td><code>ticket_id, message_id</code></td>
+      <td><code>file_name, stored_name, file_size, mime_type, created_at</code></td>
+    </tr>
+    <tr>
+      <td><code>ticket_ratings</code></td>
+      <td><code>ticket_id (UNIQUE), user_id</code></td>
+      <td>Client satisfaction score (1 to 5 stars) and optional feedback after closure.</td>
+    </tr>
+    <tr>
+      <td><code>ticket_tat_events</code></td>
+      <td><code>ticket_id</code></td>
+      <td>Milestone logs for SLA audit: created, first_response, paused, resumed, resolved.</td>
+    </tr>
+    <tr>
+      <td><code>ticket_assignment_history</code></td>
+      <td><code>ticket_id, assigned_by, assigned_to</code></td>
+      <td>Tracks consultant reassignments, routing changes, and reasons.</td>
+    </tr>
+    <tr>
+      <td><code>user_manuals</code></td>
+      <td><code>created_by &rarr; users(id)</code></td>
+      <td>Self-service guides and manuals published for clients.</td>
+    </tr>
+    <tr>
+      <td><code>user_manual_recipients</code></td>
+      <td><code>manual_id, company_id</code></td>
+      <td>Company-level permission targeting for user manuals.</td>
+    </tr>
+    <tr>
+      <td><code>user_manual_attachments</code></td>
+      <td><code>manual_id</code></td>
+      <td>Uploaded PDF, Word, and guide files linked to manuals.</td>
+    </tr>
+    <tr>
+      <td><code>user_manual_links</code></td>
+      <td><code>manual_id</code></td>
+      <td>External tutorial video or reference URLs.</td>
+    </tr>
+    <tr>
+      <td><code>information_posts</code></td>
+      <td><code>created_by</code></td>
+      <td>System maintenance notices, advisories, and bulletin board posts.</td>
+    </tr>
+    <tr>
+      <td><code>information_post_recipients</code></td>
+      <td><code>post_id, user_id</code></td>
+      <td>User-specific notice targeting.</td>
+    </tr>
+    <tr>
+      <td><code>information_post_company_recipients</code></td>
+      <td><code>post_id, company_id</code></td>
+      <td>Company-wide bulletin targeting.</td>
+    </tr>
+    <tr>
+      <td><code>information_post_attachments</code></td>
+      <td><code>post_id</code></td>
+      <td>Image banners and document attachments for posts.</td>
+    </tr>
+    <tr>
+      <td><code>information_post_notifications</code></td>
+      <td><code>post_id, user_id</code></td>
+      <td>Read/unread status for broadcast announcements.</td>
+    </tr>
+    <tr>
+      <td><code>notifications</code></td>
+      <td><code>user_id</code></td>
+      <td>Real-time in-app notification alerts for assignments, replies, and SLA warnings.</td>
+    </tr>
+    <tr>
+      <td><code>mail_outbox</code></td>
+      <td>Internal queue</td>
+      <td>Reliable transactional outgoing email queue with retry attempts and error logs.</td>
+    </tr>
+    <tr>
+      <td><code>email_cursors</code></td>
+      <td>IMAP cursor</td>
+      <td>Tracks last-processed email UID for inbound email-to-ticket sync.</td>
+    </tr>
+    <tr>
+      <td><code>workspace_settings</code></td>
+      <td>Singleton settings</td>
+      <td>Working hours, default SLA target hours, email routing rules.</td>
+    </tr>
+    <tr>
+      <td><code>holidays</code></td>
+      <td>Calendar entity</td>
+      <td>Holiday dates used by the TAT engine to pause SLA calculations.</td>
+    </tr>
+    <tr>
+      <td><code>company_join_codes</code></td>
+      <td><code>company_id</code></td>
+      <td>Self-registration invite codes generated by Company Admins.</td>
+    </tr>
+    <tr>
+      <td><code>client_invitations</code></td>
+      <td><code>company_id</code></td>
+      <td>Time-expiring token invitations sent to clients.</td>
+    </tr>
+    <tr>
+      <td><code>agent_invitations</code></td>
+      <td>Internal invite</td>
+      <td>Invitations for new consultant onboarding.</td>
+    </tr>
+    <tr>
+      <td><code>password_reset_tokens</code></td>
+      <td><code>user_id</code></td>
+      <td>Cryptographic password recovery tokens with 1-hour expiration.</td>
+    </tr>
+    <tr>
+      <td><code>schema_migrations</code></td>
+      <td>System table</td>
+      <td>Applied migration version hashes for zero-downtime upgrades.</td>
+    </tr>
+  </table>
+
+  <div class="page-break"></div>
+
+  <h2>5. Turnaround Time (TAT) & Business-Hours SLA Engine</h2>
+  <div class="box">
+    <p>Implemented in <code>server/tat-engine.js</code>:</p>
+    <ul>
+      <li><strong>Operating Hours:</strong> Monday – Friday, 09:30 AM to 06:30 PM (9 business hours/day).</li>
+      <li><strong>Exclusions:</strong> Saturdays, Sundays, and dates present in the <code>public.holidays</code> table.</li>
+      <li><strong>Clock Freezing:</strong> When a consultant moves a ticket to <code>Waiting for Client</code>, the SLA clock is paused. The elapsed pause time is deducted upon transition back to <code>In Progress</code>.</li>
+      <li><strong>Default Target Thresholds:</strong>
+        <br>&bull; <strong>Urgent:</strong> 4 business hours
+        <br>&bull; <strong>High:</strong> 8 business hours (1 business day)
+        <br>&bull; <strong>Medium:</strong> 24 business hours (approx. 2.6 business days)
+        <br>&bull; <strong>Low:</strong> 48 business hours (approx. 5.3 business days)
+      </li>
+    </ul>
+  </div>
+
+  <h2>6. Production Deployment & Storage Specifications</h2>
+  <table>
+    <tr>
+      <th style="width: 30%;">Component</th>
+      <th>Deployment Specification</th>
+    </tr>
+    <tr>
+      <td><strong>VPS Host</strong></td>
+      <td>Bluehost Linux VPS (<code>129.121.128.205</code>) running Docker Engine.</td>
+    </tr>
+    <tr>
+      <td><strong>Control Panel</strong></td>
+      <td>Easypanel at port <code>3000</code>.</td>
+    </tr>
+    <tr>
+      <td><strong>App Container (<code>github</code>)</strong></td>
+      <td>Node.js 24 production image running combined Express API + Vite production build.</td>
+    </tr>
+    <tr>
+      <td><strong>Postgres Container (<code>jit</code>)</strong></td>
+      <td>Official PostgreSQL 18 with persistent volume mount for DB data.</td>
+    </tr>
+    <tr>
+      <td><strong>File Storage Volume</strong></td>
+      <td>Named Docker volume mapped to <code>/app/data/attachments</code> inside the app container.</td>
+    </tr>
+  </table>
+
+  <div class="footer-note">
+    Jishnu Infotech Support System &bull; Confidential Master Engineering Blueprint &bull; 2026
+  </div>
+
+</body>
+</html>

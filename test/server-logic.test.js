@@ -315,9 +315,9 @@ test("canEditChatMessage allows only consultants to edit messages", () => {
   assert.equal(canEditChatMessage(agentUser, null), false);
 });
 
-test("canEditConsultantSolution allows only Consultant Super Admins", () => {
+test("canEditConsultantSolution allows Consultants and Super Admins", () => {
   assert.equal(canEditConsultantSolution({ role: "agent", is_admin: 1 }), true);
-  assert.equal(canEditConsultantSolution({ role: "agent", is_admin: 0 }), false);
+  assert.equal(canEditConsultantSolution({ role: "agent", is_admin: 0 }), true);
   assert.equal(canEditConsultantSolution({ role: "customer", is_admin: 1 }), false);
   assert.equal(canEditConsultantSolution({ role: "customer", is_company_admin: 1 }), false);
   assert.equal(canEditConsultantSolution(null), false);
@@ -470,9 +470,9 @@ test("aggregateCompanyReport summarizes counts and client breakdown strictly for
   assert.equal(report.ticketRecords[3].status, "Waiting");
 });
 
-test("canEditConsultantSolution restricts solution creation and editing strictly to Super Admins", () => {
+test("canEditConsultantSolution restricts solution creation and editing to Consultants and Super Admins", () => {
   assert.equal(canEditConsultantSolution({ role: "agent", is_admin: 1 }), true);
-  assert.equal(canEditConsultantSolution({ role: "agent", is_admin: 0 }), false);
+  assert.equal(canEditConsultantSolution({ role: "agent", is_admin: 0 }), true);
   assert.equal(canEditConsultantSolution({ role: "customer", is_admin: 1 }), false);
   assert.equal(canEditConsultantSolution({ role: "customer", is_company_admin: 1 }), false);
   assert.equal(canEditConsultantSolution(null), false);

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Bluehost VPS Deployment Guide</title>
+  <style>
+    @page { size: A4; margin: 15mm; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #1e293b; line-height: 1.45; font-size: 11.5px; margin: 0; padding: 0; }
+    h1 { color: #1e3a8a; font-size: 19px; margin: 0 0 4px 0; }
+    h2 { color: #0f172a; font-size: 14px; margin: 16px 0 6px 0; border-bottom: 1px solid #cbd5e1; padding-bottom: 3px; page-break-after: avoid; }
+    h3 { color: #334155; font-size: 12.5px; margin: 12px 0 4px 0; page-break-after: avoid; }
+    table { width: 100%; border-collapse: collapse; margin: 6px 0 12px 0; font-size: 11px; page-break-inside: avoid; }
+    th, td { border: 1px solid #cbd5e1; padding: 5px 6px; text-align: left; }
+    th { background: #f1f5f9; font-weight: 600; color: #0f172a; }
+    code { font-family: Consolas, monospace; background: #e2e8f0; padding: 1px 4px; border-radius: 3px; font-size: 10.5px; }
+    pre { font-family: Consolas, monospace; background: #0f172a; color: #f8fafc; padding: 8px 10px; border-radius: 4px; font-size: 10.5px; white-space: pre-wrap; margin: 6px 0; }
+    .badge { display: inline-block; background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: 600; margin-right: 4px; }
+    .header-box { border-bottom: 2px solid #2563eb; padding-bottom: 8px; margin-bottom: 12px; }
+    .step-box { background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #2563eb; padding: 8px 12px; margin: 8px 0; border-radius: 4px; page-break-inside: avoid; }
+    .page-break { page-break-before: always; }
+  </style>
+</head>
+<body>
+  <div class="header-box">
+    <h1>Bluehost VPS Deployment & Release Guide</h1>
+    <div>
+      <span class="badge">EASYPANEL</span>
+      <span class="badge">DOCKER MULTI-STAGE</span>
+      <span class="badge">PRODUCTION</span>
+      <strong>Server IP:</strong> 129.121.128.205 &bull; <strong>Project:</strong> jit_support
+    </div>
+  </div>
+<p style="margin: 4px 0;"><strong>Project:</strong> Jishnu Infotech Support System (<code>jit_support</code>)  </p><p style="margin: 4px 0;"><strong>Production Server:</strong> Bluehost Linux VPS (<code>129.121.128.205</code>)  </p><p style="margin: 4px 0;"><strong>Management Dashboard:</strong> Easypanel (<code>http://129.121.128.205:3000</code>)  </p><p style="margin: 4px 0;"><strong>Repository:</strong> <code>https://github.com/Jishnu-Support/jishnu-infotech-support.git</code> (Branch: <code>main</code>)  </p><p style="margin: 4px 0;">---</p><h2>1. Architecture & Deployment Workflow</h2><pre><code>flowchart LR
+    LocalDev[Local Windows / Git] -->|git push origin main| GitHub[GitHub Repo: Jishnu-Support]
+    GitHub -->|Webhook / Re-deploy| Easypanel[Easypanel at 129.121.128.205:3000]
+    subgraph Bluehost VPS Container Network
+        Easypanel --> Traefik[Traefik / Nginx Reverse Proxy: SSL 443]
+        Traefik --> AppContainer["App Container (github)<br>Node.js 24 + Express + Vite (Port 3001)"]
+        AppContainer --> AttachmentVol[("Volume Mount<br>/app/data/attachments")]
+        AppContainer --> PostgresContainer[("Postgres Container (jit)<br>Port 5432 (Private)")]
+    end
+</code></pre><p style="margin: 4px 0;">---</p><h2>2. Routine Deployment: Updating the App (Ongoing Updates)</h2><p style="margin: 4px 0;">Whenever you make code changes locally on your Windows PC and want them live on the Bluehost server:</p><h3>Step 1: Commit and Push to GitHub</h3><p style="margin: 4px 0;">In Windows PowerShell (inside <code>C:\Users\HP\.gemini\antigravity\scratch\jishnu-infotech-support</code>):</p><pre><code>git status
+git add .
+git commit -m "Update feature / bug fix description"
+git push origin main
+</code></pre><p style="margin: 4px 0;">---</p><h3>Step 2: Trigger Deployment in Easypanel</h3><p style="margin: 4px 0;">1. Open your browser and navigate to Easypanel:  </p><p style="margin: 4px 0;">   👉 <strong><code>http://129.121.128.205:3000</code></strong></p><p style="margin: 4px 0;">2. In the left menu, click <strong>Projects</strong> &rarr; select <strong><code>jit_support</code></strong>.</p><p style="margin: 4px 0;">3. Click on the App service named <strong><code>github</code></strong>.</p><p style="margin: 4px 0;">4. In the top-right corner, click the <strong>Deploy</strong> button (or <strong>Rebuild</strong>).</p><p style="margin: 4px 0;">---</p><h3>Step 3: Monitor Build & Deployment Logs</h3><p style="margin: 4px 0;">1. Click the <strong>Deployments</strong> tab inside the <code>github</code> service.</p><p style="margin: 4px 0;">2. Click on the latest deployment run to view the build logs.</p><p style="margin: 4px 0;">3. You will see Docker execute the multi-stage build:</p><p style="margin: 4px 0;">   - <code>npm ci</code> (Installs dependencies)</p><p style="margin: 4px 0;">   - <code>npm run build</code> (Compiles TypeScript & Vite assets to <code>/dist</code>)</p><p style="margin: 4px 0;">   - Container startup (<code>npm start</code> &rarr; <code>node server/index.js</code>)</p><p style="margin: 4px 0;">4. Verify the deployment finishes with:</p><p style="margin: 4px 0;">   ```text</p><p style="margin: 4px 0;">   Application listening on port 3001</p><p style="margin: 4px 0;">   Database schema verified / migrations applied</p><p style="margin: 4px 0;">   Deployment successful</p><p style="margin: 4px 0;">   ```</p><p style="margin: 4px 0;">---</p><h3>Step 4: Health Check Verification</h3><p style="margin: 4px 0;">Open your browser and visit:</p><pre><code>http://129.121.128.205:3001/api/health
+</code></pre><p style="margin: 4px 0;">*(Or your custom domain e.g. <code>https://support.yourdomain.com/api/health</code>)*</p><p style="margin: 4px 0;">Expected JSON response:</p><pre><code>{"status":"ok"}
+</code></pre><p style="margin: 4px 0;">---</p><h2>3. Fresh Server Setup: Initial Deployment from Scratch</h2><p style="margin: 4px 0;">If you ever need to set up a brand new Bluehost VPS:</p><h3>Step 1: Provision the VPS</h3><p style="margin: 4px 0;">- <strong>OS / Plan:</strong> Ubuntu / Debian LTS (Minimum 2 vCPU, 4GB RAM, 50GB NVMe storage).</p><p style="margin: 4px 0;">- <strong>Firewall Ports:</strong></p><p style="margin: 4px 0;">  - Allow Inbound TCP <code>80</code> (HTTP) and <code>443</code> (HTTPS).</p><p style="margin: 4px 0;">  - Allow Inbound TCP <code>3000</code> (Easypanel Admin).</p><p style="margin: 4px 0;">  - Restrict Inbound TCP <code>22</code> (SSH) to your trusted IP.</p><p style="margin: 4px 0;">  - <strong>DO NOT</strong> expose TCP <code>5432</code> (PostgreSQL must stay private).</p><p style="margin: 4px 0;">---</p><h3>Step 2: Install Easypanel (If Not Pre-installed)</h3><p style="margin: 4px 0;">Connect via SSH and install Docker + Easypanel:</p><pre><code>curl -sSL https://get.easypanel.io | sh
+</code></pre><p style="margin: 4px 0;">Open <code>http://<YOUR_VPS_IP>:3000</code> and create the initial admin account.</p><p style="margin: 4px 0;">---</p><h3>Step 3: Create the PostgreSQL Database Service</h3><p style="margin: 4px 0;">1. In Easypanel &rarr; <strong>Projects</strong> &rarr; <strong>Create Project</strong> &rarr; name it <code>jit_support</code>.</p><p style="margin: 4px 0;">2. Click <strong>New Service</strong> &rarr; select <strong>PostgreSQL</strong>.</p><p style="margin: 4px 0;">3. Name the service: <code>jit</code>.</p><p style="margin: 4px 0;">4. Leave it internal (Do not enable public port exposure).</p><p style="margin: 4px 0;">5. Once healthy, navigate to the <strong>Credentials</strong> page and copy the internal <code>DATABASE_URL</code> (format: <code>postgres://user:password@jit:5432/jit_support</code>).</p><p style="margin: 4px 0;">---</p><h3>Step 4: Create the Application Service</h3><p style="margin: 4px 0;">1. In the <code>jit_support</code> project &rarr; <strong>New Service</strong> &rarr; select <strong>App</strong>.</p><p style="margin: 4px 0;">2. Service name: <code>github</code>.</p><p style="margin: 4px 0;">3. Set <strong>Source</strong> to <strong>Git Repository</strong>:</p><p style="margin: 4px 0;">   - Repository: <code>https://github.com/Jishnu-Support/jishnu-infotech-support.git</code></p><p style="margin: 4px 0;">   - Branch: <code>main</code></p><p style="margin: 4px 0;">   - Build Method: <strong>Dockerfile</strong></p><p style="margin: 4px 0;">   - Dockerfile path: <code>/Dockerfile</code></p><p style="margin: 4px 0;">---</p><h3>Step 5: Configure Persistent Storage Volume</h3><p style="margin: 4px 0;">1. Inside the <code>github</code> App service &rarr; open the <strong>Storage</strong> tab.</p><p style="margin: 4px 0;">2. Click <strong>Add Volume</strong>:</p><p style="margin: 4px 0;">   - <strong>Mount Path:</strong> <code>/app/data/attachments</code></p><p style="margin: 4px 0;">   - <strong>Volume Name:</strong> <code>attachments</code></p><p style="margin: 4px 0;">   *(This ensures ticket attachments and uploaded user manuals are never lost when the container rebuilds).*</p><p style="margin: 4px 0;">---</p><h3>Step 6: Set Production Environment Variables</h3><p style="margin: 4px 0;">In the <code>github</code> App service &rarr; open the <strong>Environment</strong> tab and enter:</p><pre><code>NODE_ENV=production
+PORT=3001
+DATABASE_URL=postgres://jit:PASSWORD_FROM_CREDENTIALS@jit:5432/jit_support
+ATTACHMENTS_PATH=/app/data/attachments
+JWT_SECRET=GENERATE_64_CHAR_HEX_STRING_HERE
+APP_BASE_URL=https://support.yourdomain.com
+
+SEED_CONSULTANT_USERNAME=superadmin
+SEED_CONSULTANT_PASSWORD=SuperAdminPassword123!
+SEED_CONSULTANT_NAME=Jishnu Infotech Super Admin
+
+SMTP_HOST=smtp.yourmailserver.com
+SMTP_PORT=587
+SMTP_USER=support@yourdomain.com
+SMTP_PASS=your_email_password
+SMTP_FROM="Jishnu Support <support@yourdomain.com>"
+</code></pre><p style="margin: 4px 0;">---</p><h3>Step 7: Configure Custom Domain & Automatic SSL</h3><p style="margin: 4px 0;">1. Inside the <code>github</code> App service &rarr; open the <strong>Domains</strong> tab.</p><p style="margin: 4px 0;">2. Click <strong>Add Domain</strong>:</p><p style="margin: 4px 0;">   - Host: <code>support.yourdomain.com</code></p><p style="margin: 4px 0;">   - Port: <code>3001</code></p><p style="margin: 4px 0;">   - Enable HTTPS: <strong>Checked</strong> (Traefik automatically issues free Let's Encrypt SSL).</p><p style="margin: 4px 0;">3. In your DNS provider (Cloudflare / Bluehost / GoDaddy), add an <strong>A Record</strong>:</p><p style="margin: 4px 0;">   - <strong>Name:</strong> <code>support</code></p><p style="margin: 4px 0;">   - <strong>Target / Value:</strong> <code>129.121.128.205</code></p><p style="margin: 4px 0;">---</p><h2>4. Rollback & Emergency Recovery</h2><p style="margin: 4px 0;">If a deployment introduces a bug:</p><p style="margin: 4px 0;">1. Open Easypanel &rarr; <strong>Projects</strong> &rarr; <strong><code>jit_support</code></strong> &rarr; <strong><code>github</code></strong>.</p><p style="margin: 4px 0;">2. Click the <strong>Deployments</strong> tab.</p><p style="margin: 4px 0;">3. Find the previous stable build and click <strong>Rollback</strong>.</p><p style="margin: 4px 0;">4. If database corruption occurred, use the backup file created earlier:</p><p style="margin: 4px 0;">   ```bash</p><p style="margin: 4px 0;">   gunzip -c /tmp/db_backup.sql.gz | psql -U $POSTGRES_USER -d $POSTGRES_DB</p><p style="margin: 4px 0;">   ```</p><p style="margin: 4px 0;">---</p><h2>5. Deployment Troubleshooting Matrix</h2><table><tr><th>Issue</th> <th>Cause</th> <th>Fix</th></tr><tr><td><strong>Build fails at <code>npm run build</code></strong></td> <td>TypeScript error or missing asset</td> <td>Run <code>npm run build</code> locally on Windows first to catch errors before pushing.</td></tr><tr><td><strong>App crashes on startup with <code>DATABASE_URL</code> error</strong></td> <td>Invalid DB connection string or Postgres container starting up</td> <td>Check that <code>jit</code> Postgres service is in status "Running" and <code>DATABASE_URL</code> has correct credentials.</td></tr><tr><td><strong>Uploaded files disappear after deployment</strong></td> <td>Missing volume mount</td> <td>Verify <code>/app/data/attachments</code> is mapped to a named Docker volume in the <strong>Storage</strong> tab.</td></tr><tr><td><strong>502 Bad Gateway error on domain</strong></td> <td>Node.js process failed to bind port <code>3001</code></td> <td>Check App service logs in Easypanel; ensure <code>PORT=3001</code> is defined in Environment settings.</td></tr><tr><td><strong>Database changes not reflected</strong></td> <td>Migrations pending</td> <td>The server runs <code>db.js</code> migrations automatically on startup; check the startup log for migration errors.</td></tr></table></body></html>

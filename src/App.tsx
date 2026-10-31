@@ -2198,141 +2198,152 @@ function App() {
                   </div>
                 )}
                 {detail?.assignmentHistory.length ? <AssignmentHistorySection key={selectedTicket.id} entries={detail.assignmentHistory} /> : null}
-                {editingSolution && isSuperAdmin ? (
-                  <section className="ticket-solution ticket-solution-editing">
-                    <div className="ticket-solution-header">
-                      <strong>{selectedTicket.solution ? "Edit consultant solution" : "Add consultant solution"}</strong>
-                      <button
-                        type="button"
-                        className="button button-quiet solution-cancel-btn"
-                        onClick={() => {
-                          setEditingSolution(false);
-                          setSolutionFiles([]);
-                          setRemovedSolutionAttachmentIds([]);
-                        }}
-                        disabled={savingSolution}
-                      >
-                        <X size={13} /> Cancel
-                      </button>
-                    </div>
-                    <form className="solution-edit-form" onSubmit={saveSolution}>
-                      <label className="solution-form-label">
-                        <span>Solution description</span>
-                        <textarea
-                          value={solutionText}
-                          onChange={(e) => setSolutionText(e.target.value)}
-                          placeholder="Describe the solution provided to the client..."
-                          rows={4}
-                          required
+                {editingSolution && isAgent ? (
+                  <div className="modal-scrim knowledge-modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !savingSolution) { setEditingSolution(false); setSolutionFiles([]); setRemovedSolutionAttachmentIds([]); } }}>
+                    <section className="knowledge-conversation-modal ticket-solution-modal" role="dialog" aria-modal="true" aria-label="Consultant Solution">
+                      <div className="knowledge-conversation-header">
+                        <div>
+                          <div className="eyebrow" style={{ color: "#16a34a", fontWeight: 700 }}>KNOWLEDGE BASE SOLUTION</div>
+                          <h2>{selectedTicket.solution ? "Edit Knowledge Base Solution" : "Add to Knowledge Base"}</h2>
+                          <p style={{ margin: "4px 0 0", fontSize: "11px", color: "#64748b" }}>
+                            This recorded solution will be added to the Knowledge Base along with ticket details #{selectedTicket.id}.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label="Close"
+                          onClick={() => {
+                            setEditingSolution(false);
+                            setSolutionFiles([]);
+                            setRemovedSolutionAttachmentIds([]);
+                          }}
                           disabled={savingSolution}
-                        />
-                      </label>
-                      <label className="solution-form-label">
-                        <span>Consultant attribution</span>
-                        <input
-                          type="text"
-                          value={solutionConsultant}
-                          onChange={(e) => setSolutionConsultant(e.target.value)}
-                          placeholder="Consultant name (e.g. Jishnu Infotech Super Admin)"
-                          disabled={savingSolution}
-                        />
-                      </label>
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+                      <form className="solution-edit-form" onSubmit={saveSolution} style={{ padding: "16px 20px" }}>
+                        <label className="solution-form-label">
+                          <span>Solution description *</span>
+                          <textarea
+                            value={solutionText}
+                            onChange={(e) => setSolutionText(e.target.value)}
+                            placeholder="Describe the solution provided to the client for this issue..."
+                            rows={5}
+                            required
+                            disabled={savingSolution}
+                            autoFocus
+                          />
+                        </label>
+                        <label className="solution-form-label">
+                          <span>Consultant attribution</span>
+                          <input
+                            type="text"
+                            value={solutionConsultant}
+                            onChange={(e) => setSolutionConsultant(e.target.value)}
+                            placeholder="Consultant name (e.g. Jishnu Infotech Super Admin)"
+                            disabled={savingSolution}
+                          />
+                        </label>
 
-                      {detail?.attachments && detail.attachments.filter((att) => !removedSolutionAttachmentIds.includes(att.id)).length > 0 && (
-                        <div className="solution-existing-files">
-                          <span className="solution-section-label">Current attachments</span>
-                          <div className="solution-attachment-chips">
-                            {detail.attachments
-                              .filter((att) => !removedSolutionAttachmentIds.includes(att.id))
-                              .map((att) => (
-                                <span key={att.id} className="solution-attachment-chip">
+                        {detail?.attachments && detail.attachments.filter((att) => !removedSolutionAttachmentIds.includes(att.id)).length > 0 && (
+                          <div className="solution-existing-files">
+                            <span className="solution-section-label">Current attachments</span>
+                            <div className="solution-attachment-chips">
+                              {detail.attachments
+                                .filter((att) => !removedSolutionAttachmentIds.includes(att.id))
+                                .map((att) => (
+                                  <span key={att.id} className="solution-attachment-chip">
+                                    <Paperclip size={12} />
+                                    <span title={att.name}>{att.name}</span>
+                                    <small>({formatBytes(att.sizeBytes)})</small>
+                                    <button
+                                      type="button"
+                                      title="Remove this attachment"
+                                      onClick={() => setRemovedSolutionAttachmentIds((prev) => [...prev, att.id])}
+                                      disabled={savingSolution}
+                                    >
+                                      <X size={12} />
+                                    </button>
+                                  </span>
+                                ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {solutionFiles.length > 0 && (
+                          <div className="solution-new-files">
+                            <span className="solution-section-label">New attachments to add</span>
+                            <div className="solution-attachment-chips">
+                              {solutionFiles.map((file, idx) => (
+                                <span key={`${file.name}-${idx}`} className="solution-attachment-chip solution-attachment-new">
                                   <Paperclip size={12} />
-                                  <span title={att.name}>{att.name}</span>
-                                  <small>({formatBytes(att.sizeBytes)})</small>
+                                  <span title={file.name}>{file.name}</span>
+                                  <small>({formatBytes(file.size)})</small>
                                   <button
                                     type="button"
-                                    title="Remove this attachment"
-                                    onClick={() => setRemovedSolutionAttachmentIds((prev) => [...prev, att.id])}
+                                    title="Remove"
+                                    onClick={() => setSolutionFiles((prev) => prev.filter((_, i) => i !== idx))}
                                     disabled={savingSolution}
                                   >
                                     <X size={12} />
                                   </button>
                                 </span>
                               ))}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="solution-edit-footer" style={{ marginTop: "12px" }}>
+                          <label className="button button-quiet solution-attach-btn" title="Add attachments (all formats supported)">
+                            <Paperclip size={13} />
+                            <span>Attach files</span>
+                            <input
+                              ref={solutionFileInputRef}
+                              type="file"
+                              multiple
+                              style={{ display: "none" }}
+                              onChange={(e) => {
+                                const files = Array.from(e.target.files || []);
+                                if (!files.length) return;
+                                setSolutionFiles((prev) => [...prev, ...files].slice(0, 10));
+                                e.target.value = "";
+                              }}
+                              disabled={savingSolution}
+                            />
+                          </label>
+                          <div className="solution-actions-right">
+                            <button
+                              type="button"
+                              className="button button-quiet"
+                              onClick={() => {
+                                setEditingSolution(false);
+                                setSolutionFiles([]);
+                                setRemovedSolutionAttachmentIds([]);
+                              }}
+                              disabled={savingSolution}
+                            >
+                              Cancel
+                            </button>
+                            <button type="submit" className="button button-primary" style={{ background: "#16a34a", borderColor: "#15803d" }} disabled={savingSolution || !solutionText.trim()}>
+                              <BookOpen size={13} /> {savingSolution ? "Saving..." : selectedTicket.solution ? "Update Knowledge Base" : "Save to Knowledge Base"}
+                            </button>
                           </div>
                         </div>
-                      )}
-
-                      {solutionFiles.length > 0 && (
-                        <div className="solution-new-files">
-                          <span className="solution-section-label">New attachments to add</span>
-                          <div className="solution-attachment-chips">
-                            {solutionFiles.map((file, idx) => (
-                              <span key={`${file.name}-${idx}`} className="solution-attachment-chip solution-attachment-new">
-                                <Paperclip size={12} />
-                                <span title={file.name}>{file.name}</span>
-                                <small>({formatBytes(file.size)})</small>
-                                <button
-                                  type="button"
-                                  title="Remove"
-                                  onClick={() => setSolutionFiles((prev) => prev.filter((_, i) => i !== idx))}
-                                  disabled={savingSolution}
-                                >
-                                  <X size={12} />
-                                </button>
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="solution-edit-footer">
-                        <label className="button button-quiet solution-attach-btn" title="Add attachments (all formats supported)">
-                          <Paperclip size={13} />
-                          <span>Attach files</span>
-                          <input
-                            ref={solutionFileInputRef}
-                            type="file"
-                            multiple
-                            style={{ display: "none" }}
-                            onChange={(e) => {
-                              const files = Array.from(e.target.files || []);
-                              if (!files.length) return;
-                              setSolutionFiles((prev) => [...prev, ...files].slice(0, 10));
-                              e.target.value = "";
-                            }}
-                            disabled={savingSolution}
-                          />
-                        </label>
-                        <div className="solution-actions-right">
-                          <button
-                            type="button"
-                            className="button button-quiet"
-                            onClick={() => {
-                              setEditingSolution(false);
-                              setSolutionFiles([]);
-                              setRemovedSolutionAttachmentIds([]);
-                            }}
-                            disabled={savingSolution}
-                          >
-                            Cancel
-                          </button>
-                          <button type="submit" className="button button-primary" disabled={savingSolution || !solutionText.trim()}>
-                            {savingSolution ? "Saving…" : "Save solution"}
-                          </button>
-                        </div>
-                      </div>
-                    </form>
-                  </section>
-                ) : selectedTicket.solution ? (
+                      </form>
+                    </section>
+                  </div>
+                ) : null}
+                {selectedTicket.solution ? (
                   <section className="ticket-solution">
                     <div className="ticket-solution-header">
-                      <strong>Consultant solution{selectedTicket.solutionConsultantName ? ` · ${selectedTicket.solutionConsultantName}` : ""}</strong>
-                      {isSuperAdmin && (
+                      <strong>Consultant solution{selectedTicket.solutionConsultantName ? ` — ${selectedTicket.solutionConsultantName}` : ""}</strong>
+                      {isAgent && (
                         <button
                           type="button"
                           className="solution-edit-btn"
-                          title="Edit consultant solution and attachments"
+                          title="Edit consultant solution in Knowledge Base"
                           onClick={() => {
                             setEditingSolution(true);
                             setSolutionText(selectedTicket.solution || "");
@@ -2348,7 +2359,7 @@ function App() {
                     </div>
                     <p>{selectedTicket.solution}</p>
                   </section>
-                ) : isSuperAdmin ? (
+                ) : isAgent ? (
                   <div className="ticket-solution-add-wrap">
                     <button
                       type="button"
@@ -2382,7 +2393,7 @@ function App() {
                     const isConsultantMessage = message.authorRole === "agent" || Boolean(message.authorIsInternalConsultant) || Boolean(message.isInternal);
                     const isSolutionMsg = Boolean(message.isSolution) || (Boolean(selectedTicket.solution) && message.body === selectedTicket.solution);
                     const canEdit = isSolutionMsg
-                      ? isSuperAdmin
+                      ? isAgent
                       : (isConsultantUser && (isOwnMessage || isSuperAdmin || (isAgent && isConsultantMessage)) && message.id > 0);
                     const isEditing = editingMessageId === message.id;
                     return <article key={message.id} className={`message ${fromAgent ? "message-agent" : ""} ${message.isInternal ? "message-internal" : ""} ${isSolutionMsg ? "message-solution" : ""}`}>
@@ -2554,6 +2565,20 @@ function App() {
                   {isAgent && <div className="reply-mode-toggle" role="group" aria-label="Reply type">
                     <button type="button" className={!replyInternal ? "selected" : ""} onClick={() => setReplyInternal(false)}>Reply to customer</button>
                     <button type="button" className={replyInternal ? "selected" : ""} onClick={() => setReplyInternal(true)}>Internal note</button>
+                    <button
+                      type="button"
+                      className="add-kb-toggle-btn"
+                      onClick={() => {
+                        setEditingSolution(true);
+                        setSolutionText(selectedTicket.solution || "");
+                        setSolutionConsultant(selectedTicket.solutionConsultantName || user.name);
+                        setSolutionFiles([]);
+                        setRemovedSolutionAttachmentIds([]);
+                      }}
+                      title="Add or update consultant solution in Knowledge Base"
+                    >
+                      <BookOpen size={12} /> Add to Knowledge Base
+                    </button>
                   </div>}
                   <form className="reply-composer" onSubmit={sendReply}>
                     <textarea

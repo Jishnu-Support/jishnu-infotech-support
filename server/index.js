@@ -3780,7 +3780,7 @@ app.patch("/api/tickets/:id/solution", requireAuth, receiveAttachments, async (r
 
   if (!canEditConsultantSolution(req.user)) {
     discardUploadedFiles(files);
-    return res.status(403).json({ error: "Only Consultant Super Admins can edit the consultant solution." });
+    return res.status(403).json({ error: "Only Consultants and Super Admins can manage the consultant solution." });
   }
 
   const existing = await db.prepare("SELECT * FROM tickets WHERE id = ?").get(ticketId);
