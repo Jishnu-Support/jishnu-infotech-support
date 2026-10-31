@@ -2130,17 +2130,45 @@ app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
     WHERE t.status = 'resolved' ${searchClause} ${companyClause}
   `;
   const [{ count }] = await db.prepare(`SELECT COUNT(*) AS count ${knowledgeFrom}`).all(...searchParams, ...companyParams);
-  const tickets = await db.prepare(`
+  const rawTickets = await db.prepare(
     SELECT t.id, t.subject AS issue, t.description,
            t.created_at AS reportedAt, COALESCE(t.resolved_at, t.updated_at) AS closedAt,
            COALESCE(t.historical_solution, solution.body, 'No consultant solution recorded.') AS solution,
            CASE WHEN t.import_key IS NOT NULL THEN '' ELSE COALESCE(t.category, 'Unspecified') END AS solutionType,
            COALESCE(NULLIF(t.reported_client_name, ''), customer.name, '') AS clientName,
-           COALESCE(NULLIF(t.historical_consultant_name, ''), consultant.name, '') AS consultantName
-    ${knowledgeFrom}
+           COALESCE(NULLIF(t.historical_consultant_name, ''), consultant.name, '') AS consultantName,
+           t.company_id AS companyId,
+           co.name AS companyName,
+           t.company_ticket_seq AS companyTicketSeq,
+           (
+             SELECT u.username FROM users u
+             JOIN company_memberships cm ON cm.user_id = u.id
+             WHERE cm.company_id = t.company_id AND cm.is_company_admin = 1
+             ORDER BY u.id ASC LIMIT 1
+           ) AS companyAdminUsername
+    
+    LEFT JOIN companies co ON co.id = t.company_id
     ORDER BY COALESCE(t.resolved_at, t.updated_at) DESC, t.id DESC
     LIMIT ? OFFSET ?
-  `).all(...searchParams, ...companyParams, pageSize, (page - 1) * pageSize);
+  ).all(...searchParams, ...companyParams, pageSize, (page - 1) * pageSize);
+  const tickets = rawTickets.map((t) => ({
+    id: t.id,
+    ticketNumber: formatCompanyTicketNumber({
+      companyId: t.companyId,
+      companyName: t.companyName,
+      adminUsername: t.companyAdminUsername,
+      companyTicketSeq: t.companyTicketSeq,
+      ticketId: t.id,
+    }),
+    issue: t.issue,
+    description: t.description,
+    reportedAt: t.reportedAt,
+    closedAt: t.closedAt,
+    solution: t.solution,
+    solutionType: t.solutionType,
+    clientName: t.clientName,
+    consultantName: t.consultantName,
+  }));
   res.json({ tickets, total: Number(count), page, pageSize });
 });
 

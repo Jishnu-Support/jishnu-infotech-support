@@ -126,7 +126,7 @@ type DownloadReportData = {
   ticketRecords: DownloadReportTicketRecord[];
 };
 type ReportTicketDirectory = { companies: Array<{ id: number; name: string }>; customers: Array<{ id: number; name: string; email: string | null; companyName: string | null }>; consultants: Array<{ id: number; name: string }> };
-type KnowledgeBaseTicket = { id: number; issue: string; description: string; reportedAt: string; solution: string; closedAt: string; solutionType: string; clientName: string; consultantName: string };
+type KnowledgeBaseTicket = { id: number; ticketNumber?: string; issue: string; description: string; reportedAt: string; solution: string; closedAt: string; solutionType: string; clientName: string; consultantName: string };
 type InformationAttachment = { id: number; name: string; mimeType: string; sizeBytes: number; createdAt: string };
 type InformationPost = { id: number; consultantId: number; consultantName: string; consultantMobile: string | null; information: string; allClients: boolean | number; postedAt: string; updatedAt: string; recipientIds?: number[]; recipientCompanyIds?: number[]; attachments?: InformationAttachment[] };
 type InformationClient = { id: number; name: string; username: string; contactNumber: string | null; companyNames: string | null };
@@ -5155,7 +5155,7 @@ function KnowledgeBase({ companies }: { companies: Array<{ id: number; name: str
     {loading ? <div className="report-empty" role="status">Loading resolved tickets…</div> : tickets.length === 0
       ? <div className="empty-list"><BookOpen size={27} /><strong>No resolved tickets found</strong><span>{search ? "Try a different search." : "Resolved tickets will appear here with their recorded solutions."}</span></div>
       : <div className="knowledge-list">{tickets.map((ticket) => <article className="knowledge-card" key={ticket.id}>
-        <div className="knowledge-card-heading"><div><span className="knowledge-ticket-id">Ticket #{ticket.id}</span><h2>{ticket.issue}</h2></div><span className="knowledge-type">{ticket.solutionType}</span></div>
+        <div className="knowledge-card-heading"><div><span className="knowledge-ticket-id">{ticket.ticketNumber ? ticket.ticketNumber : `Ticket #${ticket.id}`}</span><h2>{ticket.issue}</h2></div><span className="knowledge-type">{ticket.solutionType}</span></div>
         <div className="knowledge-meta"><div><span>Reported</span><strong>{formatDate(ticket.reportedAt)}</strong></div><div><span>Closed</span><strong>{formatDate(ticket.closedAt)}</strong></div><div><span>Client</span><strong>{displayClientName(ticket.clientName)}</strong></div><div><span>Handled by</span><strong>{ticket.consultantName}</strong></div></div>
         <div className="knowledge-content"><div><h3>Ticket Description</h3><p>{ticket.description}</p></div><div><h3>Solution Provided</h3><p>{ticket.solution}</p></div></div>
         <button className="button button-quiet knowledge-conversation-button" type="button" onClick={() => showConversation(ticket.id)}><MessageCircle size={14} /> View full conversation</button>
