@@ -2127,10 +2127,11 @@ app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
       WHERE m.ticket_id = t.id AND m.is_internal = 0 AND author.role = 'agent'
       ORDER BY m.id DESC LIMIT 1
     )
+    LEFT JOIN companies co ON co.id = t.company_id
     WHERE t.status = 'resolved' ${searchClause} ${companyClause}
   `;
   const [{ count }] = await db.prepare(`SELECT COUNT(*) AS count ${knowledgeFrom}`).all(...searchParams, ...companyParams);
-  const rawTickets = await db.prepare(
+  const rawTickets = await db.prepare(`
     SELECT t.id, t.subject AS issue, t.description,
            t.created_at AS reportedAt, COALESCE(t.resolved_at, t.updated_at) AS closedAt,
            COALESCE(t.historical_solution, solution.body, 'No consultant solution recorded.') AS solution,
@@ -2146,11 +2147,10 @@ app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
              WHERE cm.company_id = t.company_id AND cm.is_company_admin = 1
              ORDER BY u.id ASC LIMIT 1
            ) AS companyAdminUsername
-    
-    LEFT JOIN companies co ON co.id = t.company_id
+    ${knowledgeFrom}
     ORDER BY COALESCE(t.resolved_at, t.updated_at) DESC, t.id DESC
     LIMIT ? OFFSET ?
-  ).all(...searchParams, ...companyParams, pageSize, (page - 1) * pageSize);
+  `).all(...searchParams, ...companyParams, pageSize, (page - 1) * pageSize);
   const tickets = rawTickets.map((t) => ({
     id: t.id,
     ticketNumber: formatCompanyTicketNumber({
