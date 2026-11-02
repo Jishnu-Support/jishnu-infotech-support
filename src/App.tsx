@@ -7,7 +7,15 @@ import JSZip from "jszip";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import {
-  Activity, ArrowDown, ArrowDownUp, ArrowLeft, ArrowRight, ArrowRightLeft, ArrowUp, BarChart3, Bell, Check,
+  getNotificationPermission,
+  requestNotificationPermission,
+  registerNotificationServiceWorker,
+  triggerSystemNotification,
+  createBackgroundHeartbeat,
+  type NotificationPermissionState,
+} from "./system-notifications";
+import {
+  Activity, ArrowDown, ArrowDownUp, ArrowLeft, ArrowRight, ArrowRightLeft, ArrowUp, BarChart3, Bell, BellRing, BellOff, Check,
   CheckCheck, CheckCircle2, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2, ClipboardPlus,
   Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen, Megaphone, Pencil, ExternalLink, Youtube,
   FileText, FileSpreadsheet, FileArchive, Copy, ZoomIn, ZoomOut, RotateCcw, File as FileIcon, FileDown, Calendar,
@@ -1060,6 +1068,8 @@ function App() {
   const [newConsultantTicketAlerts, setNewConsultantTicketAlerts] = useState<Notification[]>([]);
   const [informationAlerts, setInformationAlerts] = useState<InformationNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [systemNotificationPermission, setSystemNotificationPermission] = useState<NotificationPermissionState>(getNotificationPermission);
+  const [dismissedNotificationPrompt, setDismissedNotificationPrompt] = useState(false);
   const [actionMessage, setActionMessage] = useState("");
   const [refreshingInbox, setRefreshingInbox] = useState(false);
   const [refreshSuccess, setRefreshSuccess] = useState(false);
@@ -1184,17 +1194,59 @@ function App() {
   }, [user]);
 
   const refreshNotifications = useCallback(async () => {
-    if (user?.role !== "agent") return;
-    const result = await api<{ notifications: typeof notifications; unreadCount: number }>("/notifications", { cache: "no-store" });
-    const knownIds = knownNotificationIds.current;
-    if (knownIds) {
-      const newTicketNotifications = result.notifications.filter((notification) =>
-        notification.kind === "ticket_created" && !knownIds.has(notification.id));
-      if (newTicketNotifications.length) setNewConsultantTicketAlerts((current) => [...current, ...newTicketNotifications]);
+    if (!user) return;
+    try {
+      const result = await api<{ notifications: typeof notifications; unreadCount: number }>("/notifications", { cache: "no-store" });
+      const knownIds = knownNotificationIds.current;
+      if (knownIds) {
+        const incomingNew = result.notifications.filter((n) => !knownIds.has(n.id) && !n.readAt);
+        const newTicketNotifications = incomingNew.filter((n) => n.kind === "ticket_created" || n.kind === "ticket_assigned");
+        if (newTicketNotifications.length && user.role === "agent") {
+          setNewConsultantTicketAlerts((current) => [...current, ...newTicketNotifications]);
+        }
+
+        for (const notif of incomingNew) {
+          let title = "🔔 Jishnu Support Notification";
+          let body = notif.message;
+          const ticketLabel = notif.ticketNumber || (notif.ticketId ? `#${notif.ticketId}` : "");
+
+          if (notif.kind === "ticket_created") {
+            title = `🎫 New Ticket ${ticketLabel}`;
+            body = notif.subject ? `${notif.subject} (From ${notif.customerName || "Customer"})` : notif.message;
+          } else if (notif.kind === "ticket_assigned") {
+            title = `📌 Assigned to You: ${ticketLabel}`;
+            body = notif.subject || notif.message;
+          } else if (notif.kind.startsWith("ticket_reply") || notif.kind.startsWith("client_email_reply")) {
+            title = `💬 New Reply on ${ticketLabel}`;
+            body = notif.message;
+          } else if (notif.kind.startsWith("ticket_resolved")) {
+            title = `✅ Ticket Resolved: ${ticketLabel}`;
+            body = notif.message;
+          } else if (notif.kind.includes("overdue")) {
+            title = `⚠️ SLA Alert: ${ticketLabel}`;
+            body = notif.message;
+          }
+
+          triggerSystemNotification({
+            title,
+            body,
+            ticketId: notif.ticketId,
+            tag: `jit-notif-${notif.id}`,
+            onClick: () => {
+              if (notif.ticketId) {
+                setSelectedId(notif.ticketId);
+                setActiveView("inbox");
+              }
+            },
+          });
+        }
+      }
+      knownNotificationIds.current = new Set(result.notifications.map((notification) => notification.id));
+      setNotifications(result.notifications);
+      setUnreadCount(result.unreadCount);
+    } catch {
+      // background polling error ignored
     }
-    knownNotificationIds.current = new Set(result.notifications.map((notification) => notification.id));
-    setNotifications(result.notifications);
-    setUnreadCount(result.unreadCount);
   }, [user]);
 
   async function refreshInboxNow(forceResetFilters = false) {
@@ -1254,13 +1306,64 @@ function App() {
   }
 
   useEffect(() => {
-    if (!user || user.role !== "agent") return;
+    if (!user) return;
     refreshNotifications().catch(() => {});
-    const intervalId = window.setInterval(() => {
+    const heartbeat = createBackgroundHeartbeat(() => {
       refreshNotifications().catch(() => {});
+      refreshTickets().catch(() => {});
     }, 10000);
-    return () => window.clearInterval(intervalId);
-  }, [refreshNotifications, user]);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshNotifications().catch(() => {});
+        refreshTickets().catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onVisibilityChange);
+
+    return () => {
+      heartbeat.stop();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onVisibilityChange);
+    };
+  }, [refreshNotifications, refreshTickets, user]);
+
+  useEffect(() => {
+    registerNotificationServiceWorker().catch(() => {});
+
+    const onSwMessage = (event: MessageEvent) => {
+      if (event.data?.type === "OPEN_TICKET" && event.data?.ticketId) {
+        setSelectedId(Number(event.data.ticketId));
+        setActiveView("inbox");
+      } else if (event.data?.type === "OPEN_VIEW" && event.data?.view) {
+        setActiveView(event.data.view);
+      }
+    };
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.addEventListener("message", onSwMessage);
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const ticketParam = params.get("ticket");
+    if (ticketParam) {
+      const id = Number(ticketParam);
+      if (!Number.isNaN(id) && id > 0) {
+        setSelectedId(id);
+      }
+    }
+    const viewParam = params.get("view");
+    if (viewParam && (viewParam === "information" || viewParam === "knowledge" || viewParam === "notifications")) {
+      setActiveView(viewParam as any);
+    }
+
+    return () => {
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.removeEventListener("message", onSwMessage);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!user || (user.role !== "customer" && user.role !== "agent")) { setInformationAlerts([]); return; }
@@ -1271,7 +1374,21 @@ function App() {
           if (!active) return;
           setInformationAlerts((current) => {
             const existingIds = new Set(current.map((notification) => notification.id));
-            return [...current, ...incoming.filter((notification) => !existingIds.has(notification.id))];
+            const newAlerts = incoming.filter((notification) => !existingIds.has(notification.id));
+            if (newAlerts.length > 0 && current.length > 0) {
+              for (const info of newAlerts) {
+                triggerSystemNotification({
+                  title: "📢 Information Center Announcement",
+                  body: `${info.consultantName}: ${info.information.slice(0, 100)}...`,
+                  view: "information",
+                  tag: `jit-info-${info.id}`,
+                  onClick: () => {
+                    setActiveView("information");
+                  },
+                });
+              }
+            }
+            return [...current, ...newAlerts];
           });
         })
         .catch(() => {});
@@ -1824,6 +1941,9 @@ function App() {
           {!isAgent && <button aria-label="My tickets" title="My tickets" className={`nav-item ${activeView === "my-tickets" ? "active" : ""}`} onClick={() => { setActiveView("my-tickets"); setFilter("all"); }}>
             <UserRound size={17} /><span>My tickets</span><span className="nav-count">{myTicketCount}</span>
           </button>}
+          {!isAgent && <button aria-label="Notifications" title="Notifications" className={`nav-item ${activeView === "notifications" ? "active" : ""}`} onClick={() => setActiveView("notifications")}>
+            <Bell size={17} /><span>Notifications</span>{unreadCount > 0 && <span className="nav-count">{unreadCount}</span>}
+          </button>}
           {!isAgent && <button aria-label="Information Center" title="Information Center" className={`nav-item ${activeView === "information" ? "active" : ""}`} onClick={() => setActiveView("information")}>
             <Megaphone size={17} /><span>Information Center</span>
           </button>}
@@ -1859,6 +1979,58 @@ function App() {
           <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "information" ? "Information Center" : activeView === "user-manual" ? "User Manual" : activeView === "download-reports" ? "Download Reports" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
           {user.role === "customer" && user.companyName && <div className="topbar-company-name" title={user.companyName}>{user.companyName}</div>}
           <div className="topbar-actions">
+            {systemNotificationPermission === "granted" && (
+              <button
+                type="button"
+                className="system-notif-status-pill active"
+                title="Desktop system notifications active. Click to send test alert."
+                onClick={() => {
+                  triggerSystemNotification({
+                    title: "🔔 Jishnu Support - System Notification Test",
+                    body: "Desktop system notifications are active! You will be alerted even when using other platforms like SAP or Excel.",
+                    tag: `test-notif-${Date.now()}`,
+                  });
+                }}
+              >
+                <BellRing size={13} />
+                <span className="notif-pulse-dot" />
+                <span>Desktop Alerts Active</span>
+              </button>
+            )}
+            {systemNotificationPermission === "default" && (
+              <button
+                type="button"
+                className="system-notif-status-pill pending"
+                title="Click to enable desktop system notifications"
+                onClick={async () => {
+                  const perm = await requestNotificationPermission();
+                  setSystemNotificationPermission(perm);
+                  if (perm === "granted") {
+                    triggerSystemNotification({
+                      title: "🔔 Jishnu Support - System Notifications Enabled",
+                      body: "You will now receive desktop alerts even when working on other platforms or applications!",
+                      tag: "enabled-notif",
+                    });
+                  }
+                }}
+              >
+                <Bell size={13} />
+                <span>Enable Desktop Alerts</span>
+              </button>
+            )}
+            {systemNotificationPermission === "denied" && (
+              <button
+                type="button"
+                className="system-notif-status-pill blocked"
+                title="Desktop notifications are blocked by browser. Click for details."
+                onClick={() => {
+                  alert("Desktop notifications are blocked in your browser. To enable them, click the padlock/tune icon on the left of your browser address bar and set 'Notifications' to 'Allow'.");
+                }}
+              >
+                <BellOff size={13} />
+                <span>Alerts Blocked</span>
+              </button>
+            )}
             {user.role === "customer" && availableCompanies.length > 1 && <button type="button" className="company-switcher" onClick={() => setShowCompanySelection(true)}><Building2 size={14} /><span>{user.companyName || "Select a company"}</span><ArrowDown size={13} /></button>}
             {(activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets") && (
               <div className="search-box">
@@ -1887,6 +2059,44 @@ function App() {
             <div className="topbar-avatar">{initials(user.name)}</div>
           </div>
         </header>
+
+        {systemNotificationPermission === "default" && !dismissedNotificationPrompt && (
+          <div className="system-notification-banner">
+            <div className="system-notification-banner-copy">
+              <BellRing size={20} className="system-notification-banner-icon" />
+              <div>
+                <strong>Enable Desktop System Notifications</strong>
+                <span>Get instant notifications on your computer screen even when you are working on other applications (SAP, Excel, etc.) or other browser tabs.</span>
+              </div>
+            </div>
+            <div className="system-notification-banner-actions">
+              <button
+                type="button"
+                className="button button-primary button-sm"
+                onClick={async () => {
+                  const perm = await requestNotificationPermission();
+                  setSystemNotificationPermission(perm);
+                  if (perm === "granted") {
+                    triggerSystemNotification({
+                      title: "🔔 Jishnu Support - System Notifications Enabled",
+                      body: "You will now receive desktop alerts even when working on other platforms or applications!",
+                      tag: "enabled-notif",
+                    });
+                  }
+                }}
+              >
+                <Bell size={14} /> Enable Desktop Alerts
+              </button>
+              <button
+                type="button"
+                className="button button-quiet button-sm"
+                onClick={() => setDismissedNotificationPrompt(true)}
+              >
+                Not Now
+              </button>
+            </div>
+          </div>
+        )}
 
         {activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" ? (
           <div className={`workbench ${selectedTicket ? "has-detail" : ""}`}>
@@ -2657,16 +2867,38 @@ function App() {
               onCreateTicket={(customerId, companyId) => { setPrefillCustomerId(customerId); setPrefillCompanyId(companyId); setNewTicketCategory(""); setShowCreate(true); setActionError(""); }}
               onViewTickets={(customerName) => { setSearch(customerName); setActiveView("inbox"); setFilter("all"); }}
             />
-            : activeView === "notifications" && isAgent
+            : activeView === "notifications"
               ? <NotificationCenter
                 notifications={notifications}
+                isAgent={isAgent}
+                permission={systemNotificationPermission}
+                onRequestPermission={async () => {
+                  const perm = await requestNotificationPermission();
+                  setSystemNotificationPermission(perm);
+                  if (perm === "granted") {
+                    triggerSystemNotification({
+                      title: "🔔 Jishnu Support - System Notifications Enabled",
+                      body: "You will now receive desktop alerts even when working on other platforms or applications!",
+                      tag: "enabled-notif",
+                    });
+                  }
+                }}
+                onTestNotification={() => {
+                  triggerSystemNotification({
+                    title: "🔔 Jishnu Support - System Notification Test",
+                    body: "Desktop system notifications are active! You will be alerted even when using other platforms like SAP or Excel.",
+                    tag: `test-notif-${Date.now()}`,
+                  });
+                }}
                 onOpen={async (notification) => {
                   if (!notification.readAt) {
                     await api("/notifications/read", { method: "POST", body: JSON.stringify({ id: notification.id }) });
                     await refreshNotifications();
                   }
-                  setSelectedId(notification.ticketId);
-                  setActiveView("inbox");
+                  if (notification.ticketId) {
+                    setSelectedId(notification.ticketId);
+                    setActiveView("inbox");
+                  }
                 }}
               />
               : activeView === "download-reports" && isAgent
@@ -4437,17 +4669,58 @@ function CompanyManagement({ workspaceAdmin, initialCompanyId, onChanged }: {
   </section>;
 }
 
-function NotificationCenter({ notifications, onOpen }: {
+function NotificationCenter({
+  notifications,
+  onOpen,
+  isAgent,
+  permission,
+  onRequestPermission,
+  onTestNotification,
+}: {
   notifications: Notification[];
   onOpen: (notification: Notification) => void;
+  isAgent: boolean;
+  permission: NotificationPermissionState;
+  onRequestPermission: () => Promise<void>;
+  onTestNotification: () => void;
 }) {
   return <section className="feature-page">
-    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-live" />CONSULTANT WORKSPACE</div><h1>Notifications</h1><p>Ticket replies and service-level alerts assigned to you.</p></div></div>
+    <div className="page-heading">
+      <div>
+        <div className="eyebrow"><span className="eyebrow-live" />{isAgent ? "CONSULTANT WORKSPACE" : "WORKSPACE ALERTS"}</div>
+        <h1>Notifications</h1>
+        <p>{isAgent ? "Ticket replies, assignments, and service-level alerts assigned to you." : "Updates and consultant responses on your support tickets."}</p>
+      </div>
+    </div>
+
+    <div className="notifications-desktop-card">
+      <div className="notifications-desktop-card-info">
+        {permission === "granted" ? <BellRing size={22} color="#16a34a" /> : <Bell size={22} color="#2563eb" />}
+        <div>
+          <h3>Desktop System Notifications: {permission === "granted" ? "Active (Enabled)" : permission === "denied" ? "Blocked in Browser" : "Not Enabled"}</h3>
+          <p>Triggers native OS notifications on your screen with a chime sound, even when using other platforms like SAP, Excel, or other browser windows.</p>
+        </div>
+      </div>
+      <div>
+        {permission === "granted" ? (
+          <button type="button" className="button button-quiet" onClick={onTestNotification}>
+            Send Test Alert
+          </button>
+        ) : permission === "denied" ? (
+          <span style={{ fontSize: 11, color: "#dc2626", fontWeight: 600 }}>Blocked in browser settings</span>
+        ) : (
+          <button type="button" className="button button-primary" onClick={onRequestPermission}>
+            <Bell size={14} /> Enable Desktop Alerts
+          </button>
+        )}
+      </div>
+    </div>
+
     <div className="directory-list">
       {notifications.length === 0
         ? <div className="empty-list"><Bell size={27} /><strong>You're all caught up</strong><span>New ticket alerts will show here.</span></div>
         : notifications.map((notification) => <button type="button" className={`notification-row ${notification.readAt ? "" : "notification-unread"}`} key={notification.id} onClick={() => onOpen(notification)}>
-          <span className="notification-indicator" /><span className="notification-copy"><strong>{notification.message}</strong><small>Ticket {notification.ticketNumber || `#${notification.ticketId}`} · {timeAgo(notification.createdAt)}</small></span><ArrowRight size={16} />
+          <span className="notification-indicator" /><span className="notification-copy"><strong>{notification.message}</strong><small>{notification.ticketNumber || (notification.ticketId ? `Ticket #${notification.ticketId}` : "General")} · {timeAgo(notification.createdAt)}</small></span><ArrowRight size={16} />
         </button>)}
     </div>
   </section>;

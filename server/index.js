@@ -3549,13 +3549,18 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
         .run(ticketId, req.user.id, description);
       const initialMessageId = Number(initialMsg.lastInsertRowid);
       await recordTicketAssignment(ticketId, agent?.id, req.user.id, assignmentSource);
-      if (req.user.role === "customer" && agent?.id) {
+      if (req.user.role === "customer") {
         const customer = await db.prepare("SELECT name FROM users WHERE id = ?").get(customerId);
-        await db.prepare(`
-          INSERT INTO notifications (user_id, ticket_id, kind, message)
-          VALUES (?, ?, 'ticket_created', ?)
-          ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
-        `).run(agent.id, ticketId, `New ticket from ${customer?.name || "a customer"}: ${priority} priority · ${metadata.category} · ${subject}`);
+        const recipients = agent?.id
+          ? [agent.id]
+          : (await db.prepare("SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL").all()).map((a) => a.id);
+        for (const recipientId of recipients) {
+          await db.prepare(`
+            INSERT INTO notifications (user_id, ticket_id, kind, message)
+            VALUES (?, ?, 'ticket_created', ?)
+            ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
+          `).run(recipientId, ticketId, `New ticket from ${customer?.name || "a customer"}: ${priority} priority · ${metadata.category} · ${subject}`);
+        }
       }
       if (verifiedFiles.length > 0) {
         const insertAttachment = db.prepare(`
@@ -3647,6 +3652,36 @@ app.post("/api/tickets/:id/messages", requireAuth, receiveAttachments, async (re
     }
 
     await db.prepare("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticketId);
+    try {
+      if (req.user.role === "customer") {
+        const recipients = ticket.assignee_id
+          ? [ticket.assignee_id]
+          : (await db.prepare("SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL").all()).map((a) => a.id);
+        const snippet = body.length > 70 ? `${body.slice(0, 67)}...` : body;
+        const replyMsg = `New reply from ${req.user.name}: "${snippet}"`;
+        for (const recipientId of recipients) {
+          if (recipientId !== req.user.id) {
+            await db.prepare(`
+              INSERT INTO notifications (user_id, ticket_id, kind, message)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
+            `).run(recipientId, ticketId, `ticket_reply:${messageId}`, replyMsg);
+          }
+        }
+      } else if (req.user.role === "agent" && !isInternal) {
+        if (ticket.customer_id && ticket.customer_id !== req.user.id) {
+          const snippet = body.length > 70 ? `${body.slice(0, 67)}...` : body;
+          const replyMsg = `New reply from ${req.user.name}: "${snippet}"`;
+          await db.prepare(`
+            INSERT INTO notifications (user_id, ticket_id, kind, message)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
+          `).run(ticket.customer_id, ticketId, `ticket_reply:${messageId}`, replyMsg);
+        }
+      }
+    } catch (notifErr) {
+      console.error("Failed to insert reply notification:", notifErr.message);
+    }
     if (!isInternal && req.user.role === "customer" && req.user.id === ticket.customer_id && ticket.status === "resolved") {
       await db.prepare("UPDATE tickets SET status = 'open', resolved_at = NULL, resolved_by = NULL WHERE id = ?").run(ticketId);
     }
@@ -4069,6 +4104,18 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
       fields.push("tat_elapsed_minutes = ?", "tat_status = ?");
       values.push(elapsedWorking, tatStatus);
       tatEventToLog = { eventType: "resolved", notes: `Ticket resolved (${tatStatus})` };
+      if (existing.customer_id && existing.customer_id !== req.user.id) {
+        try {
+          const resolvedMsg = `Ticket #${ticketId} has been resolved by ${req.user.name}: ${existing.subject}`;
+          await db.prepare(`
+            INSERT INTO notifications (user_id, ticket_id, kind, message)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
+          `).run(existing.customer_id, ticketId, `ticket_resolved:${ticketId}:${Date.now()}`, resolvedMsg);
+        } catch (notifErr) {
+          console.error("Failed to insert resolve notification:", notifErr.message);
+        }
+      }
     } else {
       fields.push("resolved_at = NULL", "resolved_by = NULL");
       if (existing.status === "resolved" && status !== "waiting") {

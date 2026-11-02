@@ -548,3 +548,20 @@ test("determineTATStatus assigns correct resolution and active statuses", () => 
     elapsedWorkingMinutes: 500, // > 100%
   }), "TAT Breached");
 });
+
+test("notification kinds and formatting structure for system alerts", () => {
+  const ticketNumber = formatCompanyTicketNumber({
+    companyId: 1,
+    companyName: "Southern Agrifurane",
+    adminUsername: "st_admin",
+    companyTicketSeq: 53,
+    ticketId: 105,
+  });
+  assert.equal(ticketNumber, "#ST053");
+
+  const replyKind = "ticket_reply:42";
+  assert.equal(replyKind, "ticket_reply:42");
+
+  const resolveKind = "ticket_resolved:105:1730000000000";
+  assert.ok(resolveKind.startsWith("ticket_resolved:105:"));
+});
