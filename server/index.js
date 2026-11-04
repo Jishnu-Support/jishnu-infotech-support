@@ -1394,16 +1394,28 @@ app.get("/api/report-tickets", requireAuth, async (req, res) => {
   res.json({ tickets: formattedTickets, total, page, pageSize, companies, customers, consultants });
 });
 
-app.get("/api/reports/company-pdf-data", requireAuth, requireAgent, async (req, res) => {
-  const companies = await db.prepare("SELECT id, name FROM companies WHERE is_active = 1 ORDER BY name ASC").all();
+app.get("/api/reports/company-pdf-data", requireAuth, async (req, res) => {
+  const isAgent = req.user.role === "agent";
+  const isCompanyAdmin = req.user.role === "customer" && Boolean(req.user.is_company_admin);
+  if (!isAgent && !isCompanyAdmin) {
+    return res.status(403).json({ error: "Only consultants and company administrators can access company reports." });
+  }
+  const companies = isAgent
+    ? await db.prepare("SELECT id, name FROM companies WHERE is_active = 1 ORDER BY name ASC").all()
+    : await db.prepare("SELECT id, name FROM companies WHERE id = ? AND is_active = 1").all(req.user.company_id);
+
   if (companies.length === 0) {
     return res.json({ companies: [], report: null });
   }
 
-  const requestedCompanyId = req.query.companyId ? Number(req.query.companyId) : null;
+  const requestedCompanyId = isAgent && req.query.companyId ? Number(req.query.companyId) : (req.user.company_id || Number(companies[0].id));
   const targetCompanyId = (requestedCompanyId && Number.isInteger(requestedCompanyId))
     ? requestedCompanyId
     : Number(companies[0].id);
+
+  if (!isAgent && targetCompanyId !== req.user.company_id) {
+    return res.status(403).json({ error: "Company administrators can only access their own company report." });
+  }
 
   const company = await db.prepare("SELECT id, name FROM companies WHERE id = ?").get(targetCompanyId);
   if (!company) {

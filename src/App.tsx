@@ -1982,6 +1982,9 @@ function App() {
           <button aria-label="Download Reports" title="Download Reports" className={`nav-item ${activeView === "download-reports" ? "active" : ""}`} onClick={() => setActiveView("download-reports")}>
             <FileDown size={17} /><span>Download Reports</span>
           </button>
+          <button aria-label="Download Company Report" title="Download Company Report" className={`nav-item ${activeView === "download-company-report" ? "active" : ""}`} onClick={() => setActiveView("download-company-report")}>
+            <FileText size={17} /><span>Download Company Report</span>
+          </button>
           </>}
           {!isAgent && <button aria-label="My tickets" title="My tickets" className={`nav-item ${activeView === "my-tickets" ? "active" : ""}`} onClick={() => { setActiveView("my-tickets"); setFilter("all"); }}>
             <UserRound size={17} /><span>My tickets</span><span className="nav-count">{myTicketCount}</span>
@@ -1997,6 +2000,9 @@ function App() {
           </button>}
           {isCompanyAdmin && <button aria-label="Company users" title="Company users" className={`nav-item ${activeView === "company-users" ? "active" : ""}`} onClick={() => setActiveView("company-users")}>
             <Users size={17} /><span>Company users</span>
+          </button>}
+          {isCompanyAdmin && <button aria-label="Download Company Report" title="Download Company Report" className={`nav-item ${activeView === "download-company-report" ? "active" : ""}`} onClick={() => setActiveView("download-company-report")}>
+            <FileText size={17} /><span>Download Company Report</span>
           </button>}
           {isSuperAdmin && <button aria-label="Companies" title="Companies" className={`nav-item ${activeView === "companies" ? "active" : ""}`} onClick={() => setActiveView("companies")}>
             <Users size={17} /><span>Companies</span>
@@ -2021,7 +2027,7 @@ function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" || activeView === "internal-tickets" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "information" ? "Information Center" : activeView === "user-manual" ? "User Manual" : activeView === "download-reports" ? "Download Reports" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
+          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" || activeView === "internal-tickets" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "information" ? "Information Center" : activeView === "user-manual" ? "User Manual" : activeView === "download-reports" ? "Download Reports" : activeView === "download-company-report" ? "Download Company Report" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
           {user.role === "customer" && user.companyName && <div className="topbar-company-name" title={user.companyName}>{user.companyName}</div>}
           <div className="topbar-actions">
             {systemNotificationPermission === "granted" && (
@@ -2959,7 +2965,9 @@ function App() {
                 }}
               />
               : activeView === "download-reports" && isAgent
-                ? <DownloadReportsView />
+                ? <DownloadReportsView showTAT={true} isCompanyReport={false} />
+              : activeView === "download-company-report" && (isAgent || isCompanyAdmin)
+                ? <DownloadReportsView showTAT={false} isCompanyReport={true} />
               : activeView === "reports" && (isSuperAdmin || isCompanyAdmin)
                 ? <AnalyticsDashboard workspaceWide={isSuperAdmin} />
               : activeView === "manual-ticket" && isSuperAdmin
@@ -3559,7 +3567,9 @@ function loadLogoDataUrl(): Promise<string> {
   });
 }
 
-async function generateCompanyPdfReport(report: DownloadReportData) {
+async function generateCompanyPdfReport(report: DownloadReportData, options: { includeTAT?: boolean; isCompanyReport?: boolean } = {}) {
+  const includeTAT = options.includeTAT !== false;
+  const isCompanyReport = Boolean(options.isCompanyReport);
   const doc = new jsPDF({
     orientation: "portrait",
     unit: "mm",
@@ -3606,12 +3616,12 @@ async function generateCompanyPdfReport(report: DownloadReportData) {
   doc.setFont("helvetica", "bold");
   doc.setFontSize(10);
   doc.setTextColor(15, 23, 42);
-  doc.text("Support System Report", pageWidth - margin, 14, { align: "right" });
+  doc.text(isCompanyReport ? "Company Ticket Report" : "Support System Report", pageWidth - margin, 14, { align: "right" });
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   doc.setTextColor(100, 116, 139);
-  doc.text("Company Support Report Monitoring & Performance Report", pageWidth - margin, 19, { align: "right" });
+  doc.text(isCompanyReport ? "Company Support Ticket Summary & Details" : "Company Support Report Monitoring & Performance Report", pageWidth - margin, 19, { align: "right" });
 
   doc.setFontSize(7.5);
   doc.setTextColor(148, 163, 184);
@@ -3738,8 +3748,10 @@ async function generateCompanyPdfReport(report: DownloadReportData) {
   doc.text("TICKET DETAILS", margin, currentY);
   currentY += 4;
 
-  const ticketTableHead = [["S.No", "Ticket No", "Ticket Description", "Client Raised By", "Ticket Raised Date", "Ticket Closed Date", "TAT", "Status"]];
-  const ticketTableBody = report.ticketRecords.map((t) => [
+  const ticketTableHead = includeTAT
+    ? [["S.No", "Ticket No", "Ticket Description", "Client Raised By", "Ticket Raised Date", "Ticket Closed Date", "TAT", "Status"]]
+    : [["S.No", "Ticket No", "Ticket Description", "Client Raised By", "Ticket Raised Date", "Ticket Closed Date", "Status"]];
+  const ticketTableBody = report.ticketRecords.map((t) => includeTAT ? [
     t.sNo,
     t.ticketNo,
     t.ticketDescription,
@@ -3748,10 +3760,20 @@ async function generateCompanyPdfReport(report: DownloadReportData) {
     t.ticketClosedDate || "—",
     t.tat || "—",
     t.status,
+  ] : [
+    t.sNo,
+    t.ticketNo,
+    t.ticketDescription,
+    t.clientRaisedBy,
+    t.ticketRaisedDate || "—",
+    t.ticketClosedDate || "—",
+    t.status,
   ]);
 
   if (ticketTableBody.length === 0) {
-    ticketTableBody.push(["—", "—", "No tickets recorded for this company in the selected date range.", "—", "—", "—", "—", "—"]);
+    ticketTableBody.push(includeTAT
+      ? ["—", "—", "No tickets recorded for this company in the selected date range.", "—", "—", "—", "—", "—"]
+      : ["—", "—", "No tickets recorded for this company in the selected date range.", "—", "—", "—", "—"]);
   }
 
   autoTable(doc, {
@@ -3771,7 +3793,7 @@ async function generateCompanyPdfReport(report: DownloadReportData) {
       fontStyle: "bold",
       halign: "center",
     },
-    columnStyles: {
+    columnStyles: includeTAT ? {
       0: { halign: "center", cellWidth: 10 },
       1: { halign: "center", cellWidth: 20, fontStyle: "bold" },
       2: { halign: "left" },
@@ -3780,10 +3802,19 @@ async function generateCompanyPdfReport(report: DownloadReportData) {
       5: { halign: "center", cellWidth: 26 },
       6: { halign: "center", cellWidth: 22 },
       7: { halign: "center", cellWidth: 18, fontStyle: "bold" },
+    } : {
+      0: { halign: "center", cellWidth: 12 },
+      1: { halign: "center", cellWidth: 24, fontStyle: "bold" },
+      2: { halign: "left" },
+      3: { halign: "left", cellWidth: 32 },
+      4: { halign: "center", cellWidth: 30 },
+      5: { halign: "center", cellWidth: 30 },
+      6: { halign: "center", cellWidth: 22, fontStyle: "bold" },
     },
     didParseCell: (data) => {
       if (data.section === "body") {
-        if (data.column.index === 7) {
+        const statusColIdx = includeTAT ? 7 : 6;
+        if (data.column.index === statusColIdx) {
           const val = String(data.cell.raw);
           if (val === "Solved") {
             data.cell.styles.textColor = [21, 128, 61];
@@ -3795,7 +3826,7 @@ async function generateCompanyPdfReport(report: DownloadReportData) {
             data.cell.styles.textColor = [161, 98, 7];
           }
         }
-        if (data.column.index === 6) {
+        if (includeTAT && data.column.index === 6) {
           const val = String(data.cell.raw);
           if (val.includes("Breached") || val.includes("After TAT")) {
             data.cell.styles.textColor = [185, 28, 28];
@@ -3819,11 +3850,11 @@ async function generateCompanyPdfReport(report: DownloadReportData) {
     doc.text(`Page ${i} of ${totalPages}`, pageWidth - margin, pageHeight - 8, { align: "right" });
   }
 
-  const safeFileName = `${report.company.name.replace(/[^a-zA-Z0-9_-]/g, "_")}_Ticket_Report_${report.period}_${report.startDate}_to_${report.endDate}.pdf`;
+  const safeFileName = `${report.company.name.replace(/[^a-zA-Z0-9_-]/g, "_")}_${isCompanyReport ? "Company_Report" : "Ticket_Report"}_${report.period}_${report.startDate}_to_${report.endDate}.pdf`;
   doc.save(safeFileName);
 }
 
-function DownloadReportsView() {
+function DownloadReportsView({ showTAT = true, isCompanyReport = false }: { showTAT?: boolean; isCompanyReport?: boolean } = {}) {
   const [companies, setCompanies] = useState<Array<{ id: number; name: string }>>([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | "">("");
   const [period, setPeriod] = useState<"weekly" | "monthly" | "yearly" | "custom">("weekly");
@@ -3897,7 +3928,7 @@ function DownloadReportsView() {
     if (!report) return;
     setGeneratingPdf(true);
     try {
-      await generateCompanyPdfReport(report);
+      await generateCompanyPdfReport(report, { includeTAT: showTAT, isCompanyReport });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to generate PDF.");
     } finally {
@@ -3909,9 +3940,9 @@ function DownloadReportsView() {
     <section className="feature-page download-reports-page">
       <div className="page-heading">
         <div>
-          <div className="eyebrow"><span className="eyebrow-live" />CONSULTANT PORTAL</div>
-          <h1>Download Reports</h1>
-          <p>Generate and download company-specific weekly, monthly, yearly, or custom date range PDF reports.</p>
+          <div className="eyebrow"><span className="eyebrow-live" />{isCompanyReport ? "COMPANY REPORT" : "CONSULTANT PORTAL"}</div>
+          <h1>{isCompanyReport ? "Download Company Report" : "Download Reports"}</h1>
+          <p>{isCompanyReport ? "Generate and download company-specific weekly, monthly, yearly, or custom date range PDF reports." : "Generate and download company-specific weekly, monthly, yearly, or custom date range PDF reports with TAT monitoring."}</p>
         </div>
       </div>
 
@@ -4022,7 +4053,7 @@ function DownloadReportsView() {
               <img src="/jishnu-infotech-logo.png" alt="Jishnu Infotech" className="download-reports-brand-logo" />
               <div>
                 <span className="download-reports-company-tag">{report.company.name}</span>
-                <h2>{report.company.name} — Ticket Report</h2>
+                <h2>{report.company.name} — {isCompanyReport ? "Company Ticket Report" : "Ticket Report"}</h2>
                 <p className="download-reports-period-label">
                   <Calendar size={13} />
                   <span>
@@ -4131,14 +4162,14 @@ function DownloadReportsView() {
                     <th style={{ width: 140 }}>Client Raised By</th>
                     <th style={{ width: 140, textAlign: "center" }}>Ticket Raised Date</th>
                     <th style={{ width: 140, textAlign: "center" }}>Ticket Closed Date</th>
-                    <th style={{ width: 160, textAlign: "center" }}>TAT</th>
+                    {showTAT && <th style={{ width: 160, textAlign: "center" }}>TAT</th>}
                     <th style={{ width: 110, textAlign: "center" }}>Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {report.ticketRecords.length === 0 ? (
                     <tr>
-                      <td colSpan={8} style={{ textAlign: "center", color: "var(--muted, #64748b)", padding: "24px" }}>
+                      <td colSpan={showTAT ? 8 : 7} style={{ textAlign: "center", color: "var(--muted, #64748b)", padding: "24px" }}>
                         No tickets were raised by this company during the selected date range.
                       </td>
                     </tr>
@@ -4161,34 +4192,36 @@ function DownloadReportsView() {
                         <td style={{ textAlign: "center", fontSize: "0.82rem", whiteSpace: "nowrap" }}>
                           {t.ticketClosedDate || "—"}
                         </td>
-                        <td style={{ textAlign: "center" }}>
-                          <span
-                            className={`tat-badge ${t.tatStatus ? `tat-${t.tatStatus.toLowerCase()}` : ""}`}
-                            style={{
-                              fontSize: "0.78rem",
-                              fontWeight: 600,
-                              padding: "2px 8px",
-                              borderRadius: 4,
-                              display: "inline-block",
-                              background: t.tat?.includes("Breached") || t.tat?.includes("After TAT")
-                                ? "#fee2e2"
-                                : t.tat?.includes("Warning")
-                                  ? "#ffedd5"
-                                  : t.tat?.includes("Within TAT")
-                                    ? "#dcfce7"
-                                    : "#f1f5f9",
-                              color: t.tat?.includes("Breached") || t.tat?.includes("After TAT")
-                                ? "#991b1b"
-                                : t.tat?.includes("Warning")
-                                  ? "#c2410c"
-                                  : t.tat?.includes("Within TAT")
-                                    ? "#166534"
-                                    : "#334155",
-                            }}
-                          >
-                            {t.tat || "—"}
-                          </span>
-                        </td>
+                        {showTAT && (
+                          <td style={{ textAlign: "center" }}>
+                            <span
+                              className={`tat-badge ${t.tatStatus ? `tat-${t.tatStatus.toLowerCase()}` : ""}`}
+                              style={{
+                                fontSize: "0.78rem",
+                                fontWeight: 600,
+                                padding: "2px 8px",
+                                borderRadius: 4,
+                                display: "inline-block",
+                                background: t.tat?.includes("Breached") || t.tat?.includes("After TAT")
+                                  ? "#fee2e2"
+                                  : t.tat?.includes("Warning")
+                                    ? "#ffedd5"
+                                    : t.tat?.includes("Within TAT")
+                                      ? "#dcfce7"
+                                      : "#f1f5f9",
+                                color: t.tat?.includes("Breached") || t.tat?.includes("After TAT")
+                                  ? "#991b1b"
+                                  : t.tat?.includes("Warning")
+                                    ? "#c2410c"
+                                    : t.tat?.includes("Within TAT")
+                                      ? "#166534"
+                                      : "#334155",
+                              }}
+                            >
+                              {t.tat || "—"}
+                            </span>
+                          </td>
+                        )}
                         <td style={{ textAlign: "center" }}>
                           <span className={`download-status-badge status-${t.status.toLowerCase().replace(/\s+/g, "-")}`}>
                             {t.status}
