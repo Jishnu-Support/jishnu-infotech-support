@@ -18,7 +18,7 @@ import {
   Activity, ArrowDown, ArrowDownUp, ArrowLeft, ArrowRight, ArrowRightLeft, ArrowUp, BarChart3, Bell, BellRing, BellOff, Check,
   CheckCheck, CheckCircle2, CircleHelp, Clock3, Inbox, LogOut, MessageCircle, Building2, ClipboardPlus,
   Download, Paperclip, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, UserRound, Users, X, BookOpen, Megaphone, Pencil, ExternalLink, Youtube,
-  FileText, FileSpreadsheet, FileArchive, Copy, ZoomIn, ZoomOut, RotateCcw, File as FileIcon, FileDown, Calendar,
+  FileText, FileSpreadsheet, FileArchive, Copy, ZoomIn, ZoomOut, RotateCcw, File as FileIcon, FileDown, Calendar, Layers, Lock,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 
@@ -39,7 +39,7 @@ type Company = {
 type Ticket = {
   id: number; ticketNumber?: string; companyTicketSeq?: number | null; subject: string; description: string; status: Status; priority: Priority;
   category: TicketCategory; tags: string[]; customFields: Record<string, string>;
-  source: "portal" | "email"; isHistoricalImport?: boolean; isManualEntry?: boolean;
+  source: "portal" | "email"; isHistoricalImport?: boolean; isManualEntry?: boolean; isInternal?: boolean; internalTicketSeq?: number | null;
   solution?: string | null; solutionConsultantName?: string | null; createdAt: string; updatedAt: string;
   customer: { id: number | null; name: string; email: string | null; contactNumber: string | null };
   company: Company | null;
@@ -1047,6 +1047,7 @@ function App() {
   const [companyFilter, setCompanyFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [showCreateInternal, setShowCreateInternal] = useState(false);
   const [renewalPopup, setRenewalPopup] = useState(false);
   const [newTicketCategory, setNewTicketCategory] = useState<TicketCategory | "">("");
   const [feedbackTicketId, setFeedbackTicketId] = useState<number | null>(null);
@@ -1138,7 +1139,7 @@ function App() {
   }, [selectedId, user, tickets]);
 
   useEffect(() => {
-    if (!selectedId || user?.role !== "agent" || (activeView !== "inbox" && activeView !== "assigned" && activeView !== "my-tickets")) return;
+    if (!selectedId || user?.role !== "agent" || (activeView !== "inbox" && activeView !== "assigned" && activeView !== "my-tickets" && activeView !== "internal-tickets")) return;
     const intervalId = window.setInterval(() => {
       api<TicketDetail>(`/tickets/${selectedId}`)
         .then(setDetail)
@@ -1431,9 +1432,10 @@ function App() {
 
   const filteredTickets = useMemo(() => tickets.filter((ticket) => {
     const matchStatus = filter === "all" || ticket.status === filter;
+    const isInternalView = activeView === "internal-tickets";
     const consultantInbox = user?.role === "agent" && activeView === "inbox";
-    const matchPriority = consultantInbox || priorityFilter === "all" || ticket.priority === priorityFilter;
-    const matchCompany = !consultantInbox || companyFilter === "all" || ticket.company?.id === Number(companyFilter);
+    const matchPriority = (!isInternalView && consultantInbox) || priorityFilter === "all" || ticket.priority === priorityFilter;
+    const matchCompany = isInternalView || !consultantInbox || companyFilter === "all" || ticket.company?.id === Number(companyFilter);
     const query = search.trim().toLowerCase();
     const cleanId = query.replace(/^#/, "");
     const cleanTicketNumber = ticket.ticketNumber ? ticket.ticketNumber.toLowerCase().replace(/^#/, "") : "";
@@ -1446,19 +1448,28 @@ function App() {
       `${ticket.subject} ${ticket.customer.name} ${ticket.lastMessage}`.toLowerCase().includes(query);
     const matchView = activeView === "assigned"
       ? ticket.assignee?.id === user?.id
-      : activeView === "my-tickets"
-        ? ticket.customer.id === user?.id
-        : true;
+      : activeView === "internal-tickets"
+        ? Boolean(ticket.isInternal)
+        : activeView === "my-tickets"
+          ? ticket.customer.id === user?.id
+          : user?.role === "agent" && activeView === "inbox"
+            ? !ticket.isInternal
+            : true;
     return matchStatus && matchPriority && matchCompany && matchSearch && matchView;
   }), [activeView, companyFilter, filter, priorityFilter, search, tickets, user]);
 
   const counts = useMemo(() => ({
-    all: tickets.length,
-    open: tickets.filter((ticket) => ticket.status === "open").length,
-    in_progress: tickets.filter((ticket) => ticket.status === "in_progress").length,
-    waiting: tickets.filter((ticket) => ticket.status === "waiting").length,
-    resolved: tickets.filter((ticket) => ticket.status === "resolved").length,
+    all: tickets.filter((ticket) => !ticket.isInternal).length,
+    open: tickets.filter((ticket) => !ticket.isInternal && ticket.status === "open").length,
+    in_progress: tickets.filter((ticket) => !ticket.isInternal && ticket.status === "in_progress").length,
+    waiting: tickets.filter((ticket) => !ticket.isInternal && ticket.status === "waiting").length,
+    resolved: tickets.filter((ticket) => !ticket.isInternal && ticket.status === "resolved").length,
   }), [tickets]);
+
+  const internalTicketCount = useMemo(
+    () => tickets.filter((ticket) => Boolean(ticket.isInternal) && ticket.status !== "resolved").length,
+    [tickets],
+  );
 
   const myTicketCount = useMemo(
     () => tickets.filter((ticket) => ticket.customer.id === user?.id && ticket.status !== "resolved").length,
@@ -1473,11 +1484,15 @@ function App() {
   const inboxCounts = useMemo(() => {
     const scopedTickets = activeView === "assigned"
       ? tickets.filter((ticket) => ticket.assignee?.id === user?.id)
-      : activeView === "my-tickets"
-        ? tickets.filter((ticket) => ticket.customer.id === user?.id)
-        : user?.role === "agent" && activeView === "inbox" && companyFilter !== "all"
-          ? tickets.filter((ticket) => ticket.company?.id === Number(companyFilter))
-          : tickets;
+      : activeView === "internal-tickets"
+        ? tickets.filter((ticket) => Boolean(ticket.isInternal))
+        : activeView === "my-tickets"
+          ? tickets.filter((ticket) => ticket.customer.id === user?.id)
+          : user?.role === "agent" && activeView === "inbox" && companyFilter !== "all"
+            ? tickets.filter((ticket) => !ticket.isInternal && ticket.company?.id === Number(companyFilter))
+            : user?.role === "agent" && activeView === "inbox"
+              ? tickets.filter((ticket) => !ticket.isInternal)
+              : tickets;
     return {
       all: scopedTickets.length,
       open: scopedTickets.filter((ticket) => ticket.status === "open").length,
@@ -1811,6 +1826,23 @@ function App() {
     }
   }
 
+  async function createInternalTicket(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    form.set("isInternal", "true");
+    setActionError("");
+    try {
+      const result = await api<{ ticket: Ticket }>("/tickets", { method: "POST", body: form });
+      setShowCreateInternal(false);
+      await refreshTickets();
+      setSelectedId(result.ticket.id);
+      setActiveView("internal-tickets");
+      setFilter("all");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not create internal ticket.");
+    }
+  }
+
   if (loading) return <div className="loading-screen"><CompanyLogo className="company-logo-loading" /><span>Loading your workspace…</span></div>;
 
   if (!user && authFlow !== "portal") return <InvitationOrResetScreen
@@ -1874,7 +1906,7 @@ function App() {
     isAgent && (isSuperAdmin || selectedTicket.assignee?.id === user.id)
   ));
   const heading = isAgent
-    ? (activeView === "assigned" ? "Assigned to me" : "Support inbox")
+    ? (activeView === "internal-tickets" ? "Internal Tickets" : activeView === "assigned" ? "Assigned to me" : "Support inbox")
     : activeView === "assigned"
       ? "Assigned to me"
       : activeView === "my-tickets"
@@ -1914,6 +1946,18 @@ function App() {
           <button aria-label={isAgent ? "Inbox" : "Company inbox"} title={isAgent ? "Inbox" : "Company inbox"} className={`nav-item ${activeView === "inbox" ? "active" : ""}`} onClick={() => { setActiveView("inbox"); setFilter("all"); }}>
             <Inbox size={17} /><span>{isAgent ? "Inbox" : "Company inbox"}</span><span className="nav-count">{isAgent ? counts.open : counts.all}</span>
           </button>
+          {isAgent && (
+            <button
+              aria-label="Internal Tickets"
+              title="Internal Tickets"
+              className={`nav-item ${activeView === "internal-tickets" ? "active" : ""}`}
+              onClick={() => { setActiveView("internal-tickets"); setFilter("all"); }}
+            >
+              <Layers size={17} />
+              <span>Internal Tickets</span>
+              <span className="nav-count">{internalTicketCount}</span>
+            </button>
+          )}
           {(isAgent || Boolean(user.isInternalConsultant)) && (
             <button aria-label="Assigned to me" title="Assigned to me" className={`nav-item ${activeView === "assigned" ? "active" : ""}`} onClick={() => { setActiveView("assigned"); setFilter("all"); }}>
               <UserRound size={17} /><span>Assigned to me</span><span className="nav-count">{assignedTicketCount}</span>
@@ -1977,7 +2021,7 @@ function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "information" ? "Information Center" : activeView === "user-manual" ? "User Manual" : activeView === "download-reports" ? "Download Reports" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
+          <div className="breadcrumbs"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" || activeView === "internal-tickets" ? heading : activeView === "knowledge" ? "Knowledge Base" : activeView === "information" ? "Information Center" : activeView === "user-manual" ? "User Manual" : activeView === "download-reports" ? "Download Reports" : activeView === "manual-ticket" ? "Raise Ticket Manually" : activeView[0].toUpperCase() + activeView.slice(1)}</strong></div>
           {user.role === "customer" && user.companyName && <div className="topbar-company-name" title={user.companyName}>{user.companyName}</div>}
           <div className="topbar-actions">
             {systemNotificationPermission === "granted" && (
@@ -2033,7 +2077,7 @@ function App() {
               </button>
             )}
             {user.role === "customer" && availableCompanies.length > 1 && <button type="button" className="company-switcher" onClick={() => setShowCompanySelection(true)}><Building2 size={14} /><span>{user.companyName || "Select a company"}</span><ArrowDown size={13} /></button>}
-            {(activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets") && (
+            {(activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" || activeView === "internal-tickets") && (
               <div className="search-box">
                 <Search size={15} />
                 <input
@@ -2099,16 +2143,16 @@ function App() {
           </div>
         )}
 
-        {activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" ? (
+        {activeView === "inbox" || activeView === "assigned" || activeView === "my-tickets" || activeView === "internal-tickets" ? (
           <div className={`workbench ${selectedTicket ? "has-detail" : ""}`}>
             <section className="ticket-list-panel">
               <div className="page-heading">
                 <div>
-                  <div className="eyebrow"><span className="eyebrow-live" />{isAgent ? "YOUR TEAM, IN SYNC" : "WE'RE HERE TO HELP"}</div>
+                  <div className="eyebrow"><span className="eyebrow-live" />{activeView === "internal-tickets" ? "CONSULTANT WORKSPACE · INTERNAL" : isAgent ? "YOUR TEAM, IN SYNC" : "WE'RE HERE TO HELP"}</div>
                   <h1>{heading}</h1>
-                  <p>{isAgent ? (activeView === "assigned" ? "Stay on top of conversations assigned to you." : "Stay on top of every customer conversation.") : activeView === "assigned" ? "Tickets assigned to you to review, solve, or transfer to an External Consultant." : activeView === "my-tickets" ? "Track the support tickets you opened." : "See support tickets opened by you and your teammates."}</p>
+                  <p>{activeView === "internal-tickets" ? "Private internal ticketing workbench for consultant collaboration." : isAgent ? (activeView === "assigned" ? "Stay on top of conversations assigned to you." : "Stay on top of every customer conversation.") : activeView === "assigned" ? "Tickets assigned to you to review, solve, or transfer to an External Consultant." : activeView === "my-tickets" ? "Track the support tickets you opened." : "See support tickets opened by you and your teammates."}</p>
                 </div>
-                <button className="button button-primary" onClick={openNewTicketForm}><Plus size={16} /> New ticket</button>
+                {activeView === "internal-tickets" ? <button className="button button-primary" onClick={() => { setShowCreateInternal(true); setActionError(""); }}><Plus size={16} /> New internal ticket</button> : <button className="button button-primary" onClick={openNewTicketForm}><Plus size={16} /> New ticket</button>}
               </div>
 
               {isAgent && <div className="metrics-row">
@@ -2230,7 +2274,7 @@ function App() {
                 ) : filteredTickets.map((ticket) => (
                   <button key={ticket.id} className={`ticket-row ${selectedId === ticket.id ? "selected" : ""}`} onClick={() => setSelectedId(ticket.id)}>
                     <div className="ticket-row-top">
-                      <span className="ticket-number">{ticket.ticketNumber || `#${String(ticket.id).padStart(4, "0")}`}</span>
+                      <span className="ticket-number">{ticket.ticketNumber || `#${String(ticket.id).padStart(4, "0")}`}</span>{ticket.isInternal && <span className="ticket-internal-badge"><Lock size={10} /> Internal</span>}
                       <span className="ticket-time">{ticketUpdatedLabel(ticket.updatedAt)}</span>
                     </div>
                     <div className="ticket-subject">{ticket.subject}</div>
@@ -2239,7 +2283,7 @@ function App() {
                     <div className="ticket-row-bottom">
                       <div className="ticket-person">
                         <span className={`tiny-avatar ${ticket.source === "email" ? "email-avatar" : ""}`}>{initials(ticket.customer.name)}</span>
-                        <span>{displayClientName(ticket.customer.name)}</span>
+                        <span>{ticket.isInternal ? ticket.customer.name : displayClientName(ticket.customer.name)}</span>
                       </div>
                       <div className="ticket-row-meta"><PriorityIcon priority={ticket.priority} />{ticket.assignee?.id === user.id && !isAgent && <span className="assigned-to-you-badge">Assigned to you</span>}<StatusPill status={ticket.status} resolvedByInternal={ticket.resolvedByInternalConsultant} /></div>
                     </div>
@@ -2282,6 +2326,12 @@ function App() {
                   <div className="detail-actions"><button className="icon-button" aria-label="Close ticket detail" onClick={() => setSelectedId(null)}><X size={18} /></button></div>
                 </div>
                 <div className="detail-scroll-area">
+                {selectedTicket.isInternal && (
+                  <div className="internal-ticket-detail-banner" role="status">
+                    <Lock size={14} />
+                    <span><strong>Internal Ticket</strong> · Strictly visible and accessible only within the Consultant portal.</span>
+                  </div>
+                )}
                 <div className="detail-statusbar">
                   <StatusPill status={selectedTicket.status} resolvedByInternal={selectedTicket.resolvedByInternalConsultant} />
                   <span className="detail-status-separator" />
@@ -2773,7 +2823,12 @@ function App() {
                 {isAgent || isCompanyAdmin || selectedTicket.customer.id === user.id || isInternalConsultantForTicket ? <div className="reply-wrap">
                   {actionError && <div className="inline-error">{actionError}<button onClick={() => setActionError("")}><X size={13} /></button></div>}
                   {actionMessage && <div className="inline-success">{actionMessage}<button onClick={() => setActionMessage("")}><X size={13} /></button></div>}
-                  {isAgent && <div className="reply-mode-toggle" role="group" aria-label="Reply type">
+                  {selectedTicket.isInternal ? (
+                    <div className="internal-composer-banner">
+                      <Lock size={12} />
+                      <span><strong>Internal Ticket Discussion</strong> · Visible only to Consultants.</span>
+                    </div>
+                  ) : isAgent && <div className="reply-mode-toggle" role="group" aria-label="Reply type">
                     <button type="button" className={!replyInternal ? "selected" : ""} onClick={() => setReplyInternal(false)}>Reply to customer</button>
                     <button type="button" className={replyInternal ? "selected" : ""} onClick={() => setReplyInternal(true)}>Internal note</button>
                     <button
@@ -2794,7 +2849,7 @@ function App() {
                   <form className="reply-composer" onSubmit={sendReply}>
                     <textarea
                       name="reply"
-                      placeholder={isAgent ? (replyInternal ? "Write an internal note for the support team…" : "Write a reply to the customer…") : "Reply to this conversation…"}
+                      placeholder={selectedTicket.isInternal ? "Write a message or internal note for consultants…" : isAgent ? (replyInternal ? "Write an internal note for the support team…" : "Write a reply to the customer…") : "Reply to this conversation…"}
                       maxLength={5000}
                       required={replyFiles.length === 0}
                     />
@@ -2897,8 +2952,9 @@ function App() {
                     await refreshNotifications();
                   }
                   if (notification.ticketId) {
+                    const targetTk = tickets.find((tk) => tk.id === notification.ticketId);
                     setSelectedId(notification.ticketId);
-                    setActiveView("inbox");
+                    setActiveView(targetTk?.isInternal ? "internal-tickets" : "inbox");
                   }
                 }}
               />
@@ -2939,6 +2995,125 @@ function App() {
         )}
       </main>
 
+      {showCreateInternal && isAgent && (
+        <div
+          className="modal-scrim"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowCreateInternal(false);
+              setActionError("");
+            }
+          }}
+        >
+          <form className="create-modal" onSubmit={createInternalTicket}>
+            <div className="modal-heading">
+              <div>
+                <div className="eyebrow"><Lock size={12} style={{ display: "inline", verticalAlign: "middle", marginRight: 4 }} />CONSULTANT PORTAL ONLY</div>
+                <h2>Create Internal Ticket</h2>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => { setShowCreateInternal(false); setActionError(""); }}
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <p style={{ margin: "0 0 16px 0", fontSize: "12px", color: "#64748b" }}>
+              Internal tickets are strictly private to Consultants and will never be visible to clients.
+            </p>
+            <input type="hidden" name="isInternal" value="true" />
+            <label>
+              Subject
+              <input
+                name="subject"
+                required
+                minLength={4}
+                maxLength={160}
+                placeholder="Internal task, issue, or investigation subject…"
+                autoFocus
+              />
+            </label>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+              <label>
+                Category
+                <select name="category" required defaultValue="Functional">
+                  <option value="Functional">Functional</option>
+                  <option value="Technical">Technical</option>
+                  <option value="Account access">Account access</option>
+                  <option value="Technical support">Technical support</option>
+                  <option value="Feature request">Feature request</option>
+                  <option value="Bug">Bug</option>
+                  <option value="Infrastructure">Infrastructure</option>
+                  <option value="Other">Other</option>
+                </select>
+              </label>
+              <label>
+                Priority
+                <select name="priority" defaultValue="normal">
+                  <option value="low">Low</option>
+                  <option value="normal">Normal</option>
+                  <option value="high">High</option>
+                  <option value="urgent">Urgent</option>
+                </select>
+              </label>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+              <label>
+                Assignee (Consultant)
+                <select name="assigneeId" defaultValue={user.id}>
+                  {agents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name} {agent.id === user.id ? "(You)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Related Company (Optional)
+                <select name="companyId" defaultValue="">
+                  <option value="">None (Internal team only)</option>
+                  {inboxCompanies.map((company) => (
+                    <option key={company.id} value={company.id}>
+                      {company.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label>
+              Description
+              <textarea
+                name="description"
+                required
+                minLength={10}
+                maxLength={5000}
+                placeholder="Details of the internal request, steps taken, or notes for the team…"
+                rows={5}
+              />
+            </label>
+            <label>
+              Attachments
+              <input name="attachments" type="file" multiple />
+              <span className="form-hint">Up to 5 files (all file formats supported), 25 MB each.</span>
+            </label>
+            {actionError && <div className="inline-error">{actionError}</div>}
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="button button-quiet"
+                onClick={() => { setShowCreateInternal(false); setActionError(""); }}
+              >
+                Cancel
+              </button>
+              <button className="button button-primary" type="submit">
+                <Plus size={15} /> Create internal ticket
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
       {showCreate && <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) { setShowCreate(false); setPrefillCustomerId(null); setNewTicketCategory(""); } }}>
         <form className="create-modal" onSubmit={createTicket}>
           <div className="modal-heading"><div><div className="eyebrow">SUPPORT REQUEST</div><h2>Create a ticket</h2></div><button type="button" className="icon-button" onClick={() => { setShowCreate(false); setPrefillCustomerId(null); setNewTicketCategory(""); }} aria-label="Close"><X size={18} /></button></div>
@@ -3013,8 +3188,9 @@ function App() {
             await api("/notifications/read", { method: "POST", body: JSON.stringify({ id: alert.id }) });
             await refreshNotifications();
           }
+          const targetTk = tickets.find((tk) => tk.id === alert.ticketId);
           setSelectedId(alert.ticketId);
-          setActiveView("inbox");
+          setActiveView(targetTk?.isInternal ? "internal-tickets" : "inbox");
           setNewConsultantTicketAlerts((current) => current.slice(1));
         }}
       />}

@@ -490,7 +490,8 @@ async function normalizeActiveAgentPriorities() {
 
 async function canAccessTicket(user, ticketId) {
   const access = ticketAccessFilter(user, ticketId);
-  return Boolean(await db.prepare(`SELECT 1 FROM tickets WHERE ${access.sql}`).get(...access.params));
+  const internalFilter = user.role !== "agent" ? " AND COALESCE(is_internal, 0) = 0" : "";
+  return Boolean(await db.prepare(`SELECT 1 FROM tickets WHERE ${access.sql}${internalFilter}`).get(...access.params));
 }
 
 async function ticketSummary(row) {
@@ -505,6 +506,8 @@ async function ticketSummary(row) {
     )
   );
   const ticketNumber = formatCompanyTicketNumber({
+    isInternal: Boolean(row.is_internal),
+    internalTicketSeq: row.internal_ticket_seq,
     companyId: row.company_id,
     companyName: row.company_name,
     adminUsername: row.company_admin_username,
@@ -514,6 +517,8 @@ async function ticketSummary(row) {
   return {
     id: row.id,
     ticketNumber,
+    isInternal: Boolean(row.is_internal),
+    internalTicketSeq: row.internal_ticket_seq || null,
     companyTicketSeq: row.company_ticket_seq || null,
     subject: row.subject,
     description: row.description,
@@ -1065,8 +1070,8 @@ app.get("/api/tickets", requireAuth, async (req, res) => {
         CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
         t.updated_at DESC`).all()
     : req.user.company_id
-      ? await db.prepare(`${ticketSelect} WHERE t.company_id = ? ORDER BY t.updated_at DESC`).all(req.user.company_id)
-      : await db.prepare(`${ticketSelect} WHERE t.customer_id = ? ORDER BY t.updated_at DESC`).all(req.user.id);
+      ? await db.prepare(`${ticketSelect} WHERE t.company_id = ? AND COALESCE(t.is_internal, 0) = 0 ORDER BY t.updated_at DESC`).all(req.user.company_id)
+      : await db.prepare(`${ticketSelect} WHERE t.customer_id = ? AND COALESCE(t.is_internal, 0) = 0 ORDER BY t.updated_at DESC`).all(req.user.id);
   res.json({ tickets: await Promise.all(rows.map(ticketSummary)) });
 });
 
@@ -1429,7 +1434,7 @@ app.get("/api/reports/company-pdf-data", requireAuth, requireAgent, async (req, 
            customer.id AS client_id
     FROM tickets t
     LEFT JOIN users customer ON customer.id = t.customer_id
-    WHERE t.company_id = ? AND t.created_at >= ? AND t.created_at <= ?
+    WHERE t.company_id = ? AND COALESCE(t.is_internal, 0) = 0 AND t.created_at >= ? AND t.created_at <= ?
     ORDER BY t.created_at ASC, t.id ASC
   `).all(company.id, range.startAt, range.endAt);
 
@@ -2128,7 +2133,7 @@ app.get("/api/knowledge-base", requireAuth, requireAgent, async (req, res) => {
       ORDER BY m.id DESC LIMIT 1
     )
     LEFT JOIN companies co ON co.id = t.company_id
-    WHERE t.status = 'resolved' ${searchClause} ${companyClause}
+    WHERE t.status = 'resolved' AND COALESCE(t.is_internal, 0) = 0 ${searchClause} ${companyClause}
   `;
   const [{ count }] = await db.prepare(`SELECT COUNT(*) AS count ${knowledgeFrom}`).all(...searchParams, ...companyParams);
   const rawTickets = await db.prepare(`
@@ -3388,6 +3393,7 @@ app.post("/api/tickets/:id/rating", requireAuth, async (req, res) => {
 });
 
 app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
+  const isInternal = (req.body.isInternal === true || req.body.isInternal === "true" || req.body.isInternal === "1") && req.user.role === "agent";
   const subject = typeof req.body.subject === "string" ? req.body.subject.trim() : "";
   const description = typeof req.body.description === "string" ? req.body.description.trim() : "";
   const priority = ["low", "normal", "high", "urgent"].includes(req.body.priority) ? req.body.priority : "normal";
@@ -3400,14 +3406,17 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
     return res.status(400).json({ error: "Description must be between 10 and 5,000 characters." });
   }
   const metadata = normalizedTicketMetadata(req.body);
-  if (metadata.error || !["Functional", "Technical"].includes(metadata.category)) {
+  if (metadata.error || (!isInternal && !["Functional", "Technical"].includes(metadata.category))) {
     discardUploadedFiles(req.files);
     return res.status(400).json({ error: metadata.error || "Choose Functional or Technical as the ticket category." });
   }
 
   let customerId = req.user.id;
   let companyId = req.user.company_id;
-  if (req.user.role === "agent") {
+  if (isInternal) {
+    customerId = req.user.id;
+    companyId = req.body.companyId ? Number(req.body.companyId) : null;
+  } else if (req.user.role === "agent") {
     // Older deployed forms submit the combined "companyId:customerId" value
     // under customerId. Accept that format as well as the current separate fields.
     const rawCustomerSelection = String(req.body.customerId ?? "");
@@ -3471,8 +3480,11 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
 
   let agent;
   let assignmentSource;
-  if (req.user.role === "agent") {
-    agent = { id: req.user.id };
+  if (isInternal) {
+    agent = requestedAgent ? { id: requestedAgent.id } : null;
+    assignmentSource = agent ? "internal_ticket_assigned" : "internal_ticket_unassigned";
+  } else if (req.user.role === "agent") {
+    agent = requestedAgent ? { id: requestedAgent.id } : { id: req.user.id };
     assignmentSource = "agent_created";
   } else if (companyHasInternal && routingPreference === "internal") {
     let internalConsultant = await selectInternalConsultant(companyId, isCreatorInternalConsultant ? req.user.id : null);
@@ -3522,9 +3534,14 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
   try {
     const createTicket = db.transaction(async () => {
       let companyTicketSeq = null;
-      if (companyId) {
+      if (companyId && !isInternal) {
         const seqRow = await db.prepare("SELECT COALESCE(MAX(company_ticket_seq), 0) AS max_seq FROM tickets WHERE company_id = ?").get(companyId);
         companyTicketSeq = Number(seqRow?.max_seq || 0) + 1;
+      }
+      let internalTicketSeq = null;
+      if (isInternal) {
+        const seqRow = await db.prepare("SELECT COALESCE(MAX(internal_ticket_seq), 0) AS max_seq FROM tickets WHERE is_internal = 1").get();
+        internalTicketSeq = Number(seqRow?.max_seq || 0) + 1;
       }
       const tatCfg = await tatConfiguration();
       const priorityKey = (priority || "normal").toLowerCase();
@@ -3539,26 +3556,33 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
         INSERT INTO tickets (
           subject, description, priority, category, tags_json, custom_fields_json,
           customer_id, company_id, assignee_id, company_ticket_seq,
+          is_internal, internal_ticket_seq,
           tat_start_at, tat_duration_minutes, tat_due_at, tat_status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'within_tat')
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'within_tat')
       `).run(
         subject, description, priority, metadata.category, JSON.stringify(metadata.tags),
         JSON.stringify(metadata.customFields), customerId, companyId || null, agent?.id || null, companyTicketSeq,
+        isInternal ? 1 : 0, internalTicketSeq,
         tatStartAt, tatDurationMinutes, tatDueAt,
       );
       const ticketId = Number(result.lastInsertRowid);
-      const initialMsg = await db.prepare("INSERT INTO messages (ticket_id, author_id, body) VALUES (?, ?, ?)")
-        .run(ticketId, req.user.id, description);
+      const initialMsg = await db.prepare("INSERT INTO messages (ticket_id, author_id, body, is_internal) VALUES (?, ?, ?, ?)")
+        .run(ticketId, req.user.id, description, isInternal ? 1 : 0);
       const initialMessageId = Number(initialMsg.lastInsertRowid);
       await recordTicketAssignment(ticketId, agent?.id, req.user.id, assignmentSource);
       const creatorName = req.user.name || "A customer";
       const assignedRecipients = agent?.id
         ? [agent.id]
         : (await db.prepare("SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL").all()).map((a) => a.id);
+      const notifTicketNumber = isInternal
+        ? formatCompanyTicketNumber({ isInternal: true, internalTicketSeq, ticketId })
+        : (companyTicketSeq
+            ? formatCompanyTicketNumber({ companyTicketSeq, adminUsername: companyRecord?.admin_username, companyName: companyRecord?.name, ticketId })
+            : `#${ticketId}`);
       const createNotifMsg = agent?.id
-        ? `New ticket #${ticketId} assigned to you from ${creatorName}: ${priority} priority · ${metadata.category} · ${subject}`
-        : `New unassigned ticket #${ticketId} from ${creatorName}: ${priority} priority · ${metadata.category} · ${subject}`;
+        ? `New ${isInternal ? "internal " : ""}ticket ${notifTicketNumber} assigned to you from ${creatorName}: ${priority} priority · ${metadata.category} · ${subject}`
+        : `New unassigned ${isInternal ? "internal " : ""}ticket ${notifTicketNumber} from ${creatorName}: ${priority} priority · ${metadata.category} · ${subject}`;
       const createNotifKind = agent?.id ? `ticket_assigned:${Date.now()}` : `ticket_created:${Date.now()}`;
       for (const recipientId of assignedRecipients) {
         await db.prepare(`
@@ -4144,11 +4168,19 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
           : assigneeId === null ? "agent_unassigned" : "agent_reassigned";
       await recordTicketAssignment(ticketId, assigneeId, req.user.id, source);
       if (assigneeId) {
+        const notifNum = formatCompanyTicketNumber({
+          isInternal: Boolean(existing.is_internal),
+          internalTicketSeq: existing.internal_ticket_seq,
+          companyTicketSeq: existing.company_ticket_seq,
+          adminUsername: company?.admin_username,
+          companyName: company?.name,
+          ticketId,
+        });
         const notifMsg = transferToExternal
-          ? `Ticket #${ticketId} transferred to you by ${req.user.name}: ${existing.subject}`
+          ? `Ticket ${notifNum} transferred to you by ${req.user.name}: ${existing.subject}`
           : assigneeId === req.user.id
-            ? `Ticket #${ticketId} assigned to you: ${existing.subject}`
-            : `Ticket #${ticketId} assigned to you by ${req.user.name}: ${existing.subject}`;
+            ? `Ticket ${notifNum} assigned to you: ${existing.subject}`
+            : `Ticket ${notifNum} assigned to you by ${req.user.name}: ${existing.subject}`;
         await db.prepare(`
           INSERT INTO notifications (user_id, ticket_id, kind, message, read_at, created_at)
           VALUES (?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)

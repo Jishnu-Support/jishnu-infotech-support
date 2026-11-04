@@ -379,6 +379,24 @@ test("formatCompanyTicketNumber generates company-prefixed sequential ticket num
     "#ME042"
   );
 
+  // Internal ticket -> #INT001
+  assert.equal(
+    formatCompanyTicketNumber({
+      isInternal: true,
+      internalTicketSeq: 1,
+      ticketId: 106,
+    }),
+    "#INT001"
+  );
+  assert.equal(
+    formatCompanyTicketNumber({
+      isInternal: true,
+      internalTicketSeq: 15,
+      ticketId: 120,
+    }),
+    "#INT015"
+  );
+
   // Global / unassigned ticket without company_id falls back to #0072
   assert.equal(
     formatCompanyTicketNumber({

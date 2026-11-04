@@ -11,7 +11,11 @@ export function deriveCompanyPrefix(adminUsername, companyName) {
   return "TK";
 }
 
-export function formatCompanyTicketNumber({ companyId, companyName, adminUsername, companyTicketSeq, ticketId }) {
+export function formatCompanyTicketNumber({ isInternal, internalTicketSeq, companyId, companyName, adminUsername, companyTicketSeq, ticketId }) {
+  if (isInternal) {
+    const seq = internalTicketSeq ? Number(internalTicketSeq) : Number(ticketId);
+    return `#INT${String(seq).padStart(3, "0")}`;
+  }
   if (!companyId) {
     return `#${String(ticketId).padStart(4, "0")}`;
   }

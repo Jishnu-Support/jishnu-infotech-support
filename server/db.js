@@ -174,6 +174,8 @@ const schema = `
     tat_paused_at TIMESTAMP WITHOUT TIME ZONE,
     tat_total_paused_minutes INTEGER DEFAULT 0,
     tat_breached_at TIMESTAMP WITHOUT TIME ZONE,
+    is_internal INTEGER NOT NULL DEFAULT 0,
+    internal_ticket_seq INTEGER,
     created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
     updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
   );
@@ -719,6 +721,13 @@ const schemaMigrations = [
       ALTER TABLE ticket_tat_events ADD COLUMN IF NOT EXISTS new_status TEXT;
       ALTER TABLE ticket_tat_events ADD COLUMN IF NOT EXISTS duration_minutes INTEGER DEFAULT 0;
       ALTER TABLE ticket_tat_events ADD COLUMN IF NOT EXISTS performed_by BIGINT REFERENCES users(id) ON DELETE SET NULL;
+    `);
+  } },
+  { version: 30, apply: async () => {
+    await db.exec(`
+      ALTER TABLE tickets ADD COLUMN IF NOT EXISTS is_internal INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE tickets ADD COLUMN IF NOT EXISTS internal_ticket_seq INTEGER;
+      CREATE INDEX IF NOT EXISTS tickets_internal_idx ON tickets (is_internal, status, updated_at DESC);
     `);
   } },
 ];

@@ -43,11 +43,12 @@ export function canManageTicket(user, ticket, company) {
   if (user.role === "agent") {
     const isSuperAdmin = Boolean(user.is_admin);
     const isAssignee = Number(ticket.assignee_id) === Number(user.id);
+    const isInternalTicket = Boolean(ticket.is_internal || ticket.isInternal);
     return {
       canUpdateStatus: true,
       canUpdatePriority: true,
-      canChangeAssignment: isSuperAdmin || isAssignee,
-      canSwitchToConsultant: isSuperAdmin || isAssignee,
+      canChangeAssignment: isSuperAdmin || isAssignee || isInternalTicket,
+      canSwitchToConsultant: isSuperAdmin || isAssignee || isInternalTicket,
       isInternalConsultant: isInternal,
     };
   }
