@@ -22,7 +22,7 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
 }
 
 /**
- * Register Service Worker to enable background system notifications even when the tab is inactive.
+ * Register Service Worker to enable background notification clicks even when the tab is inactive.
  */
 export async function registerNotificationServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   if (typeof window === "undefined" || !("serviceWorker" in navigator)) return null;
@@ -114,28 +114,11 @@ export async function triggerSystemNotification({
 
   const icon = "/jishnu-infotech-favicon.png";
   const badge = "/jishnu-infotech-favicon.png";
-  const uniqueTag = tag || (ticketId ? `ticket-${ticketId}` : `jit-notif-${Date.now()}`);
+  const uniqueTag = tag || (ticketId ? `ticket-${ticketId}-${Date.now()}` : `jit-notif-${Date.now()}`);
 
-  // Try Service Worker registration first (standard for modern background notification delivery)
-  if ("serviceWorker" in navigator) {
-    try {
-      const reg = await navigator.serviceWorker.ready;
-      if (reg && "showNotification" in reg) {
-        await reg.showNotification(title, {
-          body,
-          icon,
-          badge,
-          tag: uniqueTag,
-          data: { ticketId, view },
-        });
-        return;
-      }
-    } catch {
-      // Fall through to window.Notification
-    }
-  }
+  let notificationShown = false;
 
-  // Fallback to standard window.Notification
+  // 1. Try native desktop window.Notification first (immediate, reliable, never hangs)
   try {
     const notif = new window.Notification(title, {
       body,
@@ -149,8 +132,30 @@ export async function triggerSystemNotification({
       if (onClick) onClick();
       notif.close();
     };
-  } catch (err) {
-    console.debug("Native notification trigger failed:", err);
+    notificationShown = true;
+  } catch (desktopErr) {
+    console.debug("window.Notification not permitted, attempting ServiceWorker fallback:", desktopErr);
+  }
+
+  // 2. If not shown yet (e.g. mobile Android which requires Service Worker), try Service Worker with a strict timeout
+  if (!notificationShown && "serviceWorker" in navigator) {
+    try {
+      const reg = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 400)),
+      ]);
+      if (reg && "showNotification" in reg) {
+        await reg.showNotification(title, {
+          body,
+          icon,
+          badge,
+          tag: uniqueTag,
+          data: { ticketId, view },
+        });
+      }
+    } catch (swErr) {
+      console.debug("ServiceWorker showNotification failed:", swErr);
+    }
   }
 }
 
@@ -201,7 +206,6 @@ export function createBackgroundHeartbeat(onTick: () => void, intervalMs = 10000
       },
     };
   } catch {
-    // Fallback to standard setInterval if Web Worker is disabled/restricted
     const timerId = window.setInterval(onTick, intervalMs);
     return {
       stop: () => window.clearInterval(timerId),

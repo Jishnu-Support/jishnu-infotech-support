@@ -2663,10 +2663,13 @@ app.post("/api/admin/manual-tickets", requireAuth, requireAdmin, receiveAttachme
 
       if (status !== "resolved") {
         await db.prepare(`
-          INSERT INTO notifications (user_id, ticket_id, kind, message)
-          VALUES (?, ?, 'ticket_created', ?)
-          ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
-        `).run(consultant.id, id, `Manually entered ticket from ${client.name}: ${subject}`);
+          INSERT INTO notifications (user_id, ticket_id, kind, message, read_at, created_at)
+          VALUES (?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
+          ON CONFLICT (user_id, ticket_id, kind) DO UPDATE SET
+            read_at = NULL,
+            message = EXCLUDED.message,
+            created_at = CURRENT_TIMESTAMP
+        `).run(consultant.id, id, `ticket_assigned:${Date.now()}`, `Ticket #${id} assigned to you from ${client.name}: ${subject}`);
       }
       return id;
     })();
@@ -3549,18 +3552,23 @@ app.post("/api/tickets", requireAuth, receiveAttachments, async (req, res) => {
         .run(ticketId, req.user.id, description);
       const initialMessageId = Number(initialMsg.lastInsertRowid);
       await recordTicketAssignment(ticketId, agent?.id, req.user.id, assignmentSource);
-      if (req.user.role === "customer") {
-        const customer = await db.prepare("SELECT name FROM users WHERE id = ?").get(customerId);
-        const recipients = agent?.id
-          ? [agent.id]
-          : (await db.prepare("SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL").all()).map((a) => a.id);
-        for (const recipientId of recipients) {
-          await db.prepare(`
-            INSERT INTO notifications (user_id, ticket_id, kind, message)
-            VALUES (?, ?, 'ticket_created', ?)
-            ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
-          `).run(recipientId, ticketId, `New ticket from ${customer?.name || "a customer"}: ${priority} priority · ${metadata.category} · ${subject}`);
-        }
+      const creatorName = req.user.name || "A customer";
+      const assignedRecipients = agent?.id
+        ? [agent.id]
+        : (await db.prepare("SELECT id FROM users WHERE role = 'agent' AND disabled_at IS NULL").all()).map((a) => a.id);
+      const createNotifMsg = agent?.id
+        ? `New ticket #${ticketId} assigned to you from ${creatorName}: ${priority} priority · ${metadata.category} · ${subject}`
+        : `New unassigned ticket #${ticketId} from ${creatorName}: ${priority} priority · ${metadata.category} · ${subject}`;
+      const createNotifKind = agent?.id ? `ticket_assigned:${Date.now()}` : `ticket_created:${Date.now()}`;
+      for (const recipientId of assignedRecipients) {
+        await db.prepare(`
+          INSERT INTO notifications (user_id, ticket_id, kind, message, read_at, created_at)
+          VALUES (?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
+          ON CONFLICT (user_id, ticket_id, kind) DO UPDATE SET
+            read_at = NULL,
+            message = EXCLUDED.message,
+            created_at = CURRENT_TIMESTAMP
+        `).run(recipientId, ticketId, createNotifKind, createNotifMsg);
       }
       if (verifiedFiles.length > 0) {
         const insertAttachment = db.prepare(`
@@ -4135,15 +4143,20 @@ app.patch("/api/tickets/:id", requireAuth, async (req, res) => {
           ? "switched_by_internal_consultant"
           : assigneeId === null ? "agent_unassigned" : "agent_reassigned";
       await recordTicketAssignment(ticketId, assigneeId, req.user.id, source);
-      if (assigneeId && assigneeId !== req.user.id) {
+      if (assigneeId) {
         const notifMsg = transferToExternal
           ? `Ticket #${ticketId} transferred to you by ${req.user.name}: ${existing.subject}`
-          : `Ticket #${ticketId} switched to you by ${req.user.name}: ${existing.subject}`;
+          : assigneeId === req.user.id
+            ? `Ticket #${ticketId} assigned to you: ${existing.subject}`
+            : `Ticket #${ticketId} assigned to you by ${req.user.name}: ${existing.subject}`;
         await db.prepare(`
-          INSERT INTO notifications (user_id, ticket_id, kind, message)
-          VALUES (?, ?, 'ticket_assigned', ?)
-          ON CONFLICT (user_id, ticket_id, kind) DO NOTHING
-        `).run(assigneeId, ticketId, notifMsg);
+          INSERT INTO notifications (user_id, ticket_id, kind, message, read_at, created_at)
+          VALUES (?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
+          ON CONFLICT (user_id, ticket_id, kind) DO UPDATE SET
+            read_at = NULL,
+            message = EXCLUDED.message,
+            created_at = CURRENT_TIMESTAMP
+        `).run(assigneeId, ticketId, `ticket_assigned:${Date.now()}`, notifMsg);
       }
     }
   })();

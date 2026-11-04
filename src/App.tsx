@@ -1200,7 +1200,7 @@ function App() {
       const knownIds = knownNotificationIds.current;
       if (knownIds) {
         const incomingNew = result.notifications.filter((n) => !knownIds.has(n.id) && !n.readAt);
-        const newTicketNotifications = incomingNew.filter((n) => n.kind === "ticket_created" || n.kind === "ticket_assigned");
+        const newTicketNotifications = incomingNew.filter((n) => n.kind.startsWith("ticket_created") || n.kind.startsWith("ticket_assigned"));
         if (newTicketNotifications.length && user.role === "agent") {
           setNewConsultantTicketAlerts((current) => [...current, ...newTicketNotifications]);
         }
@@ -1210,12 +1210,12 @@ function App() {
           let body = notif.message;
           const ticketLabel = notif.ticketNumber || (notif.ticketId ? `#${notif.ticketId}` : "");
 
-          if (notif.kind === "ticket_created") {
+          if (notif.kind.startsWith("ticket_assigned")) {
+            title = `📌 Assigned to You: ${ticketLabel}`;
+            body = notif.subject ? `${notif.subject} · ${notif.message}` : notif.message;
+          } else if (notif.kind.startsWith("ticket_created")) {
             title = `🎫 New Ticket ${ticketLabel}`;
             body = notif.subject ? `${notif.subject} (From ${notif.customerName || "Customer"})` : notif.message;
-          } else if (notif.kind === "ticket_assigned") {
-            title = `📌 Assigned to You: ${ticketLabel}`;
-            body = notif.subject || notif.message;
           } else if (notif.kind.startsWith("ticket_reply") || notif.kind.startsWith("client_email_reply")) {
             title = `💬 New Reply on ${ticketLabel}`;
             body = notif.message;
@@ -1650,6 +1650,7 @@ function App() {
     try {
       await api(`/tickets/${selectedId}`, { method: "PATCH", body: JSON.stringify(values) });
       await refreshTickets();
+      await refreshNotifications();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Could not update ticket.");
     }
