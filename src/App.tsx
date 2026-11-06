@@ -28,8 +28,9 @@ type Priority = "low" | "normal" | "high" | "urgent";
 type TicketCategory = "Functional" | "Technical" | "Account access" | "Billing" | "Technical support" | "Feature request" | "Other";
 type ConsultantSpecialty = "functional" | "technical" | "both";
 type User = {
-  id: number; name: string; username: string; email: string | null; role: Role; isAdmin?: boolean;
+  id: number; name: string; username: string; email: string | null; contactNumber?: string | null; role: Role; isAdmin?: boolean;
   isCompanyAdmin?: boolean; isInternalConsultant?: boolean; internalRoutingPriority?: number; companyId?: number | null; companyName?: string | null; companySupportValidUntil?: string | null;
+  approvalStatus?: string;
 };
 type CompanyMembership = { id: number; name: string; supportValidUntil?: string | null; isCompanyAdmin?: boolean; isInternalConsultant?: boolean; hasInternalConsultants?: boolean; internalRoutingPriority?: number };
 type Company = {
@@ -1094,6 +1095,29 @@ function App() {
   const searchInput = useRef<HTMLInputElement>(null);
   const knownTicketIds = useRef<Set<number> | null>(null);
   const knownNotificationIds = useRef<Set<number> | null>(null);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showProfileMenu) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node)) {
+        setShowProfileMenu(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setShowProfileMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showProfileMenu]);
 
   const refreshTickets = useCallback(async () => {
     const result = await api<{ tickets: Ticket[] }>(`/tickets?_t=${Date.now()}`, { cache: "no-store" });
@@ -2017,10 +2041,10 @@ function App() {
         </nav>
         <div className="sidebar-bottom">
           {isSuperAdmin && <button aria-label="Settings" title="Settings" className={`nav-item ${activeView === "settings" ? "active" : ""}`} onClick={() => setActiveView("settings")}><Settings2 size={17} /><span>Settings</span></button>}
-          <div className="sidebar-profile">
+          <div className="sidebar-profile" onClick={() => setShowProfileModal(true)} style={{ cursor: "pointer" }} title="View profile">
             <div className={`avatar ${isAgent ? "avatar-agent" : ""}`}>{initials(user.name)}</div>
             <div className="profile-copy"><strong>{isAgent ? user.name : displayClientName(user.name)}</strong><span>@{user.username}</span><span>{isAgent ? (user.isAdmin ? "Super Admin" : "Consultant") : user.companyName || "Client"}{isCompanyAdmin ? " · Company Admin" : ""}</span></div>
-            <button className="icon-button profile-menu" onClick={() => signOut()} title="Sign out"><LogOut size={16} /></button>
+            <button className="icon-button profile-menu" onClick={(e) => { e.stopPropagation(); signOut(); }} title="Sign out"><LogOut size={16} /></button>
           </div>
         </div>
       </aside>
@@ -2107,7 +2131,70 @@ function App() {
                 )}
               </div>
             )}
-            <div className="topbar-avatar">{initials(user.name)}</div>
+            <div className="topbar-profile-container" ref={profileMenuRef}>
+              <button
+                type="button"
+                className="topbar-avatar-btn"
+                aria-label="User account menu"
+                aria-haspopup="true"
+                aria-expanded={showProfileMenu}
+                onClick={() => setShowProfileMenu((prev) => !prev)}
+                title={`${user.name} (@${user.username})`}
+              >
+                <div className={`topbar-avatar ${isAgent ? "avatar-agent" : ""}`}>{initials(user.name)}</div>
+              </button>
+
+              {showProfileMenu && (
+                <div className="topbar-profile-dropdown" role="menu">
+                  <div className="profile-dropdown-header">
+                    <div className={`avatar ${isAgent ? "avatar-agent" : ""}`}>{initials(user.name)}</div>
+                    <div className="profile-dropdown-user-info">
+                      <div className="profile-dropdown-name">{isAgent ? user.name : displayClientName(user.name)}</div>
+                      <div className="profile-dropdown-handle">@{user.username}</div>
+                      <div className="profile-dropdown-badge">
+                        {isAgent
+                          ? (user.isAdmin ? "Super Admin" : "Consultant")
+                          : (user.isCompanyAdmin ? "Company Admin" : user.isInternalConsultant ? "Internal Consultant" : "Client")}
+                      </div>
+                      {user.role === "customer" && user.companyName && (
+                        <div className="profile-dropdown-company" title={user.companyName}>
+                          <Building2 size={11} />
+                          <span>{user.companyName}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="profile-dropdown-divider" />
+
+                  <button
+                    type="button"
+                    className="profile-dropdown-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowProfileMenu(false);
+                      setShowProfileModal(true);
+                    }}
+                  >
+                    <UserRound size={15} />
+                    <span>Profile</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="profile-dropdown-item danger"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowProfileMenu(false);
+                      signOut();
+                    }}
+                  >
+                    <LogOut size={15} />
+                    <span>Log out</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -3222,7 +3309,255 @@ function App() {
           } catch (error) { setActionError(error instanceof Error ? error.message : "Could not open this information notice."); }
         }}
       />}
+      {showProfileModal && (
+        <UserProfileModal
+          user={user}
+          onClose={() => setShowProfileModal(false)}
+          onSignOut={signOut}
+        />
+      )}
       {filePreview && <PlatformFileViewer file={filePreview} onClose={() => setFilePreview(null)} />}
+    </div>
+  );
+}
+
+function UserProfileModal({
+  user,
+  onClose,
+  onSignOut,
+}: {
+  user: User;
+  onClose: () => void;
+  onSignOut: () => void;
+}) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPasswordSection, setShowPasswordSection] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  async function handlePasswordChange(e: FormEvent) {
+    e.preventDefault();
+    setStatusMessage(null);
+
+    if (!currentPassword) {
+      setStatusMessage({ type: "error", text: "Please enter your current password." });
+      return;
+    }
+    if (newPassword.length < 8) {
+      setStatusMessage({ type: "error", text: "New password must be at least 8 characters long." });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setStatusMessage({ type: "error", text: "New passwords do not match." });
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const res = await api<{ message: string }>("/auth/change-password", {
+        method: "POST",
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      setStatusMessage({ type: "success", text: res.message || "Password updated successfully!" });
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setShowPasswordSection(false);
+    } catch (err) {
+      setStatusMessage({
+        type: "error",
+        text: err instanceof Error ? err.message : "Failed to update password.",
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  const roleTitle = user.role === "agent"
+    ? (user.isAdmin ? "Super Admin" : "Consultant")
+    : (user.isCompanyAdmin ? "Company Admin" : user.isInternalConsultant ? "Internal Consultant" : "Client");
+
+  return (
+    <div className="modal-scrim" onClick={onClose}>
+      <div className="user-profile-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="user-profile-modal-header">
+          <div className="user-profile-modal-title">
+            <UserRound size={18} />
+            <h2>User Profile</h2>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} title="Close" aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="user-profile-modal-body">
+          <div className="user-profile-card">
+            <div className={`user-profile-large-avatar ${user.role === "agent" ? "avatar-agent" : ""}`}>
+              {initials(user.name)}
+            </div>
+            <div className="user-profile-details">
+              <h3 className="user-profile-name">{user.name}</h3>
+              <div className="user-profile-handle">@{user.username}</div>
+              <div className="user-profile-badges">
+                <span className={`user-role-badge ${user.role === "agent" ? "badge-agent" : "badge-customer"}`}>
+                  <ShieldCheck size={12} />
+                  {roleTitle}
+                </span>
+                {user.role === "customer" && user.companyName && (
+                  <span className="user-company-badge" title="Registered Organization">
+                    <Building2 size={12} />
+                    {user.companyName}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="user-profile-info-grid">
+            <div className="user-profile-info-row">
+              <span className="info-label">Full Name</span>
+              <span className="info-value">{user.name}</span>
+            </div>
+            <div className="info-divider" />
+            <div className="user-profile-info-row">
+              <span className="info-label">Username</span>
+              <span className="info-value">@{user.username}</span>
+            </div>
+            <div className="info-divider" />
+            <div className="user-profile-info-row">
+              <span className="info-label">Account Role</span>
+              <span className="info-value">{roleTitle}</span>
+            </div>
+            {user.role === "customer" && user.companyName && (
+              <>
+                <div className="info-divider" />
+                <div className="user-profile-info-row">
+                  <span className="info-label">Organization</span>
+                  <span className="info-value">{user.companyName}</span>
+                </div>
+              </>
+            )}
+            <div className="info-divider" />
+            <div className="user-profile-info-row">
+              <span className="info-label">Email Address</span>
+              <span className="info-value">{user.email || "No email linked"}</span>
+            </div>
+            {user.contactNumber && (
+              <>
+                <div className="info-divider" />
+                <div className="user-profile-info-row">
+                  <span className="info-label">Contact Number</span>
+                  <span className="info-value">{user.contactNumber}</span>
+                </div>
+              </>
+            )}
+          </div>
+
+          {statusMessage && (
+            <div className={`user-profile-status-alert ${statusMessage.type}`}>
+              {statusMessage.type === "success" ? <CheckCircle2 size={16} /> : <X size={16} />}
+              <span>{statusMessage.text}</span>
+            </div>
+          )}
+
+          <div className="user-profile-password-section">
+            <div className="password-section-header">
+              <div className="password-section-title">
+                <Lock size={15} />
+                <span>Security & Password</span>
+              </div>
+              <button
+                type="button"
+                className="button button-sm button-secondary"
+                onClick={() => {
+                  setShowPasswordSection((prev) => !prev);
+                  setStatusMessage(null);
+                }}
+              >
+                {showPasswordSection ? "Cancel" : "Change Password"}
+              </button>
+            </div>
+
+            {showPasswordSection && (
+              <form onSubmit={handlePasswordChange} className="password-change-form">
+                <label>
+                  <span>Current Password</span>
+                  <input
+                    type="password"
+                    placeholder="Enter current password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    required
+                    autoComplete="current-password"
+                  />
+                </label>
+                <div className="password-row">
+                  <label>
+                    <span>New Password</span>
+                    <input
+                      type="password"
+                      placeholder="At least 8 characters"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      required
+                      minLength={8}
+                      autoComplete="new-password"
+                    />
+                  </label>
+                  <label>
+                    <span>Confirm New Password</span>
+                    <input
+                      type="password"
+                      placeholder="Confirm new password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      required
+                      minLength={8}
+                      autoComplete="new-password"
+                    />
+                  </label>
+                </div>
+                <div className="password-form-actions">
+                  <button
+                    type="submit"
+                    className="button button-primary button-sm"
+                    disabled={isSubmitting}
+                  >
+                    {isSubmitting ? "Updating..." : "Save New Password"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+
+        <div className="user-profile-modal-footer">
+          <button
+            type="button"
+            className="button button-danger button-sm profile-logout-btn"
+            onClick={() => {
+              onClose();
+              onSignOut();
+            }}
+          >
+            <LogOut size={14} />
+            <span>Log out</span>
+          </button>
+          <button type="button" className="button button-secondary button-sm" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

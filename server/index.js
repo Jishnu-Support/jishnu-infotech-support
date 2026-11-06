@@ -1062,6 +1062,33 @@ app.post("/api/auth/logout", (_req, res) => {
   res.status(204).end();
 });
 
+app.post("/api/auth/change-password", requireAuth, async (req, res) => {
+  const currentPassword = typeof req.body.currentPassword === "string" ? req.body.currentPassword : "";
+  const newPassword = typeof req.body.newPassword === "string" ? req.body.newPassword : "";
+
+  if (!currentPassword) {
+    return res.status(400).json({ error: "Please enter your current password." });
+  }
+  if (newPassword.length < 8 || newPassword.length > 128) {
+    return res.status(400).json({ error: "New password must be between 8 and 128 characters long." });
+  }
+
+  const user = await db.prepare("SELECT password_hash FROM users WHERE id = ?").get(req.user.id);
+  if (!user || !user.password_hash) {
+    return res.status(400).json({ error: "User account not found." });
+  }
+
+  const matches = bcrypt.compareSync(currentPassword, user.password_hash);
+  if (!matches) {
+    return res.status(400).json({ error: "Current password is incorrect." });
+  }
+
+  const newHash = bcrypt.hashSync(newPassword, 12);
+  await db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(newHash, req.user.id);
+
+  res.json({ message: "Password updated successfully." });
+});
+
 app.get("/api/tickets", requireAuth, async (req, res) => {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   const rows = req.user.role === "agent"

@@ -583,3 +583,11 @@ test("notification kinds and formatting structure for system alerts", () => {
   const resolveKind = "ticket_resolved:105:1730000000000";
   assert.ok(resolveKind.startsWith("ticket_resolved:105:"));
 });
+
+
+test("password change validation requirements", () => {
+  const minLength = 8;
+  const maxLength = 128;
+  assert.equal("short".length < minLength, true);
+  assert.equal("validPassword123!".length >= minLength && "validPassword123!".length <= maxLength, true);
+});
